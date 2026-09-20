@@ -4,6 +4,8 @@ description: Initialize MindIE Agent for this native Kimi session, or show first
 
 Call the knowledge MCP tool `mindie_entry` exactly once with `op=init` and a fresh `request_nonce`. Never pass a session id.
 
+Arguments appended below belong to this invocation. `op=init` already applies a supplied `read-only` or `later` argument. If its result shows that choice persisted, display it and finish; an additional `op=choose` call is unnecessary.
+
 Show the tool result to the user. If it includes three choices, present them as the first-use reply:
 1. Recommended: contribute public experience (`/mindie-agent:sharing-enable --repository owner/repo --account name --project-root /absolute/path --visibility public`).
 2. Read-only knowledge; no contribution.
