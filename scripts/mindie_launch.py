@@ -43,7 +43,12 @@ CALL_LOCK_BUDGET = 5.0
 CALL_CHILD_BUDGET = 60.0
 
 
+_CONFIG_FILE = None
+
+
 def _config_path() -> Path:
+    if _CONFIG_FILE:
+        return Path(_CONFIG_FILE).expanduser()
     override = os.environ.get("MINDIE_KIMI_CONFIG")
     if override:
         return Path(override).expanduser()
@@ -435,7 +440,12 @@ def _updater(rest) -> int:
 
 
 def main(argv=None) -> int:
+    global _CONFIG_FILE
     argv = list(sys.argv[1:] if argv is None else argv)
+    _CONFIG_FILE = None
+    if len(argv) >= 2 and argv[0] == "--config":
+        _CONFIG_FILE = argv[1]
+        argv = argv[2:]
     kind = argv[0] if argv else ""
     name = argv[1] if len(argv) > 1 else ""
     if kind == "hook" and name in {"pretool", "stop"}:

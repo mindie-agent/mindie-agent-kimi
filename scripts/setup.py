@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shutil
 import sys
 import time
 
@@ -131,6 +132,66 @@ def community_settings(args, parser):
     return data
 
 
+BOOTSTRAP_ITEMS = (
+    "scripts",
+    "skills",
+    "commands",
+    "kimi.plugin.json",
+    "runtime-requirements.txt",
+)
+BOOTSTRAP_COMPLETE = ".bootstrap-complete"
+
+
+def _bootstrap_complete(root: Path) -> bool:
+    if not (root / BOOTSTRAP_COMPLETE).is_file():
+        return False
+    return all((root / name).exists() for name in BOOTSTRAP_ITEMS)
+
+
+def stage_retained_bootstrap(dest: Path, source: Path) -> Path:
+    """Copy plugin code into an installation-owned generation.
+
+    Staging is atomic: items are copied into a temp directory, a completion
+    marker is written only after every BOOTSTRAP_ITEMS path exists, then the
+    temp directory is renamed to dest. An already-complete retained generation
+    is reused and never overwritten. An unknown or incomplete dest fails
+    closed. Only this function's failed temp staging is cleaned.
+    """
+    dest = dest.expanduser().absolute()
+    source = source.expanduser().absolute()
+    if dest == source:
+        raise SystemExit("refusing to use the source checkout as live generation")
+    if dest.exists():
+        if _bootstrap_complete(dest):
+            return dest
+        raise SystemExit(
+            f"incomplete or unknown retained bootstrap, refusing to overwrite: {dest}"
+        )
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    staging = dest.parent / f".{dest.name}.staging-{secrets.token_hex(8)}"
+    try:
+        staging.mkdir()
+        ignore = shutil.ignore_patterns("__pycache__", "*.pyc")
+        for name in BOOTSTRAP_ITEMS:
+            src = source / name
+            if not src.exists():
+                raise SystemExit("retained bootstrap is missing required plugin files")
+            if src.is_dir():
+                shutil.copytree(src, staging / name, ignore=ignore)
+            else:
+                shutil.copy2(src, staging / name)
+        missing = [name for name in BOOTSTRAP_ITEMS if not (staging / name).exists()]
+        if missing:
+            raise SystemExit("retained bootstrap is missing required plugin files")
+        (staging / BOOTSTRAP_COMPLETE).write_text("ok\n")
+        os.replace(staging, dest)
+        staging = None
+    finally:
+        if staging is not None:
+            shutil.rmtree(staging, ignore_errors=True)
+    return dest
+
+
 def write_community(path, community):
     if community is None:
         write_private(
@@ -229,8 +290,11 @@ def main():
         print(json.dumps(dict(config=str(config), sharing=sharing, updated="community"), indent=2))
         return
     admission = domain_root / "admission.sqlite3"
-    transcript = (PLUGIN_ROOT / "scripts" / "transcript.py").resolve()
-    organizer = (PLUGIN_ROOT / "scripts" / "organizer.py").resolve()
+    state_dir = domain_root / "adapter-state"
+    bootstrap_root = state_dir / "update" / "generations" / "bootstrap"
+    bootstrap_root = stage_retained_bootstrap(bootstrap_root, PLUGIN_ROOT)
+    transcript = bootstrap_root / "scripts" / "transcript.py"
+    organizer = bootstrap_root / "scripts" / "organizer.py"
     value = dict(
         root=str(domain_root),
         domain=args.domain,
@@ -253,7 +317,7 @@ def main():
         python=python,
         engine_config=str(engine_config),
         community_config=str(community_config),
-        state_dir=str(domain_root / "adapter-state"),
+        state_dir=str(state_dir),
     )
     if args.kimi_home:
         adapter_value["kimi_home"] = str(args.kimi_home.expanduser().absolute())
@@ -272,12 +336,13 @@ def main():
     # Bootstrap gets a REAL retained host package on the stable front, so
     # first native install and any later rollback target an actual package.
     bootstrap_package = updater.build_host_package(
-        PLUGIN_ROOT, adapter_value, "bootstrap",
+        bootstrap_root, adapter_value, "bootstrap",
         package_dir=genstate.update_dir(adapter_value) / "bootstrap-package",
+        config_file=config,
     )
     genstate.write_current(
         {
-            "generation": str(PLUGIN_ROOT),
+            "generation": str(bootstrap_root),
             "python": python,
             "adapter_config": str(config),
             "sha": None,
@@ -286,13 +351,12 @@ def main():
     )
     scheduled = "skipped"
     if not args.no_schedule:
-        os.environ["MINDIE_KIMI_CONFIG"] = str(config)
         try:
             import contextlib
             import io
 
             with contextlib.redirect_stdout(io.StringIO()):
-                code = updater.install_schedule()
+                code = updater.install_schedule(config)
             scheduled = "registered" if code == 0 else "manual"
         except Exception as exc:
             scheduled = f"manual ({type(exc).__name__}: {str(exc)[:120]})"

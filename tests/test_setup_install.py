@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -146,6 +147,15 @@ class SetupInstallTests(unittest.TestCase):
             current = genstate.read_current(adapter)
             self.assertIsNone(current["sha"])
             self.assertEqual(current["adapter_config"], str(config))
+            generation = Path(current["generation"])
+            self.assertNotEqual(generation.resolve(), (SCRIPTS.parent).resolve())
+            self.assertTrue((generation / "scripts" / "transcript.py").is_file())
+            self.assertTrue((generation / "scripts" / "organizer.py").is_file())
+            engine = json.loads(Path(adapter["engine_config"]).read_text())
+            self.assertEqual(engine["transcript_adapter"],
+                             str(generation / "scripts" / "transcript.py"))
+            self.assertEqual(engine["agent_command"][1],
+                             str(generation / "scripts" / "organizer.py"))
             self.assertEqual(
                 Path(current["python"]).resolve(),
                 Path(sys.executable).resolve(),
@@ -160,9 +170,13 @@ class SetupInstallTests(unittest.TestCase):
             self.assertTrue(manifest["version"].endswith("+mindie.bootstrap"))
             args = manifest["mcpServers"]["knowledge"]["args"]
             self.assertEqual(Path(args[0]), launcher_dir / "mindie_launch.py")
+            self.assertEqual(args[1:4], ["--config", str(config), "mcp"])
             command = manifest["mcpServers"]["knowledge"]["command"]
             self.assertTrue(command.startswith("./"), command)
             self.assertTrue((package / command[2:]).is_file())
+            hook = next(h for h in manifest["hooks"] if h.get("event") == "Stop")
+            self.assertIn("--config", hook["command"])
+            self.assertIn(str(config), hook["command"])
 
     def test_install_helper_timeout_leaves_no_web_child(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -305,3 +319,132 @@ class SetupInstallTests(unittest.TestCase):
             }
             with self.assertRaises(SystemExit):
                 install_kimi_plugin.verify_install_report(counts_ok, package, manifest)
+
+    def test_retained_bootstrap_survives_source_change(self):
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            config = tmp / "cfg" / "kimi.json"
+            source_root = tmp / "source"
+            shutil.copytree(SCRIPTS.parent, source_root,
+                            ignore=shutil.ignore_patterns(".git", "__pycache__"))
+            first = subprocess.run(
+                [
+                    sys.executable,
+                    str(source_root / "scripts" / "setup.py"),
+                    "--knowledge-python",
+                    sys.executable,
+                    "--config",
+                    str(config),
+                    "--root",
+                    str(tmp / "data"),
+                    "--no-schedule",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                env=env_for(),
+            )
+            self.assertEqual(first.returncode, 0, first.stderr)
+            sys.path.insert(0, str(SCRIPTS))
+            import genstate
+
+            adapter = json.loads(config.read_text())
+            generation = Path(genstate.read_current(adapter)["generation"])
+            retained = generation / "scripts" / "organizer.py"
+            source = source_root / "scripts" / "organizer.py"
+            original = source.read_text()
+            before = retained.read_text()
+            try:
+                source.write_text(original + "\n# mutated-source-checkout\n")
+                self.assertEqual(retained.read_text(), before)
+                self.assertNotIn("mutated-source-checkout", retained.read_text())
+            finally:
+                source.write_text(original)
+
+    def test_sharing_setup_does_not_rewrite_live_bootstrap(self):
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            config = tmp / "kimi.json"
+            project = tmp / "proj"
+            project.mkdir()
+            env = env_for()
+            first = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPTS / "setup.py"),
+                    "--knowledge-python",
+                    sys.executable,
+                    "--config",
+                    str(config),
+                    "--root",
+                    str(tmp / "data"),
+                    "--no-schedule",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                env=env,
+            )
+            self.assertEqual(first.returncode, 0, first.stderr)
+            sys.path.insert(0, str(SCRIPTS))
+            import genstate
+
+            adapter = json.loads(config.read_text())
+            generation = Path(genstate.read_current(adapter)["generation"])
+            launcher = genstate.launch_dir(adapter) / "bootstrap" / "mindie_launch.py"
+            gen_stat = (generation / "scripts" / "organizer.py").stat()
+            launch_bytes = launcher.read_bytes()
+            launch_stat = launcher.stat()
+            second = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPTS / "setup.py"),
+                    "--knowledge-python",
+                    sys.executable,
+                    "--config",
+                    str(config),
+                    "--root",
+                    str(tmp / "data"),
+                    "--community-repository",
+                    "owner/repo",
+                    "--community-project-root",
+                    str(project),
+                    "--community-visibility",
+                    "public",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                env=env,
+            )
+            self.assertEqual(second.returncode, 0, second.stderr)
+            after_gen = (generation / "scripts" / "organizer.py").stat()
+            self.assertEqual(after_gen.st_mtime_ns, gen_stat.st_mtime_ns)
+            self.assertEqual(launcher.read_bytes(), launch_bytes)
+            self.assertEqual(launcher.stat().st_mtime_ns, launch_stat.st_mtime_ns)
+            self.assertEqual(
+                Path(genstate.read_current(adapter)["generation"]),
+                generation,
+            )
+
+    def test_partial_retained_bootstrap_is_rejected(self):
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            dest = tmp / "bootstrap"
+            dest.mkdir()
+            scripts = dest / "scripts"
+            scripts.mkdir()
+            (scripts / "transcript.py").write_text("# partial\n")
+            (scripts / "organizer.py").write_text("# partial\n")
+            sys.path.insert(0, str(SCRIPTS))
+            import setup
+
+            with self.assertRaises(SystemExit) as raised:
+                setup.stage_retained_bootstrap(dest, setup.PLUGIN_ROOT)
+            self.assertIn("incomplete or unknown retained bootstrap", str(raised.exception))
+            self.assertEqual((scripts / "transcript.py").read_text(), "# partial\n")
+            self.assertFalse((dest / "commands").exists())
+            self.assertFalse((dest / "kimi.plugin.json").exists())
+            self.assertFalse((dest / setup.BOOTSTRAP_COMPLETE).exists())
+            leftovers = [p.name for p in dest.parent.iterdir() if p.name != dest.name]
+            self.assertEqual(leftovers, [])

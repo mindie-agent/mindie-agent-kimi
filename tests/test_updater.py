@@ -180,7 +180,11 @@ class UpdaterTests(unittest.TestCase):
         args = manifest["mcpServers"]["knowledge"]["args"]
         launcher_dir = genstate.launch_dir(self.adapter) / self.sha
         self.assertEqual(Path(args[0]), launcher_dir / "mindie_launch.py")
-        self.assertEqual(args[1:], ["mcp", "knowledge"])
+        self.assertEqual(
+            args[1:],
+            ["--config", str(generation / "config" / "kimi.adapter.json"),
+             "mcp", "knowledge"],
+        )
         command = manifest["mcpServers"]["knowledge"]["command"]
         self.assertTrue(updater.host_valid_mcp_command(command), command)
         self.assertTrue(command.startswith("./"))
@@ -492,7 +496,8 @@ class UpdaterTests(unittest.TestCase):
                 package.resolve())
 
     def test_host_package_mcp_command_is_native_valid(self):
-        pkg = updater.build_host_package(self.src, self.adapter, self.sha)
+        pkg = updater.build_host_package(
+            self.src, self.adapter, self.sha, config_file=self.config_path)
         manifest = json.loads((pkg / "kimi.plugin.json").read_text())
         launcher = genstate.launch_dir(self.adapter) / self.sha / "mindie_launch.py"
         for name, server in manifest["mcpServers"].items():
@@ -501,13 +506,26 @@ class UpdaterTests(unittest.TestCase):
             self.assertTrue(command.startswith("./"), command)
             self.assertFalse(os.path.isabs(command))
             self.assertEqual(Path(server["args"][0]), launcher)
-            self.assertEqual(server["args"][1:], ["mcp", name])
+            self.assertEqual(
+                server["args"][1:],
+                ["--config", str(self.config_path), "mcp", name],
+            )
             wrapper = pkg / command[2:]
             self.assertTrue(wrapper.is_file())
         self.assertFalse(updater.host_valid_mcp_command(sys.executable))
         self.assertFalse(updater.host_valid_mcp_command("/usr/bin/python3"))
         self.assertTrue(updater.host_valid_mcp_command("python3"))
         self.assertTrue(updater.host_valid_mcp_command("./mindie-front"))
+        stop = next(h for h in manifest["hooks"] if h.get("event") == "Stop")
+        self.assertIn("--config", stop["command"])
+        self.assertIn(str(self.config_path), stop["command"])
+
+    def test_schedule_command_encodes_config_not_env(self):
+        launcher = Path("/tmp/mindie_launch.py")
+        config = Path("/tmp/custom/kimi.json")
+        command = updater.schedule_command(launcher, config)
+        self.assertEqual(command[1:4], [str(launcher), "--config", str(config)])
+        self.assertEqual(command[4:], ["updater", "check"])
 
 
 if __name__ == "__main__":

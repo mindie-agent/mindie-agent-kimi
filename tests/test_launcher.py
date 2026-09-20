@@ -451,6 +451,44 @@ class LauncherTests(unittest.TestCase):
             self.assertIsNone(payload["pythonpath"])
             self.assertTrue(payload["got_lock"])
 
+    def test_explicit_config_flag_does_not_need_env(self):
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            config = make_config(tmp, sharing=False)
+            xdg = tmp / "xdg"
+            xdg.mkdir()
+            env = env_for(extra={"XDG_CONFIG_HOME": str(xdg)})
+            env.pop("MINDIE_KIMI_CONFIG", None)
+            result = run_launch(
+                ["--config", str(config), "hook", "stop"],
+                STOP_EVENT,
+                env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout), {})
+            self.assertEqual(list(xdg.rglob("*")), [])
+            write_current(config, ROOT)
+            generation = write_stub_generation(
+                tmp / "gen2",
+                **{
+                    "mcp_server.py": (
+                        "import json, sys\n"
+                        "print(json.dumps({"
+                        "'jsonrpc':'2.0','id':1,"
+                        "'result':{'tools':[{'name':'from-custom'}]}}))\n"
+                    )
+                },
+            )
+            write_current(config, generation)
+            listed = run_launch(
+                ["--config", str(config), "mcp", "knowledge"],
+                json.dumps(dict(jsonrpc="2.0", id=1, method="tools/list")) + "\n",
+                env=env,
+            )
+            self.assertEqual(listed.returncode, 0, listed.stderr)
+            payload = json.loads(listed.stdout.splitlines()[-1])
+            self.assertEqual(payload["result"]["tools"][0]["name"], "from-custom")
+
     def test_front_dispatches_once_to_real_generation_scripts(self):
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)

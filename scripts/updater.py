@@ -239,19 +239,36 @@ def _write_front_wrapper(package: Path, python: Path) -> str:
     return f"./{name}"
 
 
+def _quote_front_command(python, launcher, config_file) -> str:
+    parts = [str(python), str(launcher), "--config", str(config_file)]
+    if os.name == "nt":
+        return " ".join(f'"{part}"' for part in parts)
+    return " ".join(shlex.quote(part) for part in parts)
+
+
+def schedule_command(launcher: Path, config_file: Path) -> list[str]:
+    return [sys.executable, str(launcher), "--config", str(config_file),
+            "updater", "check"]
+
+
 def build_host_package(generation: Path, adapter: dict, sha: str,
-                       package_dir: Path | None = None) -> Path:
+                       package_dir: Path | None = None,
+                       config_file=None) -> Path:
     """Native host package: manifest + Skills + commands. The manifest
     points at a NEW versioned launcher path for this exact revision,
     with bounded.py copied next to it (the front imports it); live
     launchers are never touched during staging. manifest.version is
     stamped uniquely with the candidate commit."""
+    if config_file is None:
+        raise ValueError("build_host_package requires an explicit config_file")
+    config_file = Path(config_file)
     launcher_dir = launch_dir(adapter) / sha
     launcher_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(generation / "scripts" / LAUNCHER, launcher_dir / LAUNCHER)
-    shutil.copy2(generation / "scripts" / "bounded.py",
-                 launcher_dir / "bounded.py")
     launcher = launcher_dir / LAUNCHER
+    if not launcher.is_file():
+        shutil.copy2(generation / "scripts" / LAUNCHER, launcher)
+        shutil.copy2(generation / "scripts" / "bounded.py",
+                     launcher_dir / "bounded.py")
     package = package_dir if package_dir is not None else generation / "host-package"
     if package.exists():
         shutil.rmtree(package)
@@ -261,13 +278,13 @@ def build_host_package(generation: Path, adapter: dict, sha: str,
     manifest["version"] = f"{base}+mindie.{sha[:12]}"
     base_python = sys.executable
     front = _write_front_wrapper(package, Path(base_python))
+    bound = ["--config", str(config_file)]
     for surface in ("knowledge", "remote"):
         manifest["mcpServers"][surface] = {
             "command": front,
-            "args": [str(launcher), "mcp", surface],
+            "args": [str(launcher), *bound, "mcp", surface],
         }
-    quoted = (f"'{base_python}' '{launcher}'" if os.name != "nt"
-              else f'"{base_python}" "{launcher}"')
+    quoted = _quote_front_command(base_python, launcher, config_file)
     for hook in manifest.get("hooks", []):
         op = {"PreToolUse": "pretool", "Stop": "stop"}.get(hook.get("event"))
         if op:
@@ -310,7 +327,7 @@ def stage_generation(sha: str, remote: str, adapter: dict, deadline: float,
         python = build(target, deadline)
         probe_runtime(python, deadline, target)
         gen_adapter = write_generation_configs(target, python, adapter)
-        build_host_package(target, adapter, sha)
+        build_host_package(target, adapter, sha, config_file=gen_adapter)
         (target / COMPLETE).write_text(f"{sha}\n")
         return target, python, gen_adapter
     except Exception:
@@ -652,8 +669,15 @@ def recover() -> int:
     return check(adapter, force=True)
 
 
-def install_schedule() -> int:
-    adapter = load_adapter_config()
+def install_schedule(config_file=None) -> int:
+    if config_file is not None:
+        config_file = Path(config_file).expanduser().absolute()
+        adapter = json.loads(config_file.read_text())
+        if not isinstance(adapter, dict):
+            raise SystemExit("adapter configuration must be one JSON object")
+    else:
+        adapter = load_adapter_config()
+        config_file = config_path()
     launcher = launch_dir(adapter) / "bootstrap" / LAUNCHER
     if not launcher.is_file():
         scripts = Path(read_current(adapter)["generation"]) / "scripts"
@@ -662,7 +686,7 @@ def install_schedule() -> int:
         launcher.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(scripts / LAUNCHER, launcher)
         shutil.copy2(scripts / "bounded.py", launcher.parent / "bounded.py")
-    command = [sys.executable, str(launcher), "updater", "check"]
+    command = schedule_command(launcher, config_file)
     log = update_dir(adapter) / "scheduler.log"
     if sys.platform == "darwin":
         import plistlib
@@ -743,7 +767,7 @@ def main(argv=None) -> int:
     if args.op == "recover":
         return recover()
     if args.op == "install-schedule":
-        return install_schedule()
+        return install_schedule(args.config)
     return uninstall_schedule()
 
 
