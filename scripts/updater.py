@@ -23,6 +23,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import shutil
 import sys
 import time
@@ -207,6 +208,37 @@ def write_generation_configs(generation: Path, python: Path, adapter: dict) -> P
     return gen_adapter
 
 
+def host_valid_mcp_command(command: str) -> bool:
+    """Native Kimi accepts a PATH token (no slash) or a package-relative
+    path that starts with './'. Absolute sys.executable is rejected and
+    the server is skipped with a warning (mcpServerCount stays 0)."""
+    if not isinstance(command, str) or not command:
+        return False
+    if command.startswith("./"):
+        return True
+    if os.path.isabs(command) or "/" in command or "\\" in command:
+        return False
+    return True
+
+
+def _write_front_wrapper(package: Path, python: Path) -> str:
+    """Package-relative wrapper that execs the retained front interpreter.
+
+    Native command lookup cannot use an absolute interpreter path; the
+    wrapper stays inside the copied plugin root and starts with './'.
+    """
+    if os.name == "nt":
+        name = "mindie-front.cmd"
+        (package / name).write_text(f'@echo off\r\n"{python}" %*\r\n')
+    else:
+        name = "mindie-front"
+        (package / name).write_text(
+            f"#!/bin/sh\nexec {shlex.quote(str(python))} \"$@\"\n"
+        )
+        (package / name).chmod(0o755)
+    return f"./{name}"
+
+
 def build_host_package(generation: Path, adapter: dict, sha: str,
                        package_dir: Path | None = None) -> Path:
     """Native host package: manifest + Skills + commands. The manifest
@@ -228,9 +260,10 @@ def build_host_package(generation: Path, adapter: dict, sha: str,
     base = str(manifest.get("version") or "0.1.0").split("+")[0]
     manifest["version"] = f"{base}+mindie.{sha[:12]}"
     base_python = sys.executable
+    front = _write_front_wrapper(package, Path(base_python))
     for surface in ("knowledge", "remote"):
         manifest["mcpServers"][surface] = {
-            "command": base_python,
+            "command": front,
             "args": [str(launcher), "mcp", surface],
         }
     quoted = (f"'{base_python}' '{launcher}'" if os.name != "nt"
@@ -335,32 +368,30 @@ def _readback(adapter: dict, deadline: float, reserve: float = RESERVE) -> dict:
 
 def _verify_native_record(report: dict, manifest: dict, package: Path) -> None:
     """Exact selected plugin record: id, stamped version, enabled/error
-    state, and originalSource equal to this package path."""
+    state, originalSource, and actually-loaded MCP/hook/command resources.
+
+    enabled=true / state=ok / hasErrors=false is not success when native
+    skipped MCP servers (warning diagnostics, mcpServerCount=0)."""
+    import install_kimi_plugin as native_install_mod
+
+    for surface, server in (manifest.get("mcpServers") or {}).items():
+        command = server.get("command")
+        if not host_valid_mcp_command(command):
+            raise CheckFailed(
+                f"host package mcpServers.{surface}.command is not native-valid: "
+                f"{command!r}"
+            )
     install = (report.get("install") or {}).get("body") or {}
     data = install.get("data") or {}
     if data.get("id") != manifest["name"] or data.get("hasErrors"):
         raise CheckFailed(f"native install rejected: {json.dumps(data)[:300]}")
-    plugins = (((report.get("after") or {}).get("body") or {})
-               .get("data") or {}).get("plugins")
-    if not isinstance(plugins, list):
-        raise CheckFailed("native readback lacks a plugins inventory")
-    records = [p for p in plugins
-               if isinstance(p, dict) and p.get("id") == manifest["name"]]
-    if len(records) != 1:
-        raise CheckFailed(
-            f"native readback holds {len(records)} records for {manifest['name']}")
-    record = records[0]
-    problems = []
-    if record.get("version") != manifest["version"]:
-        problems.append(f"version={record.get('version')!r}")
-    if record.get("enabled") is not True:
-        problems.append(f"enabled={record.get('enabled')!r}")
-    if record.get("state") != "ok" or record.get("hasErrors"):
-        problems.append(f"state={record.get('state')!r}")
-    if record.get("originalSource") != str(package):
-        problems.append(f"originalSource={record.get('originalSource')!r}")
+    expected = native_install_mod.expected_native_resources(package, manifest)
+    problems = native_install_mod.native_record_resource_problems(data, expected, data)
+    problems.extend(
+        native_install_mod.native_after_inventory_problems(
+            report, package, manifest, expected))
     if problems:
-        raise CheckFailed("native readback mismatch: " + ", ".join(problems))
+        raise CheckFailed("native readback mismatch: " + ", ".join(dict.fromkeys(problems)))
 
 
 def native_install(adapter: dict, package: Path, deadline: float,

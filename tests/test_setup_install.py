@@ -160,6 +160,9 @@ class SetupInstallTests(unittest.TestCase):
             self.assertTrue(manifest["version"].endswith("+mindie.bootstrap"))
             args = manifest["mcpServers"]["knowledge"]["args"]
             self.assertEqual(Path(args[0]), launcher_dir / "mindie_launch.py")
+            command = manifest["mcpServers"]["knowledge"]["command"]
+            self.assertTrue(command.startswith("./"), command)
+            self.assertTrue((package / command[2:]).is_file())
 
     def test_install_helper_timeout_leaves_no_web_child(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -208,3 +211,97 @@ class SetupInstallTests(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("kimi-home", result.stderr)
+
+    def test_install_helper_rejects_ok_record_with_zero_mcp_servers(self):
+        sys.path.insert(0, str(SCRIPTS))
+        import install_kimi_plugin
+
+        with tempfile.TemporaryDirectory() as raw:
+            package = Path(raw)
+            (package / "kimi.plugin.json").write_text(
+                json.dumps({
+                    "name": "mindie-agent",
+                    "version": "0.1.0+mindie.bootstrap",
+                    "mcpServers": {
+                        "knowledge": {"command": "./mindie-front", "args": []},
+                        "remote": {"command": "./mindie-front", "args": []},
+                    },
+                    "hooks": [{"event": "Stop", "command": "python3 x", "timeout": 2}],
+                })
+            )
+            skipped = {
+                "id": "mindie-agent",
+                "version": "0.1.0+mindie.bootstrap",
+                "enabled": True,
+                "state": "ok",
+                "hasErrors": False,
+                "mcpServerCount": 0,
+                "enabledMcpServerCount": 0,
+                "hookCount": 2,
+                "commandCount": 7,
+                "mcpServers": [],
+                "diagnostics": [{
+                    "severity": "warn",
+                    "message": '"mcpServers.knowledge.command" must be a PATH command or start with "./"',
+                }],
+            }
+            report = {
+                "install": {"body": {"data": skipped}},
+                "after": {"body": {"data": {"plugins": [dict(skipped)]}}},
+            }
+            with self.assertRaises(SystemExit):
+                install_kimi_plugin.verify_install_report(
+                    report, package,
+                    json.loads((package / "kimi.plugin.json").read_text()),
+                )
+
+    def test_install_helper_rejects_missing_after_inventory(self):
+        sys.path.insert(0, str(SCRIPTS))
+        import install_kimi_plugin
+
+        with tempfile.TemporaryDirectory() as raw:
+            package = Path(raw)
+            version = "0.1.0+mindie.bootstrap"
+            (package / "kimi.plugin.json").write_text(
+                json.dumps({
+                    "name": "mindie-agent",
+                    "version": version,
+                    "mcpServers": {
+                        "knowledge": {"command": "./mindie-front", "args": []},
+                        "remote": {"command": "./mindie-front", "args": []},
+                    },
+                    "hooks": [{"event": "Stop", "command": "python3 x", "timeout": 2}],
+                })
+            )
+            ok = {
+                "id": "mindie-agent",
+                "version": version,
+                "enabled": True,
+                "state": "ok",
+                "hasErrors": False,
+                "originalSource": str(package),
+                "mcpServerCount": 2,
+                "enabledMcpServerCount": 2,
+                "hookCount": 1,
+                "commandCount": 0,
+                "mcpServers": [
+                    {"name": "knowledge", "enabled": True},
+                    {"name": "remote", "enabled": True},
+                ],
+                "diagnostics": [],
+            }
+            manifest = json.loads((package / "kimi.plugin.json").read_text())
+            missing = {
+                "install": {"body": {"data": dict(ok)}},
+                "after": {"body": {"data": {}}},
+            }
+            with self.assertRaises(SystemExit) as raised:
+                install_kimi_plugin.verify_install_report(missing, package, manifest)
+            self.assertIn("after inventory", str(raised.exception))
+            masked = dict(ok, version="other", enabled=False)
+            counts_ok = {
+                "install": {"body": {"data": dict(ok)}},
+                "after": {"body": {"data": {"plugins": [masked]}}},
+            }
+            with self.assertRaises(SystemExit):
+                install_kimi_plugin.verify_install_report(counts_ok, package, manifest)

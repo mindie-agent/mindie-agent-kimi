@@ -94,6 +94,74 @@ class McpTests(unittest.TestCase):
                 proc.kill()
                 proc.wait(timeout=2)
 
+    def test_remote_job_status_preserves_session_id_job_alias(self):
+        with tempfile.TemporaryDirectory() as raw:
+            config = make_config(Path(raw))
+            os.environ["MINDIE_KIMI_CONFIG"] = str(config)
+            sys.path.insert(0, str(SCRIPTS))
+            import identity
+            import mcp_server
+            import remote_dev.mcp.tools as remote_tools
+
+            listed = {item["name"]: item for item in remote_tools.list_tools()}
+            self.assertIn("remote_job_status", listed)
+            props = (listed["remote_job_status"].get("inputSchema") or {}).get(
+                "properties"
+            ) or {}
+            self.assertIn("job_id", props)
+            captured = {}
+
+            def fake_call(name, args):
+                captured["name"] = name
+                captured["args"] = dict(args)
+                captured["native"] = os.environ.get("REMOTE_DEV_SESSION_ID")
+                return {
+                    "text": "ok",
+                    "result": {"outcome": "success", "job_id": args.get("session_id")},
+                }
+
+            args = dict(session_id="job-alias-1", request_nonce="nonce-remote-job")
+            identity.publish_nonce_bind(
+                "ses_native_owner",
+                "nonce-remote-job",
+                "mcp__plugin-mindie-agent_remote__remote_job_status",
+                "tool_remote_job",
+                args,
+            )
+            original = remote_tools.call_tool
+            remote_tools.call_tool = fake_call
+            try:
+                response = mcp_server.handle(
+                    "remote",
+                    dict(
+                        jsonrpc="2.0",
+                        id=21,
+                        method="tools/call",
+                        params=dict(name="remote_job_status", arguments=args),
+                    ),
+                )
+            finally:
+                remote_tools.call_tool = original
+            self.assertFalse(response["result"]["isError"], response)
+            self.assertEqual(captured["args"].get("session_id"), "job-alias-1")
+            self.assertNotIn("request_nonce", captured["args"])
+            self.assertEqual(captured["native"], "ses_native_owner")
+            self.assertNotEqual(captured["native"], "job-alias-1")
+
+            camel = mcp_server.handle(
+                "remote",
+                dict(
+                    jsonrpc="2.0",
+                    id=22,
+                    method="tools/call",
+                    params=dict(
+                        name="remote_job_status",
+                        arguments=dict(sessionId="ses_spoof", request_nonce="n2"),
+                    ),
+                ),
+            )
+            self.assertTrue(camel["result"]["isError"])
+
     def test_remote_tools_are_listed_without_knowledge_activation(self):
         with tempfile.TemporaryDirectory() as raw:
             config = make_config(Path(raw))

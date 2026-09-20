@@ -124,11 +124,23 @@ def failure(exc):
     return dict(content=[dict(type="text", text=text)], isError=True)
 
 
-def strip_nonce(args):
+def reject_native_identity_args(args, surface):
+    """Native task ownership is never taken from tool arguments.
+
+    Knowledge rejects session_id/sessionId/thread_id. Remote-dev keeps
+    session_id as a job_id alias for status/stop/write_stdin; sessionId
+    and thread_id stay disallowed on every surface.
+    """
+    if "sessionId" in args or "thread_id" in args:
+        raise ValueError("tool arguments must not include native session identity")
+    if "session_id" in args and surface != "remote":
+        raise ValueError("tool arguments must not include native session identity")
+
+
+def strip_nonce(args, surface=None):
     args = dict(args)
     nonce = require_nonce(args.pop("request_nonce", None))
-    if "session_id" in args or "sessionId" in args or "thread_id" in args:
-        raise ValueError("tool arguments must not include native session identity")
+    reject_native_identity_args(args, surface)
     return nonce, args
 
 
@@ -224,11 +236,10 @@ def handle(surface, message):
     try:
         if not isinstance(args, dict):
             raise ValueError("invalid tool arguments")
-        if "session_id" in args or "sessionId" in args or "thread_id" in args:
-            raise ValueError("tool arguments must not include native session identity")
+        reject_native_identity_args(args, surface)
         nonce = require_nonce(args.get("request_nonce"))
         session = claim_nonce(nonce, name, args)
-        _, body = strip_nonce(args)
+        _, body = strip_nonce(args, surface)
         if surface == "knowledge" and name == "mindie_entry":
             from entry import dispatch
             from identity import session_cwd

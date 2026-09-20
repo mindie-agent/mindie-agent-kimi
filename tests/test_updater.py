@@ -120,12 +120,27 @@ class UpdaterTests(unittest.TestCase):
     def fake_install(self, adapter, package, deadline, reserve=0.0):
         package = Path(package)
         manifest = json.loads((package / "kimi.plugin.json").read_text())
-        record = dict(id=manifest["name"], version=manifest["version"],
-                      enabled=True, state="ok", hasErrors=False,
-                      originalSource=str(package.resolve()))
+        mcp_names = list((manifest.get("mcpServers") or {}).keys())
+        commands = list((package / "commands").rglob("*.md")) if (package / "commands").is_dir() else []
+        record = dict(
+            id=manifest["name"], version=manifest["version"],
+            enabled=True, state="ok", hasErrors=False,
+            originalSource=str(package.resolve()),
+            skillCount=1 if (package / "skills").is_dir() else 0,
+            mcpServerCount=len(mcp_names),
+            enabledMcpServerCount=len(mcp_names),
+            hookCount=len(manifest.get("hooks") or []),
+            commandCount=len(commands),
+        )
+        install_data = dict(
+            record,
+            mcpServers=[{"name": name, "enabled": True, "transport": "stdio"}
+                        for name in mcp_names],
+            diagnostics=[],
+        )
         self.installs.append((package, manifest))
-        return {"install": {"body": {"data": dict(record)}},
-                "after": {"body": {"data": {"plugins": [record]}}}}
+        return {"install": {"body": {"data": install_data}},
+                "after": {"body": {"data": {"plugins": [dict(record)]}}}}
 
     def run_check(self, **kw):
         args = dict(build=fake_build, install=self.fake_install)
@@ -166,6 +181,17 @@ class UpdaterTests(unittest.TestCase):
         launcher_dir = genstate.launch_dir(self.adapter) / self.sha
         self.assertEqual(Path(args[0]), launcher_dir / "mindie_launch.py")
         self.assertEqual(args[1:], ["mcp", "knowledge"])
+        command = manifest["mcpServers"]["knowledge"]["command"]
+        self.assertTrue(updater.host_valid_mcp_command(command), command)
+        self.assertTrue(command.startswith("./"))
+        wrapper = self.installs[0][0] / command[2:]
+        self.assertTrue(wrapper.is_file())
+        launched = subprocess.run(
+            [str(wrapper), "-c", "import sys; print(sys.executable)"],
+            capture_output=True, text=True, timeout=5, check=True,
+        )
+        self.assertEqual(Path(launched.stdout.strip()).resolve(),
+                         Path(sys.executable).resolve())
         # The front's bounded.py dependency is copied next to the launcher.
         self.assertTrue((launcher_dir / "bounded.py").is_file())
         bootstrap = genstate.launch_dir(self.adapter) / "bootstrap" / "mindie_launch.py"
@@ -414,12 +440,20 @@ class UpdaterTests(unittest.TestCase):
         package.mkdir()
         write_json(package / "kimi.plugin.json",
                    dict(MANIFEST, version="0.1.0+mindie.abc"))
+        mcp_servers = [
+            {"name": "knowledge", "enabled": True, "transport": "stdio"},
+            {"name": "remote", "enabled": True, "transport": "stdio"},
+        ]
         base = dict(id="mindie-agent", version="0.1.0+mindie.abc",
                     enabled=True, state="ok", hasErrors=False,
-                    originalSource=str(package.resolve()))
+                    originalSource=str(package.resolve()),
+                    skillCount=0, mcpServerCount=2, enabledMcpServerCount=2,
+                    hookCount=2, commandCount=0,
+                    mcpServers=mcp_servers, diagnostics=[])
 
-        def report(record):
-            return {"install": {"body": {"data": dict(base)}},
+        def report(record, install=None):
+            payload = dict(base if install is None else install)
+            return {"install": {"body": {"data": payload}},
                     "after": {"body": {"data": {"plugins": [record]}}}}
 
         manifest = json.loads((package / "kimi.plugin.json").read_text())
@@ -430,6 +464,7 @@ class UpdaterTests(unittest.TestCase):
             dict(base, enabled=False),
             dict(base, state="error"),
             dict(base, originalSource="/elsewhere"),
+            dict(base, mcpServerCount=0, enabledMcpServerCount=0),
         ):
             with self.assertRaises(updater.CheckFailed):
                 updater._verify_native_record(report(mutation), manifest,
@@ -439,6 +474,40 @@ class UpdaterTests(unittest.TestCase):
                 {"install": {"body": {"data": dict(base)}},
                  "after": {"body": {"data": {"plugins": []}}}},
                 manifest, package.resolve())
+        with self.assertRaises(updater.CheckFailed):
+            updater._verify_native_record(
+                {"install": {"body": {"data": dict(base)}},
+                 "after": {"body": {"data": {}}}},
+                manifest, package.resolve())
+        skipped = dict(
+            base, mcpServerCount=0, enabledMcpServerCount=0, mcpServers=[],
+            diagnostics=[{
+                "severity": "warn",
+                "message": '"mcpServers.knowledge.command" must be a PATH command or start with "./"',
+            }],
+        )
+        with self.assertRaises(updater.CheckFailed):
+            updater._verify_native_record(
+                report(dict(skipped), install=skipped), manifest,
+                package.resolve())
+
+    def test_host_package_mcp_command_is_native_valid(self):
+        pkg = updater.build_host_package(self.src, self.adapter, self.sha)
+        manifest = json.loads((pkg / "kimi.plugin.json").read_text())
+        launcher = genstate.launch_dir(self.adapter) / self.sha / "mindie_launch.py"
+        for name, server in manifest["mcpServers"].items():
+            command = server["command"]
+            self.assertTrue(updater.host_valid_mcp_command(command), command)
+            self.assertTrue(command.startswith("./"), command)
+            self.assertFalse(os.path.isabs(command))
+            self.assertEqual(Path(server["args"][0]), launcher)
+            self.assertEqual(server["args"][1:], ["mcp", name])
+            wrapper = pkg / command[2:]
+            self.assertTrue(wrapper.is_file())
+        self.assertFalse(updater.host_valid_mcp_command(sys.executable))
+        self.assertFalse(updater.host_valid_mcp_command("/usr/bin/python3"))
+        self.assertTrue(updater.host_valid_mcp_command("python3"))
+        self.assertTrue(updater.host_valid_mcp_command("./mindie-front"))
 
 
 if __name__ == "__main__":
