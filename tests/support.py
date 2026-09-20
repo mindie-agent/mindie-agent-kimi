@@ -8,10 +8,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
-CORE = ROOT.parent / "core"
-PROBE_HOME = ROOT.parent / "acceptance" / "kimi-native-envelope" / "home"
-PROBE_SESSION = "session_d5c1f36f-0a76-4f97-8daf-2367f2f736c2"
-FORK_SESSION = "session_7502ffc2-48ae-4bde-8641-6c413f961962"
+FIXTURES = ROOT / "tests" / "fixtures"
 
 
 def env_for(config=None, extra=None, kimi_home=None):

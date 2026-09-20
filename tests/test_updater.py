@@ -40,7 +40,14 @@ def git(args, cwd):
                    text=True, env=GIT_ENV)
 
 
-def make_remote(tmp: Path, marker="one") -> tuple[Path, str]:
+def commit(src, bare, marker):
+    (src / "marker.txt").write_text(marker)
+    git(["add", "-A"], src)
+    git(["commit", "-m", marker], src)
+    git(["push", str(bare), "main"], src)
+
+
+def make_remote(tmp: Path):
     src = tmp / "remote-src"
     bare = tmp / "remote.git"
     (src / "scripts").mkdir(parents=True)
@@ -49,23 +56,30 @@ def make_remote(tmp: Path, marker="one") -> tuple[Path, str]:
     write_json(src / "kimi.plugin.json", MANIFEST)
     (src / "runtime-requirements.txt").write_text(
         "mindie-knowledge @ git+https://github.com/mindie-agent/knowledge"
-        "@6155846c99b454e3d1c436a6dcfbae82d0ba7e51\n"
+        "@3f7c70d813377d3ba3140a0a585f48e1df04444b\n"
     )
     (src / "scripts" / "mindie_launch.py").write_text("# stable launcher\n")
+    (src / "scripts" / "bounded.py").write_text("# bounded dependency\n")
     (src / "scripts" / "transcript.py").write_text("# parser\n")
     (src / "scripts" / "organizer.py").write_text("# organizer\n")
-    (src / "marker.txt").write_text(marker)
+    # Production generations are full checkouts; carry the real service
+    # modules so post-switch idle probes exercise the actual interface.
+    import shutil
+
+    for name in ("knowledge_service.py", "paths.py", "transcript.py"):
+        shutil.copy2(SCRIPTS / name, src / "scripts" / name)
+    (src / "marker.txt").write_text("one")
     git(["init", "-b", "main"], src)
     git(["add", "-A"], src)
-    git(["commit", "-m", marker], src)
+    git(["commit", "-m", "one"], src)
     sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=src, check=True,
                          capture_output=True, text=True, env=GIT_ENV).stdout.strip()
     git(["init", "--bare", str(bare)], tmp)
     git(["push", str(bare), "main"], src)
-    return bare, sha
+    return src, bare, sha
 
 
-def fake_build(generation: Path) -> Path:
+def fake_build(generation: Path, deadline: float) -> Path:
     # Test seam for updater's `build` parameter (no network in tests):
     # a wrapper that execs the installed acceptance runtime, which already
     # provides the pinned mindie_knowledge/remote_dev. Production uses the
@@ -77,16 +91,12 @@ def fake_build(generation: Path) -> Path:
     return python
 
 
-def no_sync(adapter, status):
-    return None
-
-
 class UpdaterTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         tmp = Path(self._tmp.name)
         self.tmp = tmp
-        self.bare, self.sha = make_remote(tmp)
+        self.src, self.bare, self.sha = make_remote(tmp)
         self.config_path = make_config(tmp / "cfg", sharing=True,
                                        roots=[tmp / "cfg"])
         data = json.loads(self.config_path.read_text())
@@ -95,8 +105,11 @@ class UpdaterTests(unittest.TestCase):
         write_json(self.config_path, data)
         self.adapter = data
         os.environ["MINDIE_KIMI_CONFIG"] = str(self.config_path)
+        bootstrap = genstate.launch_dir(self.adapter) / "bootstrap" / "mindie_launch.py"
+        bootstrap.parent.mkdir(parents=True, exist_ok=True)
+        bootstrap.write_text("# live bootstrap launcher\n")
         self._sync = updater._feed_sync
-        updater._feed_sync = no_sync  # scheduler sync is core-side; not under test
+        updater._feed_sync = lambda adapter, deadline: None
         self.installs = []
 
     def tearDown(self):
@@ -104,30 +117,24 @@ class UpdaterTests(unittest.TestCase):
         os.environ.pop("MINDIE_KIMI_CONFIG", None)
         self._tmp.cleanup()
 
-    def fake_install(self, adapter, package):
+    def fake_install(self, adapter, package, deadline, reserve=0.0):
+        package = Path(package)
         manifest = json.loads((package / "kimi.plugin.json").read_text())
-        self.installs.append(manifest)
-        return {"install": {"body": {"data": {"id": "mindie-agent"}}},
-                "after": {"body": {"plugins": [{"id": "mindie-agent",
-                                                "version": "0.1.0"}]}}}
-
-    def idle(self, adapter):
-        return {"idle": True}
+        record = dict(id=manifest["name"], version=manifest["version"],
+                      enabled=True, state="ok", hasErrors=False,
+                      originalSource=str(package.resolve()))
+        self.installs.append((package, manifest))
+        return {"install": {"body": {"data": dict(record)}},
+                "after": {"body": {"data": {"plugins": [record]}}}}
 
     def run_check(self, **kw):
-        args = dict(build=fake_build, idle=self.idle, install=self.fake_install)
+        args = dict(build=fake_build, install=self.fake_install)
         args.update(kw)
         return updater.check(self.adapter, **args)
 
-    def test_switch_applies_and_idle_grants_survive(self):
-        import admission as admission_mod
-
-        lease = admission_mod.activate("ses_upd",
-                                       project_root=str(self.tmp / "cfg"))
-        token = lease["token"]
-        remote_state = genstate.state_dir(self.adapter) / "remote" / "ses_upd"
-        remote_state.mkdir(parents=True)
-        (remote_state / "task.json").write_text("{}\n")
+    def test_switch_commits_one_tuple_and_preserves_stable_state(self):
+        # Default idle: REAL stop_if_idle subprocess through the committed
+        # interpreter; no service endpoint exists here, so it is idle.
         result = self.run_check()
         self.assertEqual(result, 0)
         current = genstate.read_current(self.adapter)
@@ -136,30 +143,37 @@ class UpdaterTests(unittest.TestCase):
         self.assertTrue((generation / updater.COMPLETE).is_file())
         self.assertEqual(current["python"],
                          str(generation / ".venv" / "bin" / "python"))
-        # Host package points at the stable absolute launcher, not ./scripts.
-        manifest = self.installs[0]
-        args = manifest["mcpServers"]["knowledge"]["args"]
-        self.assertTrue(os.path.isabs(args[0]))
-        self.assertEqual(args[1:], ["mcp", "knowledge"])
-        self.assertIn("hook stop", manifest["hooks"][1]["command"])
-        # Same admission/store paths; new parser/organizer generation paths.
-        engine = json.loads(
+        gen_adapter = Path(current["adapter_config"])
+        self.assertEqual(gen_adapter, generation / "config" / "kimi.adapter.json")
+        # Generation adapter keeps stable state paths, new interpreter.
+        gen_value = json.loads(gen_adapter.read_text())
+        self.assertEqual(gen_value["state_dir"], self.adapter["state_dir"])
+        self.assertEqual(gen_value["community_config"],
+                         self.adapter["community_config"])
+        self.assertEqual(gen_value["python"], current["python"])
+        gen_engine = json.loads(Path(gen_value["engine_config"]).read_text())
+        base_engine = json.loads(
             (self.tmp / "cfg" / "kimi.engine.json").read_text())
-        self.assertEqual(engine["admission_path"],
-                         str(self.tmp / "cfg" / "domain" / "admission.sqlite3"))
-        self.assertTrue(engine["transcript_adapter"].startswith(str(generation)))
-        self.assertTrue(engine["agent_command"][1].startswith(str(generation)))
-        # Transaction receipt for rollback exists.
+        self.assertEqual(gen_engine["admission_path"],
+                         base_engine["admission_path"])
+        self.assertEqual(gen_engine["root"], base_engine["root"])
+        self.assertTrue(gen_engine["transcript_adapter"].startswith(
+            str(generation)))
+        # Manifest points at the NEW versioned launcher; live one untouched.
+        manifest = self.installs[0][1]
+        self.assertTrue(manifest["version"].endswith(f"+mindie.{self.sha[:12]}"))
+        args = manifest["mcpServers"]["knowledge"]["args"]
+        launcher_dir = genstate.launch_dir(self.adapter) / self.sha
+        self.assertEqual(Path(args[0]), launcher_dir / "mindie_launch.py")
+        self.assertEqual(args[1:], ["mcp", "knowledge"])
+        # The front's bounded.py dependency is copied next to the launcher.
+        self.assertTrue((launcher_dir / "bounded.py").is_file())
+        bootstrap = genstate.launch_dir(self.adapter) / "bootstrap" / "mindie_launch.py"
+        self.assertEqual(bootstrap.read_text(), "# live bootstrap launcher\n")
         receipt = genstate.read_json(
             genstate.receipts_dir(self.adapter) / f"{self.sha}.json")
-        self.assertEqual(receipt["sha"], self.sha)
-        # Idle grant survives the version switch; remote task-state path stable.
-        gate = admission_mod.gate()
-        self.assertEqual(gate.resolve(token)["session"], "ses_upd")
-        self.assertTrue((remote_state / "task.json").is_file())
-        status = genstate.read_status(self.adapter)
-        self.assertEqual(status["result"], "switched")
-        self.assertTrue(status["needs_host_reload"])
+        self.assertEqual(receipt["previous"]["sha"], None)
+        self.assertTrue(genstate.read_status(self.adapter)["needs_host_reload"])
 
     def test_current_when_main_matches(self):
         self.assertEqual(self.run_check(), 0)
@@ -168,40 +182,43 @@ class UpdaterTests(unittest.TestCase):
         self.assertEqual(genstate.read_status(self.adapter)["result"], "current")
 
     def test_busy_defers_and_keeps_current(self):
-        result = self.run_check(idle=lambda adapter: {"idle": False})
-        self.assertEqual(result, 0)
+        def busy(adapter, current, deadline):
+            raise updater.Deferred("service has actual active work; switch deferred")
+
+        self.assertEqual(self.run_check(idle=busy), 0)
         self.assertEqual(self.installs, [])
         self.assertIsNone(genstate.read_current(self.adapter)["sha"])
-        self.assertEqual(genstate.read_status(self.adapter)["result"],
-                         "deferred")
+        self.assertEqual(genstate.read_status(self.adapter)["result"], "deferred")
 
-    def test_missing_stop_if_idle_defers_honestly(self):
-        def unavailable(adapter):
-            raise updater.Deferred("pinned core does not provide stop_if_idle")
-
-        result = self.run_check(idle=unavailable)
+    def test_idle_fails_closed_without_runtime(self):
+        empty = self.tmp / "empty-gen"
+        (empty / "scripts").mkdir(parents=True)
+        genstate.write_current({
+            "generation": str(empty),
+            "python": sys.executable,
+            "adapter_config": str(self.config_path),
+            "sha": None,
+        }, self.adapter)
+        result = self.run_check()
         self.assertEqual(result, 0)
         self.assertEqual(self.installs, [])
-        self.assertIsNone(genstate.read_current(self.adapter)["sha"])
         status = genstate.read_status(self.adapter)
         self.assertEqual(status["result"], "deferred")
-        self.assertIn("stop_if_idle", status["error"])
+        self.assertIn("runtime import failed", status["error"])
 
     def test_shared_lock_blocks_exclusive_switch(self):
         holder = subprocess.Popen(
             [sys.executable, "-c",
              "import sys, time; sys.path.insert(0, " + repr(str(SCRIPTS)) + ");"
              "import genstate;"
-             "lock = genstate.OperationLock();"
-             "held = lock.shared(timeout=5); held.__enter__();"
-             "print('held', flush=True); time.sleep(4)"],
+             "held = genstate.OperationLock().shared(timeout=5);"
+             "held.__enter__(); print('held', flush=True); time.sleep(4)"],
             stdout=subprocess.PIPE, text=True,
             env=dict(os.environ, MINDIE_KIMI_CONFIG=str(self.config_path)),
         )
         try:
             self.assertEqual(holder.stdout.readline().strip(), "held")
-            result = self.run_check(lock_timeout=0.5)
-            self.assertEqual(result, 0)
+            self.assertEqual(self.run_check(lock_timeout=0.5), 0)
             self.assertEqual(self.installs, [])
             self.assertIsNone(genstate.read_current(self.adapter)["sha"])
             self.assertEqual(genstate.read_status(self.adapter)["result"],
@@ -210,53 +227,218 @@ class UpdaterTests(unittest.TestCase):
             holder.terminate()
             holder.wait(timeout=5)
 
+    def test_check_lock_serializes_checks(self):
+        holder = subprocess.Popen(
+            [sys.executable, "-c",
+             "import sys, time; sys.path.insert(0, " + repr(str(SCRIPTS)) + ");"
+             "import genstate;"
+             "held = genstate.check_lock();"
+             "held.__enter__(); print('held', flush=True); time.sleep(4)"],
+            stdout=subprocess.PIPE, text=True,
+            env=dict(os.environ, MINDIE_KIMI_CONFIG=str(self.config_path)),
+        )
+        try:
+            self.assertEqual(holder.stdout.readline().strip(), "held")
+            self.assertEqual(self.run_check(), 0)
+            self.assertEqual(self.installs, [])
+            self.assertIsNone(genstate.read_current(self.adapter)["sha"])
+        finally:
+            holder.terminate()
+            holder.wait(timeout=5)
+
     def test_interrupted_staging_suppresses_and_recovers(self):
-        def broken(generation):
+        calls = []
+        updater._feed_sync = lambda adapter, deadline: calls.append("sync")
+
+        def broken(generation, deadline):
             raise RuntimeError("venv creation interrupted")
 
-        result = self.run_check(build=broken)
-        self.assertEqual(result, 1)
+        self.assertEqual(self.run_check(build=broken), 1)
         self.assertEqual(self.installs, [])
         failed = genstate.read_json(genstate.failed_path(self.adapter))
         self.assertEqual(failed["sha"], self.sha)
         leftovers = [p for p in genstate.generations_dir(self.adapter).iterdir()
-                     if p.name.startswith(".staging")]
+                     if p.name.startswith(".staging") or
+                     (p.is_dir() and not (p / updater.COMPLETE).exists())]
         self.assertEqual(leftovers, [])
         self.assertIsNone(genstate.read_current(self.adapter)["sha"])
-        # Same failed revision is suppressed; installer is never called.
+        # Feed sync is independent: it ran even though the candidate failed.
+        self.assertEqual(calls, ["sync"])
+        # Same failed revision suppressed; installer never called.
         self.assertEqual(self.run_check(), 0)
         self.assertEqual(self.installs, [])
         self.assertEqual(genstate.read_status(self.adapter)["result"],
                          "suppressed-known-failed")
-        # A newer revision is not suppressed.
-        src = self.tmp / "remote-src"
-        (src / "marker.txt").write_text("two")
-        git(["add", "-A"], src)
-        git(["commit", "-m", "two"], src)
-        git(["push", str(self.bare), "main"], src)
+        # Newer revision is not suppressed; explicit recovery re-checks.
+        commit(self.src, self.bare, "two")
         self.assertEqual(self.run_check(), 0)
         self.assertEqual(len(self.installs), 1)
-        # Explicit recovery re-checks a previously failed exact revision.
-        (src / "marker.txt").write_text("three")
-        git(["add", "-A"], src)
-        git(["commit", "-m", "three"], src)
-        git(["push", str(self.bare), "main"], src)
+        commit(self.src, self.bare, "three")
         self.assertEqual(self.run_check(build=broken), 1)
         self.assertEqual(self.run_check(force=True), 0)
         self.assertEqual(len(self.installs), 2)
 
-    def test_install_failure_rolls_back_configs(self):
-        def bad_install(adapter, package):
-            raise updater.CheckFailed("native install rejected")
+    def test_failed_switch_restores_pointer_and_native_package(self):
+        self.assertEqual(self.run_check(), 0)
+        first = genstate.read_current(self.adapter)
+        package_a = self.installs[0][0]
+        commit(self.src, self.bare, "two")
+        real_write = updater.write_current
+        attempts = []
 
-        result = self.run_check(install=bad_install)
-        self.assertEqual(result, 1)
-        self.assertIsNone(genstate.read_current(self.adapter)["sha"])
-        engine = json.loads((self.tmp / "cfg" / "kimi.engine.json").read_text())
-        self.assertTrue(engine["transcript_adapter"].endswith(
-            str(Path("scripts") / "transcript.py")))
-        adapter = json.loads(self.config_path.read_text())
-        self.assertEqual(adapter["python"], sys.executable)
+        def flaky(value, config=None):
+            attempts.append(value)
+            if len(attempts) == 1:
+                raise OSError("disk hiccup during pointer flip")
+            return real_write(value, config)
+
+        updater.write_current = flaky
+        try:
+            self.assertEqual(self.run_check(), 1)
+        finally:
+            updater.write_current = real_write
+        current = genstate.read_current(self.adapter)
+        self.assertEqual(current["sha"], first["sha"])
+        self.assertEqual(current["adapter_config"], first["adapter_config"])
+        # Rollback reinstalled the previous native host package (readback
+        # path), and the failure is recorded, never claimed as success.
+        self.assertEqual(self.installs[-1][0], package_a)
+        status = genstate.read_status(self.adapter)
+        self.assertEqual(status["result"], "failed")
+        self.assertIn("restored", status["rollback"])
+
+    def test_feed_sync_uses_current_interpreter_and_config(self):
+        updater._feed_sync = self._sync
+        self.assertEqual(self.run_check(), 0)
+        recorded = []
+        real_run = updater.bounded_run
+
+        def spy(argv, stdin="", **kw):
+            recorded.append(argv)
+            return ""
+
+        updater.bounded_run = spy
+        try:
+            updater._feed_sync(self.adapter, time.monotonic() + 60)
+        finally:
+            updater.bounded_run = real_run
+        current = genstate.read_current(self.adapter)
+        argv = recorded[0]
+        self.assertEqual(argv[0], current["python"])
+        self.assertEqual(argv[1:4], ["-m", "mindie_knowledge.loop.cli", "sync"])
+        self.assertEqual(argv[4], "--config")
+        gen_adapter = json.loads(Path(current["adapter_config"]).read_text())
+        self.assertEqual(argv[5], gen_adapter["engine_config"])
+        self.assertEqual(genstate.read_status(self.adapter)["feed_sync"], "ok")
+
+
+    def test_uncertain_native_outcome_rolls_back_under_same_lock(self):
+        self.assertEqual(self.run_check(), 0)
+        first = genstate.read_current(self.adapter)
+        package_a = self.installs[0][0]
+        commit(self.src, self.bare, "two")
+        calls = []
+
+        def uncertain(adapter, package, deadline, reserve=0.0):
+            calls.append((Path(package), reserve))
+            if len(calls) == 1:
+                # Install attempt mutated native state, then raised without
+                # a verdict: rollback must still restore the previous package.
+                raise RuntimeError("connection lost after POST")
+            # Rollback reinstall: the exclusive lock must still be held.
+            with self.assertRaises(genstate.LockTimeout):
+                with genstate.OperationLock(self.adapter).exclusive(timeout=0.1):
+                    pass
+            return self.fake_install(adapter, package, deadline, reserve)
+
+        self.assertEqual(self.run_check(install=uncertain), 1)
+        self.assertEqual(calls[1][0], package_a)
+        # Rollback's reserved window ends where the feed reserve begins.
+        self.assertEqual(calls[1][1], updater.FEED_BUDGET)
+        current = genstate.read_current(self.adapter)
+        self.assertEqual(current["sha"], first["sha"])
+        status = genstate.read_status(self.adapter)
+        self.assertEqual(status["result"], "failed")
+        self.assertIn("restored", status["rollback"])
+
+    def test_failed_restore_is_reported_honestly(self):
+        self.assertEqual(self.run_check(), 0)
+        commit(self.src, self.bare, "two")
+
+        def broken(adapter, package, deadline, reserve=0.0):
+            raise RuntimeError("native API unreachable")
+
+        self.assertEqual(self.run_check(install=broken), 1)
+        status = genstate.read_status(self.adapter)
+        self.assertIn("NOT proven restored", status["rollback"])
+
+    def test_pointer_restore_failure_is_reported(self):
+        self.assertEqual(self.run_check(), 0)
+        first = genstate.read_current(self.adapter)
+        commit(self.src, self.bare, "two")
+        real_write = updater.write_current
+        calls = []
+
+        def flaky(value, config=None):
+            calls.append(value.get("sha"))
+            if len(calls) <= 2:
+                raise OSError("write failed")
+            return real_write(value, config)
+
+        updater.write_current = flaky
+        try:
+            self.assertEqual(self.run_check(), 1)
+        finally:
+            updater.write_current = real_write
+        self.assertEqual(genstate.read_current(self.adapter)["sha"],
+                         first["sha"])
+        status = genstate.read_status(self.adapter)
+        self.assertTrue(status["pointer_restore"].startswith(
+            "pointer restore FAILED"))
+
+    def test_feed_sync_skips_truthfully_when_budget_exhausted(self):
+        updater._feed_sync = self._sync
+        calls = []
+        real_run = updater.bounded_run
+        updater.bounded_run = lambda *a, **k: calls.append(a) or ""
+        try:
+            updater._feed_sync(self.adapter, time.monotonic() - 1)
+        finally:
+            updater.bounded_run = real_run
+        self.assertEqual(calls, [])
+        self.assertEqual(genstate.read_status(self.adapter)["feed_sync"],
+                         "skipped: check budget exhausted")
+
+    def test_exact_readback_rejects_wrong_record(self):
+        package = self.tmp / "pkg"
+        package.mkdir()
+        write_json(package / "kimi.plugin.json",
+                   dict(MANIFEST, version="0.1.0+mindie.abc"))
+        base = dict(id="mindie-agent", version="0.1.0+mindie.abc",
+                    enabled=True, state="ok", hasErrors=False,
+                    originalSource=str(package.resolve()))
+
+        def report(record):
+            return {"install": {"body": {"data": dict(base)}},
+                    "after": {"body": {"data": {"plugins": [record]}}}}
+
+        manifest = json.loads((package / "kimi.plugin.json").read_text())
+        updater._verify_native_record(report(dict(base)), manifest,
+                                      package.resolve())
+        for mutation in (
+            dict(base, version="0.1.0"),
+            dict(base, enabled=False),
+            dict(base, state="error"),
+            dict(base, originalSource="/elsewhere"),
+        ):
+            with self.assertRaises(updater.CheckFailed):
+                updater._verify_native_record(report(mutation), manifest,
+                                              package.resolve())
+        with self.assertRaises(updater.CheckFailed):
+            updater._verify_native_record(
+                {"install": {"body": {"data": dict(base)}},
+                 "after": {"body": {"data": {"plugins": []}}}},
+                manifest, package.resolve())
 
 
 if __name__ == "__main__":

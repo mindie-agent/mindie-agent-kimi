@@ -28,7 +28,7 @@ PROBE_MODULES = (
     "mindie_knowledge.loop.engine",
     "remote_dev.mcp.tools",
 )
-PROBE_SCRIPT = """
+_PROBE_TEMPLATE = """
 import importlib
 missing = []
 for name in {modules!r}:
@@ -36,8 +36,30 @@ for name in {modules!r}:
         importlib.import_module(name)
     except Exception as exc:
         missing.append(f"{{name}} ({{type(exc).__name__}}: {{exc}})")
+if not missing:
+    from mindie_knowledge.loop.engine import Engine
+    from mindie_knowledge.loop import cli
+    if not callable(getattr(Engine, "stop_if_idle", None)):
+        missing.append("core engine lacks the stop_if_idle API")
+    if not callable(getattr(cli, "load_transcript_adapter", None)):
+        missing.append("core cli lacks load_transcript_adapter")
+if not missing:
+    try:
+        module = cli.load_transcript_adapter({{"transcript_adapter": {parser!r}}})
+        if module is None:
+            missing.append("transcript adapter did not load")
+    except Exception as exc:
+        missing.append(f"transcript adapter load failed ({{type(exc).__name__}}: {{exc}})")
 print("MISSING: " + "; ".join(missing) if missing else "OK")
-""".format(modules=list(PROBE_MODULES))
+"""
+
+
+def probe_script(parser: str) -> str:
+    return _PROBE_TEMPLATE.format(modules=list(PROBE_MODULES), parser=parser)
+
+
+PROBE_SCRIPT = probe_script(
+    str((PLUGIN_ROOT / "scripts" / "transcript.py").resolve()))
 
 
 def probe_runtime(python):
@@ -129,9 +151,36 @@ def write_community(path, community):
     return "enabled"
 
 
+def build_bootstrap_runtime(domain_root: Path) -> str:
+    """Fresh install builds its own pinned venv from runtime-requirements.txt;
+    no hand-created venv required."""
+    venv = domain_root / "bootstrap-venv"
+    python = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    if python.exists():
+        return str(python)
+    env = dict(
+        os.environ,
+        PIP_RETRIES="0",
+        PIP_NO_INPUT="1",
+        PIP_DISABLE_PIP_VERSION_CHECK="1",
+        GIT_TERMINAL_PROMPT="0",
+    )
+    run([sys.executable, "-m", "venv", str(venv)], "", timeout=180)
+    run(
+        [str(python), "-m", "pip", "install", "-r",
+         str(PLUGIN_ROOT / "runtime-requirements.txt")],
+        "",
+        timeout=600,
+        max_output=512 * 1024,
+        env=env,
+    )
+    return str(python)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--knowledge-python", required=True)
+    parser.add_argument("--knowledge-python", default=None,
+                        help="operator override; default builds a pinned venv")
     parser.add_argument("--config", type=Path, default=default_config_path())
     parser.add_argument(
         "--root",
@@ -154,14 +203,21 @@ def main():
     parser.add_argument("--no-schedule", action="store_true",
                         help="do not register the automatic update check")
     args = parser.parse_args()
-    python = str(Path(args.knowledge_python).expanduser())
-    if not os.path.isabs(python):
-        python = str(Path(python).absolute())
-    probe_runtime(python)
-    if not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", args.domain):
-        parser.error("invalid domain name")
+    if sys.version_info < (3, 11):
+        parser.error("Python 3.11+ is required")
     community = community_settings(args, parser)
     config = args.config.expanduser().absolute()
+    domain_root = args.root.expanduser().absolute() / "kimi"
+    if args.knowledge_python:
+        python = str(Path(args.knowledge_python).expanduser())
+        if not os.path.isabs(python):
+            python = str(Path(python).absolute())
+        probe_runtime(python)
+    else:
+        python = build_bootstrap_runtime(domain_root)
+        probe_runtime(python)
+    if not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", args.domain):
+        parser.error("invalid domain name")
     engine_config = config.with_name(config.stem + ".engine.json")
     community_config = config.with_name(config.stem + ".community.json")
     if config.exists() or engine_config.exists():
@@ -172,7 +228,6 @@ def main():
         sharing = write_community(community_config, community)
         print(json.dumps(dict(config=str(config), sharing=sharing, updated="community"), indent=2))
         return
-    domain_root = args.root.expanduser().absolute() / "kimi"
     admission = domain_root / "admission.sqlite3"
     transcript = (PLUGIN_ROOT / "scripts" / "transcript.py").resolve()
     organizer = (PLUGIN_ROOT / "scripts" / "organizer.py").resolve()
@@ -202,14 +257,31 @@ def main():
     )
     if args.kimi_home:
         adapter_value["kimi_home"] = str(args.kimi_home.expanduser().absolute())
+    else:
+        adapter_value["kimi_home"] = str(
+            Path(os.environ.get("KIMI_CODE_HOME") or Path.home() / ".kimi-code")
+            .expanduser().absolute()
+        )
     if args.update_remote:
         adapter_value["update_remote"] = args.update_remote
     write_private(config, adapter_value)
     sharing = write_community(community_config, community)
     import genstate
+    import updater
 
+    # Bootstrap gets a REAL retained host package on the stable front, so
+    # first native install and any later rollback target an actual package.
+    bootstrap_package = updater.build_host_package(
+        PLUGIN_ROOT, adapter_value, "bootstrap",
+        package_dir=genstate.update_dir(adapter_value) / "bootstrap-package",
+    )
     genstate.write_current(
-        {"generation": str(PLUGIN_ROOT), "python": python, "sha": None},
+        {
+            "generation": str(PLUGIN_ROOT),
+            "python": python,
+            "adapter_config": str(config),
+            "sha": None,
+        },
         adapter_value,
     )
     scheduled = "skipped"
@@ -218,8 +290,6 @@ def main():
         try:
             import contextlib
             import io
-
-            import updater
 
             with contextlib.redirect_stdout(io.StringIO()):
                 code = updater.install_schedule()
@@ -233,6 +303,7 @@ def main():
                 engine_config=str(engine_config),
                 community_config=str(community_config),
                 admission_path=str(admission),
+                native_package=str(bootstrap_package),
                 domain=args.domain,
                 sharing=sharing,
                 update_schedule=scheduled,

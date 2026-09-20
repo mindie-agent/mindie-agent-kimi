@@ -1,0 +1,6 @@
+{"type": "metadata", "protocol_version": "1.5", "created_at": 1789911712000, "time": 1789911712000}
+{"type": "context.append_message", "time": 1789911712500, "message": {"role": "user", "content": [{"type": "text", "text": "fix the hang"}], "origin": {"kind": "user"}}}
+{"type": "context.append_loop_event", "time": 1789911713000, "event": {"type": "tool.call", "name": "read", "toolCallId": "call_src", "args": {"path": "log.txt"}}}
+{"type": "context.append_loop_event", "time": 1789911713500, "event": {"type": "tool.result", "toolCallId": "call_src", "result": {"output": "ok"}}}
+{"type": "context.append_loop_event", "time": 1789911714000, "event": {"type": "content.part", "part": {"type": "text", "text": "check CANN"}}}
+{"type": "turn.ended", "time": 1789911720000}

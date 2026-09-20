@@ -102,12 +102,14 @@ def status_payload(session=None):
         if lease is None:
             payload["this_session"] = dict(activated=False)
         else:
+            failures = int(lease.get("failures") or 0)
+            paused = bool(lease.get("paused")) or (not lease.get("enabled")) or failures >= 3
             payload["this_session"] = dict(
                 activated=True,
-                enabled=bool(lease.get("enabled")),
-                failures=lease.get("failures", 0),
+                enabled=bool(lease.get("enabled")) and not paused,
+                failures=failures,
                 project_root=lease.get("project_root"),
-                paused=False,
+                paused=paused,
             )
     stored = payload.get("first_use")
     if stored in {"read-only", "later", "contribute"}:
@@ -144,39 +146,37 @@ def _init_choice_from_native(arguments):
     return None
 
 
-def op_init(session, cwd):
-    found = require_current_plugin_command(session, "init")
-    native_choice = _init_choice_from_native(found.get("arguments"))
-    if native_choice is not None:
-        if not consume_activation_id(found["activation_id"]) and not _configured():
-            payload = status_payload(session)
-            payload["already"] = True
-            return payload
-        if _configured():
-            from admission import gate
-
-            lease = gate().active_lease(session)
-            token = lease.get("token") if lease else None
-            if token:
-                gate().claim(session, "plugin_command", found["activation_id"], token=token)
-        set_first_use(native_choice)
-        payload = status_payload(session)
-        payload["first_use"] = native_choice
-        payload["choices"] = []
-        payload["repeat"] = True
+def _apply_native_choice(payload, native_choice):
+    if native_choice is None:
         return payload
-    if not _configured():
-        if not consume_activation_id(found["activation_id"]):
-            payload = status_payload(session)
-            payload["already"] = True
-            return payload
-        return status_payload(session)
+    stored = set_first_use(native_choice)
+    payload["first_use"] = stored
+    payload["choices"] = []
+    payload["repeat"] = True
+    return payload
+
+
+def _configured_init_activation(session, cwd, activation_id):
+    """Explicit init activation for a configured task. Never auto-activates."""
     from admission import activate, gate
     from knowledge_service import ensure_service
 
     root = _project_root(session, cwd)
-    lease = activate(session, project_root=root, root_session=session)
-    if gate().claim(session, "plugin_command", found["activation_id"], token=lease["token"]) is not True:
+    try:
+        lease = activate(session, project_root=root, root_session=session)
+    except ValueError as exc:
+        text = str(exc)
+        if "paused" not in text.lower():
+            raise
+        payload = status_payload(session)
+        payload["activation"] = dict(
+            session=session,
+            enabled=False,
+            paused=True,
+            hint=text[:300],
+        )
+        return payload
+    if gate().claim(session, "plugin_command", activation_id, token=lease["token"]) is not True:
         payload = status_payload(session)
         payload["already"] = True
         return payload
@@ -186,15 +186,31 @@ def op_init(session, cwd):
     except Exception as exc:
         service = f"not-started:{type(exc).__name__}"
     payload = status_payload(session)
+    paused = bool(lease.get("paused"))
     payload["activation"] = dict(
         session=lease["session"],
-        enabled=lease["enabled"],
+        enabled=bool(lease.get("enabled")) and not paused,
         failures=lease.get("failures", 0),
         project_root=lease["project_root"],
-        paused=False,
+        paused=paused,
         service=service,
     )
     return payload
+
+
+def op_init(session, cwd):
+    found = require_current_plugin_command(session, "init")
+    native_choice = _init_choice_from_native(found.get("arguments"))
+    if not _configured():
+        if not consume_activation_id(found["activation_id"]):
+            payload = status_payload(session)
+            payload["already"] = True
+            return payload
+        if native_choice is None:
+            return status_payload(session)
+        return _apply_native_choice(status_payload(session), native_choice)
+    payload = _configured_init_activation(session, cwd, found["activation_id"])
+    return _apply_native_choice(payload, native_choice)
 
 
 def op_choose(session, choice):

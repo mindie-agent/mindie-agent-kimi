@@ -169,3 +169,85 @@ class McpTests(unittest.TestCase):
                 proc.stdin.close()
                 proc.kill()
                 proc.wait(timeout=2)
+
+    def test_once_tools_list_does_not_require_initialize(self):
+        with tempfile.TemporaryDirectory() as raw:
+            config = make_config(Path(raw))
+            req = dict(jsonrpc="2.0", id=7, method="tools/list")
+            result = subprocess.run(
+                [sys.executable, str(SCRIPTS / "mcp_server.py"), "knowledge", "--once"],
+                input=json.dumps(req) + "\n",
+                text=True,
+                capture_output=True,
+                timeout=8,
+                env=env_for(config),
+                cwd=str(SCRIPTS.parent),
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            lines = [line for line in result.stdout.splitlines() if line.strip()]
+            self.assertEqual(len(lines), 1, result.stdout)
+            payload = json.loads(lines[0])
+            self.assertEqual(payload["id"], 7)
+            names = {item["name"] for item in payload["result"]["tools"]}
+            self.assertIn("mindie_entry", names)
+
+    def test_once_rejects_replayed_nonce(self):
+        with tempfile.TemporaryDirectory() as raw:
+            config = make_config(Path(raw))
+            os.environ["MINDIE_KIMI_CONFIG"] = str(config)
+            sys.path.insert(0, str(SCRIPTS))
+            import identity
+
+            args = dict(query="npu", request_nonce="nonce-once1")
+            identity.publish_nonce_bind(
+                "ses_once",
+                "nonce-once1",
+                "mcp__plugin-mindie-agent_knowledge__knowledge_query",
+                "tool_once",
+                args,
+            )
+            env = env_for(config)
+            first = subprocess.run(
+                [sys.executable, str(SCRIPTS / "mcp_server.py"), "knowledge", "--once"],
+                input=json.dumps(
+                    dict(
+                        jsonrpc="2.0",
+                        id=11,
+                        method="tools/call",
+                        params=dict(name="knowledge_query", arguments=args),
+                    )
+                )
+                + "\n",
+                text=True,
+                capture_output=True,
+                timeout=8,
+                env=env,
+                cwd=str(SCRIPTS.parent),
+            )
+            self.assertEqual(first.returncode, 0, first.stderr)
+            first_payload = json.loads(first.stdout.strip().splitlines()[0])
+            self.assertEqual(first_payload["id"], 11)
+            second = subprocess.run(
+                [sys.executable, str(SCRIPTS / "mcp_server.py"), "knowledge", "--once"],
+                input=json.dumps(
+                    dict(
+                        jsonrpc="2.0",
+                        id=12,
+                        method="tools/call",
+                        params=dict(name="knowledge_query", arguments=args),
+                    )
+                )
+                + "\n",
+                text=True,
+                capture_output=True,
+                timeout=8,
+                env=env,
+                cwd=str(SCRIPTS.parent),
+            )
+            self.assertEqual(second.returncode, 0, second.stderr)
+            lines = [line for line in second.stdout.splitlines() if line.strip()]
+            self.assertEqual(len(lines), 1, second.stdout)
+            payload = json.loads(lines[0])
+            self.assertEqual(payload["id"], 12)
+            self.assertTrue(payload["result"]["isError"])
+            self.assertIn("replay", payload["result"]["content"][0]["text"].lower())

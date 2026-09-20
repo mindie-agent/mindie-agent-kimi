@@ -8,80 +8,77 @@ Release-channel tracking is a later extension of the same check; only
 
 ## How it works
 
-- The OS scheduler runs `scripts/updater.py check` every 5 minutes
-  (macOS: launchd agent `agent.mindie.kimi-update`; Windows: `schtasks`
-  registration code exists but is **not natively verified**). There is
-  no daemon, no model call, and no SessionStart work.
-- One check resolves remote main to one SHA, stages that exact revision
-  into a new immutable directory `update/generations/<sha>` with its own
-  pinned venv built from `runtime-requirements.txt` (knowledge and
-  remote-dev are pinned to full commit SHAs; `@main` is refused). Old
-  scripts are never mixed with a new interpreter.
-- The installed Kimi manifest points at absolute stable launchers
-  (`update/launch/mindie_launch.py`) outside Kimi's managed plugin copy.
-  The launcher resolves the current generation through the atomic
-  `update/current.json` pointer and dispatches each call with that
-  generation's own interpreter. Hooks hold the shared operation lock for
-  their short run; the long-lived MCP front selects its generation under
-  the shared lock and then execs it, so it never blocks updates.
-  Already-loaded sessions keep their old generation callable because old
-  generation directories are kept.
-- The switch prepares the candidate fully, then under the exclusive
-  operation lock calls the shared core authenticated RPC `stop_if_idle`.
-  Only actual active capture/model/publication/feed/RPC work blocks;
-  unknown/pending durable receipts and idle task grants do not. Busy or
-  unavailable means: leave the current generation intact and defer to
-  the next scheduled check. Remote task state lives under the stable
-  per-task `state_dir/remote/<session>` path, so old job IDs remain
-  pollable/stoppable after a switch.
-- Install/update goes through Kimi's native plugin API
-  (`scripts/install_kimi_plugin.py`, authenticated loopback
-  `POST /api/v1/plugins` + GET readback of name/version). The native
-  installer copies the built host package; a local-path install is not a
-  live symlink. A small transaction receipt per revision is kept in
-  `update/receipts/` and configs roll back if the swap fails. Old
-  callable entrypoints and rollback generations are not deleted during a
-  check; there is no retention quota — clean up explicitly only when safe.
+- The OS scheduler runs the stable front in updater mode every 5 minutes
+  (macOS: launchd agent `agent.mindie.kimi-update`, written via plistlib;
+  Windows: `schtasks` registration code exists but is **not natively
+  verified**). No daemon, no model call, no SessionStart work.
+- One check is serialized by a nonblocking `check.lock` and bounded by
+  one absolute deadline (240s). It resolves remote main to one SHA and
+  stages that exact revision into `update/generations/<sha>`: immutable
+  code, its own pinned venv built at the final path from
+  `runtime-requirements.txt` (full commit SHAs only; `@main` refused;
+  pip runs with `PIP_RETRIES=0`, no prompts), plus its own
+  adapter/engine JSON under `config/`. Admission, community, state_dir
+  and first-use paths stay stable; parser/organizer/interpreter move
+  with the generation.
+- `update/current.json` is ONE atomic committed tuple
+  `{generation, python, adapter_config, sha}`. The launcher sets
+  `MINDIE_KIMI_CONFIG` to the tuple's adapter config per child, so code,
+  interpreter and config always come from the same committed generation.
+- The host package manifest points at a NEW versioned launcher path per
+  revision (`update/launch/<sha>/mindie_launch.py`); staging never
+  mutates live entrypoints, and prior launcher paths stay callable. The
+  bootstrap launcher lives at `update/launch/bootstrap/`.
+- The switch runs under the exclusive operation lock: core
+  `stop_if_idle` is called through the CURRENT committed interpreter
+  (fails closed on import/RPC/API problems; a truly absent service
+  endpoint is idle; unknown/pending receipts and idle grants never
+  block). Then the native plugin API install with exact identifier, version, enabled state and source-path
+  readback; uncertain outcomes are reconciled against the native
+  registry before any verdict. Only then does `current.json` flip.
+  Rollback restores the previous pointer AND the previous native
+  package/readback, recorded in status, never claimed as success.
+- Feed sync is independent: `mindie_knowledge.loop.cli sync --config
+  <engine>` runs with the current committed interpreter under the shared
+  operation lock even when the plugin candidate fails or is unchanged.
+  No organizer, no model, no capture.
 
 ## Commands
 
 ```
 python scripts/updater.py check      # one bounded check (what the scheduler runs)
-python scripts/updater.py status     # offline: current generation, last result/error
+python scripts/updater.py status     # offline: current tuple, last result/error
 python scripts/updater.py recover    # explicit recovery: clear failed-revision suppression, re-check
 python scripts/updater.py install-schedule / uninstall-schedule
 ```
 
-`setup.py` registers the schedule by default (`--no-schedule` to skip)
-and bootstraps `current.json` at the source tree.
+`setup.py` builds its own pinned venv by default (`--knowledge-python`
+is an operator override; Python 3.11+ required), persists the explicit
+Kimi home (default `$KIMI_CODE_HOME` or `~/.kimi-code`), writes the
+bootstrap launcher and `current.json` tuple, and registers the schedule
+unless `--no-schedule`.
 
 ## Failure behaviour
 
 One bounded check, no write retry loop. `update/status.json` records
-current/candidate SHA, last result and error, and `needs_host_reload`
-after a successful switch. A failed exact revision is recorded in
+current/candidate SHA, last result and error, `feed_sync`, `rollback`,
+and `needs_host_reload`. A failed exact revision is recorded in
 `update/failed.json` and not reinstalled until `recover` or a newer
 revision; read-only main discovery continues. An offline check failure
 leaves the old version fully callable. Success is never inferred from a
-ready HTTP port, pip's exit code, or copied files — the runtime probe,
-native readback, and atomic pointer flip decide.
+ready HTTP port, pip's exit code, or copied files.
 
 ## Host reload boundary
 
-After a switch, MCP and hook dispatch use the new generation for new
-calls immediately. Native Skills, slash-command definitions, and hook
-definitions in the manifest are loaded by the Kimi host; existing loaded
-sessions do not pick those up until the host reloads/restarts. The
-updater reports `needs_host_reload: true` rather than claiming live
-sessions changed.
+After a switch, MCP and hook dispatch use the new generation per call.
+Already-loaded entrypoint paths stay callable and select the committed
+generation for each new operation. Native Skills, slash-command, MCP tool
+definitions and hook definitions refresh according to the Kimi host lifecycle; the updater reports
+`needs_host_reload: true` rather than claiming live sessions changed.
 
 ## Known gaps
 
-- The pinned core in `runtime-requirements.txt` (`knowledge@6155846`)
-  is an intermediate candidate; root supplies the final core commit. The
-  installed acceptance core does not yet expose `stop_if_idle`, so a
-  real switch currently defers honestly with
-  "pinned core does not provide stop_if_idle".
 - Windows task registration and lock parity are implemented but not
   natively verified; Windows runs scripts via `python` args, not
   shebangs.
+- Release-channel tracking is not yet implemented (main only).

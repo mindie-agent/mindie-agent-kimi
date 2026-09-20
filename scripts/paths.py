@@ -89,10 +89,10 @@ def state_dir(config=None) -> Path:
 
 
 def first_use_path() -> Path:
-    try:
-        return config_path().with_name("kimi.first-use.json")
-    except Exception:
-        return default_state_dir().parent / "kimi.first-use.json"
+    """Stable first-use state. Lives under state_dir, NOT beside the
+    (possibly generation-specific) adapter config, so it survives
+    generation switches."""
+    return state_dir() / "kimi.first-use.json"
 
 
 def kimi_home_from_env() -> Path | None:

@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import signal
 import socket
 import subprocess
 import sys
@@ -45,6 +44,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--kimi-home", type=Path, required=True)
     parser.add_argument("--plugin-root", type=Path, default=PLUGIN_ROOT)
+    parser.add_argument("--readback", action="store_true",
+                        help="only GET the native plugin registry, no install")
     args = parser.parse_args()
     home = args.kimi_home.expanduser().resolve()
     home.mkdir(parents=True, exist_ok=True)
@@ -62,13 +63,15 @@ def main():
     report = {}
     try:
         with log.open("wb") as out:
+            # No start_new_session: the owned web server stays in THIS
+            # helper's process group, so an outer supervised kill (e.g.
+            # bounded.run deadline) terminates helper and server together.
             process = subprocess.Popen(
                 [KIMI, "web", "--no-open", "--port", str(port)],
                 cwd=str(home),
                 env=env,
                 stdout=out,
                 stderr=out,
-                start_new_session=True,
             )
             token_path = home / "server.token"
             deadline = time.monotonic() + 20
@@ -86,24 +89,31 @@ def main():
             if not ready:
                 raise SystemExit("native Kimi plugin API did not become ready")
             token = token_path.read_text().strip()
-            report["install"] = call(
-                port, token, "POST", "/api/v1/plugins", {"source": source}
-            )
+            if not args.readback:
+                report["install"] = call(
+                    port, token, "POST", "/api/v1/plugins", {"source": source}
+                )
             report["after"] = call(port, token, "GET", "/api/v1/plugins")
     finally:
         if process is not None:
+            # Clean up ONLY our own direct server child. No killpg: the
+            # helper's group may contain unrelated processes, and
+            # os.killpg is unavailable on Windows.
             try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except (OSError, ProcessLookupError):
+                process.terminate()
+            except OSError:
                 pass
             try:
                 process.wait(timeout=3)
             except subprocess.TimeoutExpired:
                 try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except (OSError, ProcessLookupError):
+                    process.kill()
+                except OSError:
                     pass
                 process.wait(timeout=3)
+    if args.readback:
+        print(json.dumps(report, indent=2))
+        return
     body = (report.get("install") or {}).get("body") or {}
     data = body.get("data") or {}
     if data.get("hasErrors") or data.get("id") != "mindie-agent":

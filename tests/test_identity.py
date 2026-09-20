@@ -71,6 +71,15 @@ class IdentityTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 identity.require_current_plugin_command("ses_quote", "init", kimi_home=home)
 
+    def test_session_index_read_is_bounded(self):
+        with tempfile.TemporaryDirectory() as raw:
+            home = Path(raw)
+            write_session(home, "ses_bound", [{"type": "metadata", "created_at": 1}])
+            index = home / "session_index.jsonl"
+            index.write_bytes(b"x" * (8 * 1024 * 1024 + 64))
+            found = identity.locate_session_dir("ses_bound", kimi_home=home)
+            self.assertEqual(found.name, "ses_bound")
+
     def test_require_current_plugin_command_uses_latest_opening(self):
         with tempfile.TemporaryDirectory() as raw:
             home = Path(raw)

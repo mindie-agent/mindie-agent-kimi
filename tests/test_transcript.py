@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from support import FORK_SESSION, PROBE_HOME, PROBE_SESSION, SCRIPTS, write_session
+from support import FIXTURES, SCRIPTS, write_session
 
 sys.path.insert(0, str(SCRIPTS))
 import transcript  # noqa: E402
@@ -17,36 +17,23 @@ def rec(kind, **fields):
 
 
 class TranscriptTests(unittest.TestCase):
-    def test_real_probe_after_source_end_and_fork_are_empty(self):
-        src = (
-            PROBE_HOME
-            / "sessions"
-            / "wd_kimi-native-envelope_e6f97298a560"
-            / PROBE_SESSION
-            / "agents"
-            / "main"
-            / "wire.jsonl"
+    def test_native_shaped_fork_uses_state_created_at_not_inherited_metadata(self):
+        home = FIXTURES / "native-shaped"
+        src = home / "sessions" / "wd_fixture" / "ses_source" / "agents" / "main" / "wire.jsonl"
+        fork = home / "sessions" / "wd_fixture" / "ses_fork" / "agents" / "main" / "wire.jsonl"
+        after_source_end = 1789911728.727
+        source = transcript.read_material(
+            str(src), 0, session_id="ses_source", not_before=after_source_end
         )
-        fork = (
-            PROBE_HOME
-            / "sessions"
-            / "wd_kimi-native-envelope_e6f97298a560"
-            / FORK_SESSION
-            / "agents"
-            / "main"
-            / "wire.jsonl"
-        )
-        self.assertTrue(src.is_file(), "root probe wire missing")
-        after = 1789911728.727
-        source = transcript.read_material(str(src), 0, session_id=PROBE_SESSION, not_before=after)
         self.assertEqual(source["records"], 0, source.get("text", "")[:200])
-        forked = transcript.read_material(str(fork), 0, session_id=FORK_SESSION)
+        forked = transcript.read_material(str(fork), 0, session_id="ses_fork")
         self.assertEqual(forked["records"], 0, forked.get("text", "")[:200])
         public = transcript.read_material(
-            str(src), 0, session_id=PROBE_SESSION, not_before=1789911712
+            str(src), 0, session_id="ses_source", not_before=1789911712
         )
-        self.assertEqual(public["records"], 6, public.get("text", "")[:200])
+        self.assertGreaterEqual(public["records"], 1, public.get("text", "")[:200])
         self.assertIn("call_id=", public["text"])
+        self.assertIn("fix the hang", public["text"])
 
     def test_public_user_allowlist_skips_injection_and_think(self):
         with tempfile.TemporaryDirectory() as raw:

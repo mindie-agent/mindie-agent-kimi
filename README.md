@@ -1,22 +1,34 @@
 # MindIE Agent for Kimi Code
 
+Design inherits all nine [VAWS / MindIE Agent principles](https://github.com/mindie-agent/mindie-agent/blob/main/docs/design-principles.md). Retiring the old runtime does not retire those principles.
+
 Thin native Kimi plugin. Shared knowledge runtime lives in `mindie-knowledge`.
 This repository owns Kimi identity, `wire.jsonl` parsing, MCP dispatch, and
 the K3 organizer runner.
 
 ## Install
 
-1. Python 3.11+ environment: `runtime-requirements.txt` (pinned to the current
-   core candidate commit; root may replace the pin before release).
-2. `python3 scripts/setup.py --knowledge-python /path/to/venv/bin/python`
-   Headless setup leaves sharing **off**. `--community-*` also works after
-   install to opt in.
-3. Native plugin install: `scripts/install_kimi_plugin.py --kimi-home <isolated-or-explicit-home>`
-   (`POST /api/v1/plugins`). Manifest MCP/hooks use `python3` plus script
-   arguments so Windows does not depend on a shebang.
+Requires Python 3.11+, Git and an installed Kimi Code with native plugin support.
+This is a pre-release implementation; see [acceptance status](docs/acceptance.md).
 
-`setup.py` writes MindIE files under `~/.config/mindie-agent/` and
-`~/.local/share/mindie-agent/kimi`. It does not modify `~/.kimi-code`.
+Run `python3 scripts/setup.py`. It builds the pinned runtime, writes MindIE's
+configuration, leaves community sharing off, and registers the model-free
+update check. `--knowledge-python /absolute/path/to/python` is an optional
+operator override. Use `--no-schedule` for an isolated development install.
+
+Setup prints `native_package`. Install that exact package through the host:
+
+```sh
+python3 scripts/install_kimi_plugin.py --kimi-home /absolute/path/to/kimi-home --plugin-root /absolute/native_package/from/setup
+```
+
+The helper uses Kimi's native plugin API. It does not fabricate the host's
+installed-plugin registry. The generated package points to the persistent
+launcher, so already-loaded entrypoints remain callable across updates.
+
+Configuration defaults to `~/.config/mindie-agent/`; local runtime data defaults
+to `~/.local/share/mindie-agent/kimi`. Setup supports `--community-*` after
+installation; no reinstall or hand-edited JSON is needed to opt in later.
 
 ## First use
 
@@ -36,8 +48,8 @@ independent of knowledge activation and also requires `request_nonce`.
 
 ## Updates
 
-Kimi 0.42.0 does not automatically update local-path plugins, so this
-adapter ships one small updater driven by the OS scheduler (launchd every
+This adapter updates its local-path plugin package through the native host API,
+driven by the OS scheduler (launchd every
 5 minutes on macOS; Windows registration unverified). Each check resolves
 remote `main` to one SHA, stages an immutable generation with its own
 pinned venv, asks shared core `stop_if_idle` under the exclusive operation

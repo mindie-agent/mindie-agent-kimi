@@ -27,6 +27,7 @@ from paths import (
 SESSION_RE = re.compile(IDENTITY)
 NONCE_RE = re.compile(NONCE)
 MAX_HOOK_BYTES = 128 * 1024
+MAX_INDEX_BYTES = 8 * 1024 * 1024
 COMMANDS = {
     "init",
     "status",
@@ -148,10 +149,11 @@ def session_state(session_id: str, *, kimi_home=None) -> dict:
 
 def _from_index(index: Path, session_id: str, home: Path) -> Path | None:
     try:
-        raw = index.read_bytes()
+        with index.open("rb") as stream:
+            raw = stream.read(MAX_INDEX_BYTES + 1)
     except OSError:
         return None
-    if len(raw) > 8 * 1024 * 1024:
+    if len(raw) > MAX_INDEX_BYTES:
         return None
     matched = None
     for line in raw.splitlines():

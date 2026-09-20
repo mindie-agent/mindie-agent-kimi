@@ -5,13 +5,16 @@ Driven by the OS scheduler (launchd every 5 minutes on macOS; Windows
 task registration code is present but not natively verified). No daemon,
 no model, no SessionStart work.
 
-check: resolve remote main to one SHA -> stage an immutable generation
-with its own pinned venv -> build the native host package -> under the
-exclusive operation lock call core stop_if_idle -> install through
-Kimi's native plugin API -> atomically swap configs and current.json.
-Any failure leaves the current generation fully callable and records an
-actionable status. No write retry loop; a failed exact revision is
-suppressed until `recover` or a newer revision.
+check: serialized by a nonblocking check.lock under one absolute
+deadline. Resolve remote main to one SHA -> stage an immutable
+generation with its own pinned venv and its own adapter/engine configs
+-> build the native host package pointing at a NEW versioned launcher
+path (live entrypoints are never mutated by staging) -> under the
+exclusive operation lock call core stop_if_idle through the CURRENT
+committed interpreter -> install through Kimi's native plugin API with
+readback -> atomically flip current.json (one committed tuple). Rollback
+restores the previous pointer AND the previous native package/readback.
+Feed sync is independent: it runs even when the candidate fails.
 """
 
 from __future__ import annotations
@@ -34,6 +37,7 @@ from genstate import (
     LockTimeout,
     OperationLock,
     atomic_write,
+    check_lock,
     failed_path,
     generations_dir,
     launch_dir,
@@ -46,17 +50,62 @@ from genstate import (
     write_status,
 )
 from paths import (
+    config_path,
     engine_config_path,
     load_adapter_config,
     load_engine_config,
-    state_dir,
 )
 
 DEFAULT_REMOTE = "https://github.com/mindie-agent/mindie-agent-kimi.git"
 INTERVAL_SECONDS = 300
+CHECK_BUDGET = 240.0
+# Reserved tail of the check budget: native rollback and feed sync always
+# get their own opportunity, even after failed preparation. Preparation
+# steps must leave this much; total never exceeds CHECK_BUDGET (< 300s).
+ROLLBACK_BUDGET = 45.0
+FEED_BUDGET = 60.0
+RESERVE = ROLLBACK_BUDGET + FEED_BUDGET
 SHA = r"[0-9a-f]{40}"
 COMPLETE = ".mindie-generation-complete"
 LAUNCHER = "mindie_launch.py"
+MIN_PYTHON = (3, 11)
+GIT_ENV = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+PIP_ENV = dict(
+    os.environ,
+    PIP_RETRIES="0",
+    PIP_NO_INPUT="1",
+    PIP_DISABLE_PIP_VERSION_CHECK="1",
+)
+
+IDLE_SNIPPET = """
+import json, sys
+sys.path.insert(0, sys.argv[1])
+try:
+    from knowledge_service import existing_service
+    from mindie_knowledge.loop.cli import rpc
+except Exception as exc:
+    sys.stderr.write(json.dumps({"fatal": f"runtime import failed: {exc}"}))
+    sys.exit(3)
+try:
+    connection = existing_service(sys.argv[2])
+except (OSError, FileNotFoundError):
+    connection = None
+except Exception as exc:
+    sys.stderr.write(json.dumps({"fatal": f"service probe failed: {type(exc).__name__}: {exc}"}))
+    sys.exit(4)
+if connection is None:
+    print(json.dumps({"idle": True, "service": "absent"}))
+    sys.exit(0)
+try:
+    result = rpc(connection, "stop_if_idle", {}, timeout=5)
+except Exception as exc:
+    sys.stderr.write(json.dumps({"fatal": f"stop_if_idle RPC failed: {exc}"}))
+    sys.exit(5)
+if not isinstance(result, dict) or not isinstance(result.get("idle"), bool):
+    sys.stderr.write(json.dumps({"fatal": "invalid stop_if_idle result"}))
+    sys.exit(6)
+print(json.dumps(result))
+"""
 
 
 class CheckFailed(RuntimeError):
@@ -67,12 +116,31 @@ class Deferred(RuntimeError):
     """Not applied now; next normal scheduled check may retry."""
 
 
-def _git(args, *, timeout, cwd=None):
-    return bounded_run(["git", *args], "", timeout=timeout, cwd=cwd)
+def _remaining(deadline: float, reserve: float = 0.0) -> float:
+    left = deadline - time.monotonic() - reserve
+    if left < 5:
+        raise CheckFailed("whole-check deadline exhausted")
+    return left
 
 
-def resolve_main(remote: str) -> str:
-    output = _git(["ls-remote", remote, "refs/heads/main"], timeout=30)
+def _op_timeout(deadline: float, reserve: float, cap: float) -> float:
+    """Finite operation window ending at deadline-reserve. No positive
+    floor after expiry: reject instead of creating new time."""
+    left = deadline - reserve - time.monotonic()
+    if left <= 0:
+        raise CheckFailed("no time left in this operation's reserved window")
+    return min(cap, left)
+
+
+def _git(args, *, timeout, deadline, cwd=None):
+    return bounded_run(["git", *args], "",
+                       timeout=min(timeout, _remaining(deadline, RESERVE)),
+                       cwd=cwd, env=GIT_ENV)
+
+
+def resolve_main(remote: str, deadline: float) -> str:
+    output = _git(["ls-remote", remote, "refs/heads/main"], timeout=30,
+                  deadline=deadline)
     match = re.search(rf"\b({SHA})\s+refs/heads/main", output)
     if not match:
         raise CheckFailed("remote main did not resolve to a commit SHA")
@@ -85,76 +153,88 @@ def _venv_python(venv: Path) -> Path:
     return venv / "bin" / "python"
 
 
-def build_runtime(generation: Path) -> Path:
-    """Real pinned venv from the generation's runtime-requirements.txt."""
+def build_runtime(generation: Path, deadline: float) -> Path:
+    """Real pinned venv from the generation's runtime-requirements.txt.
+    Built at the FINAL generation path so venv paths survive."""
+    if sys.version_info < MIN_PYTHON:
+        raise CheckFailed(f"Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]}+ is required")
     requirements = generation / "runtime-requirements.txt"
     text = requirements.read_text()
     if re.search(r"@main\b", text):
         raise CheckFailed("runtime-requirements.txt must pin full commit SHAs, not @main")
     venv = generation / ".venv"
     python = _venv_python(venv)
-    bounded_run([sys.executable, "-m", "venv", str(venv)], "", timeout=180)
+    bounded_run([sys.executable, "-m", "venv", str(venv)], "",
+                timeout=min(180, _remaining(deadline, RESERVE)))
     bounded_run(
-        [str(python), "-m", "pip", "install", "--disable-pip-version-check",
-         "--no-input", "-r", str(requirements)],
+        [str(python), "-m", "pip", "install", "-r", str(requirements)],
         "",
-        timeout=600,
+        timeout=min(600, _remaining(deadline, RESERVE)),
         max_output=512 * 1024,
+        env=PIP_ENV,
     )
     return python
 
 
-def probe_runtime(python: Path) -> None:
-    from setup import PROBE_SCRIPT
+def probe_runtime(python: Path, deadline: float, generation: Path) -> None:
+    from setup import probe_script
 
-    output = bounded_run([str(python), "-c", PROBE_SCRIPT], "", timeout=60)
+    parser = str(generation / "scripts" / "transcript.py")
+    output = bounded_run([str(python), "-c", probe_script(parser)], "",
+                         timeout=min(60, _remaining(deadline, RESERVE)))
     if not output.strip().endswith("OK"):
         raise CheckFailed(f"generation runtime probe failed: {output.strip()[:300]}")
 
 
-def stage_generation(sha: str, remote: str, config, build=build_runtime) -> Path:
-    """Clone the exact SHA into a new immutable generation dir with venv."""
-    target = generations_dir(config) / sha
-    if (target / COMPLETE).is_file():
-        return target
-    staging = generations_dir(config) / f".staging-{sha}-{os.getpid()}"
-    staging.mkdir(parents=True, exist_ok=False)
-    try:
-        _git(["init", "-q", str(staging)], timeout=30)
-        _git(["remote", "add", "origin", remote], timeout=15, cwd=staging)
-        _git(["fetch", "--depth", "1", "origin", sha], timeout=180, cwd=staging)
-        _git(["checkout", "-q", "--detach", "FETCH_HEAD"], timeout=60, cwd=staging)
-        python = build(staging)
-        probe_runtime(python)
-        build_host_package(staging, config)
-        (staging / COMPLETE).write_text(f"{sha}\n")
-        if target.exists():
-            shutil.rmtree(staging)
-        else:
-            os.replace(staging, target)
-        return target
-    except Exception:
-        shutil.rmtree(staging, ignore_errors=True)
-        raise
+def write_generation_configs(generation: Path, python: Path, adapter: dict) -> Path:
+    """Per-generation adapter+engine JSON. Admission/community/first-use
+    state paths stay stable; parser/organizer/interpreter move with the
+    generation. Returns the generation adapter config path."""
+    engine = load_engine_config(adapter)
+    config_dir = generation / "config"
+    gen_engine = config_dir / "kimi.engine.json"
+    gen_adapter = config_dir / "kimi.adapter.json"
+    atomic_write(gen_engine, dict(
+        engine,
+        transcript_adapter=str(generation / "scripts" / "transcript.py"),
+        agent_command=[str(python), str(generation / "scripts" / "organizer.py")],
+    ))
+    atomic_write(gen_adapter, dict(
+        adapter,
+        python=str(python),
+        engine_config=str(gen_engine),
+    ))
+    return gen_adapter
 
 
-def build_host_package(generation: Path, config) -> Path:
-    """Native host package: manifest + Skills + commands, stable launchers."""
-    package = generation / "host-package"
+def build_host_package(generation: Path, adapter: dict, sha: str,
+                       package_dir: Path | None = None) -> Path:
+    """Native host package: manifest + Skills + commands. The manifest
+    points at a NEW versioned launcher path for this exact revision,
+    with bounded.py copied next to it (the front imports it); live
+    launchers are never touched during staging. manifest.version is
+    stamped uniquely with the candidate commit."""
+    launcher_dir = launch_dir(adapter) / sha
+    launcher_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(generation / "scripts" / LAUNCHER, launcher_dir / LAUNCHER)
+    shutil.copy2(generation / "scripts" / "bounded.py",
+                 launcher_dir / "bounded.py")
+    launcher = launcher_dir / LAUNCHER
+    package = package_dir if package_dir is not None else generation / "host-package"
     if package.exists():
         shutil.rmtree(package)
-    package.mkdir()
+    package.mkdir(parents=True)
     manifest = json.loads((generation / "kimi.plugin.json").read_text())
-    launcher = launch_dir(config) / LAUNCHER
-    launcher.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(generation / "scripts" / LAUNCHER, launcher)
+    base = str(manifest.get("version") or "0.1.0").split("+")[0]
+    manifest["version"] = f"{base}+mindie.{sha[:12]}"
     base_python = sys.executable
     for surface in ("knowledge", "remote"):
         manifest["mcpServers"][surface] = {
             "command": base_python,
             "args": [str(launcher), "mcp", surface],
         }
-    quoted = f"'{base_python}' '{launcher}'" if os.name != "nt" else f'"{base_python}" "{launcher}"'
+    quoted = (f"'{base_python}' '{launcher}'" if os.name != "nt"
+              else f'"{base_python}" "{launcher}"')
     for hook in manifest.get("hooks", []):
         op = {"PreToolUse": "pretool", "Stop": "stop"}.get(hook.get("event"))
         if op:
@@ -167,168 +247,277 @@ def build_host_package(generation: Path, config) -> Path:
     return package
 
 
-def stop_if_idle(config) -> dict:
-    """Shared core authenticated RPC. Unknown/pending durable receipts and
-    idle task grants do not block; only actual active work does."""
-    from knowledge_service import existing_service
-    from mindie_knowledge.loop.cli import rpc
-
+def stage_generation(sha: str, remote: str, adapter: dict, deadline: float,
+                     build=build_runtime) -> tuple[Path, Path, Path]:
+    """Returns (generation, venv python, generation adapter config)."""
+    target = generations_dir(adapter) / sha
+    if (target / COMPLETE).is_file():
+        python = _venv_python(target / ".venv")
+        gen_adapter = target / "config" / "kimi.adapter.json"
+        if python.exists() and gen_adapter.is_file():
+            return target, python, gen_adapter
+        shutil.rmtree(target)
+    elif target.exists():
+        shutil.rmtree(target)
+    staging = generations_dir(adapter) / f".staging-{sha}-{os.getpid()}"
+    staging.mkdir(parents=True, exist_ok=False)
     try:
-        connection = existing_service(engine_config_path(config))
+        _git(["init", "-q", str(staging)], timeout=30, deadline=deadline)
+        _git(["remote", "add", "origin", remote], timeout=15,
+             deadline=deadline, cwd=staging)
+        _git(["fetch", "--depth", "1", "origin", sha], timeout=180,
+             deadline=deadline, cwd=staging)
+        _git(["checkout", "-q", "--detach", "FETCH_HEAD"], timeout=60,
+             deadline=deadline, cwd=staging)
+        os.replace(staging, target)
     except Exception:
-        return {"idle": True, "service": "not-running"}
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
     try:
-        result = rpc(connection, "stop_if_idle", {}, timeout=5)
+        python = build(target, deadline)
+        probe_runtime(python, deadline, target)
+        gen_adapter = write_generation_configs(target, python, adapter)
+        build_host_package(target, adapter, sha)
+        (target / COMPLETE).write_text(f"{sha}\n")
+        return target, python, gen_adapter
+    except Exception:
+        shutil.rmtree(target, ignore_errors=True)
+        raise
+
+
+def _generation_engine(current: dict) -> str:
+    adapter = read_json(Path(current["adapter_config"]))
+    if adapter is None or not isinstance(adapter.get("engine_config"), str):
+        raise Deferred("current generation adapter config is unreadable")
+    return adapter["engine_config"]
+
+
+def stop_if_idle(adapter: dict, current: dict, deadline: float) -> dict:
+    """Core authenticated stop_if_idle through the CURRENT committed
+    interpreter. Fails CLOSED on import/RPC/API problems; a truly absent
+    service endpoint is idle. Unknown/pending receipts and idle grants do
+    not block; only actual active work does."""
+    scripts = str(Path(current["generation"]) / "scripts")
+    engine = _generation_engine(current)
+    try:
+        output = bounded_run(
+            [current["python"], "-c", IDLE_SNIPPET, scripts, engine],
+            "",
+            timeout=min(20, _remaining(deadline, RESERVE)),
+        )
+    except Deferred:
+        raise
     except Exception as exc:
-        raise Deferred(f"pinned core does not provide stop_if_idle ({exc})")
-    if not isinstance(result, dict) or result.get("idle") is not True:
+        raise Deferred(f"stop_if_idle probe failed closed: {str(exc)[:200]}")
+    try:
+        result = json.loads(output.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        raise Deferred("stop_if_idle probe returned no parseable result")
+    if not isinstance(result, dict) or "fatal" in result:
+        raise Deferred(result.get("fatal", "stop_if_idle probe failed"))
+    if result.get("idle") is not True:
         raise Deferred("service has actual active work; switch deferred")
     return result
 
 
-def native_install(adapter: dict, package: Path) -> dict:
+def _readback(adapter: dict, deadline: float, reserve: float = RESERVE) -> dict:
+    home = adapter.get("kimi_home") or os.environ.get("KIMI_CODE_HOME")
+    if not isinstance(home, str) or not home:
+        raise CheckFailed("adapter configuration lacks kimi_home for native readback")
+    output = bounded_run(
+        [sys.executable, str(HERE / "install_kimi_plugin.py"),
+         "--kimi-home", home, "--readback"],
+        "",
+        timeout=_op_timeout(deadline, reserve, 60),
+    )
+    return json.loads(output)
+
+
+def _verify_native_record(report: dict, manifest: dict, package: Path) -> None:
+    """Exact selected plugin record: id, stamped version, enabled/error
+    state, and originalSource equal to this package path."""
+    install = (report.get("install") or {}).get("body") or {}
+    data = install.get("data") or {}
+    if data.get("id") != manifest["name"] or data.get("hasErrors"):
+        raise CheckFailed(f"native install rejected: {json.dumps(data)[:300]}")
+    plugins = (((report.get("after") or {}).get("body") or {})
+               .get("data") or {}).get("plugins")
+    if not isinstance(plugins, list):
+        raise CheckFailed("native readback lacks a plugins inventory")
+    records = [p for p in plugins
+               if isinstance(p, dict) and p.get("id") == manifest["name"]]
+    if len(records) != 1:
+        raise CheckFailed(
+            f"native readback holds {len(records)} records for {manifest['name']}")
+    record = records[0]
+    problems = []
+    if record.get("version") != manifest["version"]:
+        problems.append(f"version={record.get('version')!r}")
+    if record.get("enabled") is not True:
+        problems.append(f"enabled={record.get('enabled')!r}")
+    if record.get("state") != "ok" or record.get("hasErrors"):
+        problems.append(f"state={record.get('state')!r}")
+    if record.get("originalSource") != str(package):
+        problems.append(f"originalSource={record.get('originalSource')!r}")
+    if problems:
+        raise CheckFailed("native readback mismatch: " + ", ".join(problems))
+
+
+def native_install(adapter: dict, package: Path, deadline: float,
+                   reserve: float = RESERVE) -> dict:
     home = adapter.get("kimi_home") or os.environ.get("KIMI_CODE_HOME")
     if not isinstance(home, str) or not home:
         raise CheckFailed("adapter configuration lacks kimi_home for native install")
-    output = bounded_run(
-        [sys.executable, str(HERE / "install_kimi_plugin.py"),
-         "--kimi-home", home, "--plugin-root", str(package)],
-        "",
-        timeout=120,
-    )
-    report = json.loads(output)
-    install = (report.get("install") or {}).get("body") or {}
-    data = install.get("data") or {}
+    package = package.resolve()
     manifest = json.loads((package / "kimi.plugin.json").read_text())
-    if data.get("hasErrors") or data.get("id") != manifest["name"]:
-        raise CheckFailed(f"native install rejected: {json.dumps(data)[:300]}")
-    after = json.dumps((report.get("after") or {}).get("body") or {})
-    if manifest["name"] not in after or manifest.get("version", "") not in after:
-        raise CheckFailed("native readback did not confirm name/version")
+    try:
+        output = bounded_run(
+            [sys.executable, str(HERE / "install_kimi_plugin.py"),
+             "--kimi-home", home, "--plugin-root", str(package)],
+            "",
+            timeout=_op_timeout(deadline, reserve, 120),
+        )
+        report = json.loads(output)
+    except CheckFailed:
+        raise
+    except Exception as exc:
+        # Uncertain outcome: reconcile the actual native registry before
+        # declaring anything, inside the SAME reserved window.
+        try:
+            after = _readback(adapter, deadline, reserve)
+        except Exception as read_exc:
+            raise CheckFailed(
+                f"native install uncertain ({str(exc)[:200]}); readback also "
+                f"failed ({str(read_exc)[:200]})"
+            )
+        raise CheckFailed(
+            f"native install uncertain ({str(exc)[:200]}); reconciled "
+            f"registry: {json.dumps(after.get('after'))[:300]}"
+        )
+    _verify_native_record(report, manifest, package)
     return report
 
 
-def swap_configs(config, generation: Path, python: Path, sha: str) -> None:
-    """Atomic pointer updates under the exclusive lock. Receipts enable
-    rollback; current.json flips last."""
-    from paths import config_path
-
-    adapter_file = config_path()
-    adapter = load_adapter_config()
-    engine_file = engine_config_path(adapter)
-    engine = load_engine_config(adapter)
-    receipts_dir(config).mkdir(parents=True, exist_ok=True)
-    atomic_write(
-        receipts_dir(config) / f"{sha}.json",
-        {
-            "sha": sha,
-            "at": time.time(),
-            "previous": read_current(config),
-            "adapter_config": adapter,
-            "engine_config": engine,
-            "generation": str(generation),
-        },
-    )
-    new_engine = dict(
-        engine,
-        transcript_adapter=str(generation / "scripts" / "transcript.py"),
-        agent_command=[str(python), str(generation / "scripts" / "organizer.py")],
-    )
-    atomic_write(engine_file, new_engine)
-    atomic_write(adapter_file, dict(adapter, python=str(python)))
-    write_current(
-        {"generation": str(generation), "python": str(python), "sha": sha}, config
-    )
-
-
-def rollback(receipt_sha: str, config) -> None:
-    receipt = read_json(receipts_dir(config) / f"{receipt_sha}.json")
-    if not receipt:
-        return
-    from paths import config_path
-
-    try:
-        if isinstance(receipt.get("engine_config"), dict):
-            atomic_write(engine_config_path(config), receipt["engine_config"])
-        if isinstance(receipt.get("adapter_config"), dict):
-            atomic_write(config_path(), receipt["adapter_config"])
-        previous = receipt.get("previous")
-        if isinstance(previous, dict) and previous.get("generation"):
-            write_current(previous, config)
-    except OSError:
-        pass
+def switch(adapter: dict, current: dict, generation: Path, python: Path,
+           gen_adapter: Path, sha: str, deadline: float,
+           idle, install, lock_timeout) -> None:
+    receipts_dir(adapter).mkdir(parents=True, exist_ok=True)
+    atomic_write(receipts_dir(adapter) / f"{sha}.json", {
+        "sha": sha,
+        "at": time.time(),
+        "previous": current,
+        "generation": str(generation),
+    })
+    native_attempted = False
+    # Lock wait must fit the same cutoff (before the reserved tail).
+    wait = min(lock_timeout, deadline - RESERVE - time.monotonic())
+    if wait <= 0:
+        raise LockTimeout("no time left for the exclusive switch lock")
+    with OperationLock(adapter).exclusive(timeout=wait):
+        try:
+            # Idle/deferred failures before any install attempt leave
+            # native state untouched: nothing is reinstalled.
+            idle(adapter, current, deadline)
+            native_attempted = True
+            install(adapter, generation / "host-package", deadline)
+            # Single atomic pointer flip: one committed tuple.
+            write_current({
+                "generation": str(generation),
+                "python": str(python),
+                "adapter_config": str(gen_adapter),
+                "sha": sha,
+            }, adapter)
+        except Exception:
+            # Install, pointer flip AND rollback stay under the SAME
+            # exclusive lock. Restore the previous committed tuple
+            # deterministically (idempotent if the flip never landed);
+            # an install attempt may have mutated native state even when
+            # it raised: reconcile/restore it afterwards.
+            pointer_error = None
+            try:
+                write_current(current, adapter)
+            except Exception as exc:
+                pointer_error = f"pointer restore FAILED: {str(exc)[:200]}"
+            if native_attempted:
+                _rollback_native(adapter, current, install, deadline)
+            if pointer_error:
+                status = read_status(adapter)
+                status["pointer_restore"] = pointer_error
+                write_status(status, adapter)
+            raise
 
 
-def _record(config, **fields) -> dict:
-    status = dict(read_status(config), at=time.time(), **fields)
-    write_status(status, config)
+def _rollback_native(adapter: dict, previous: dict, install,
+                     deadline: float) -> None:
+    """Best-effort native restore of the previous generation's retained
+    host package, inside the rollback reserve. Honest status only: a
+    failed restore is never claimed as success."""
+    package = Path(previous["generation"]) / "host-package"
+    if not package.is_dir() and previous.get("sha") is None:
+        package = update_dir(adapter) / "bootstrap-package"
+    status = read_status(adapter)
+    if not package.is_dir():
+        status["rollback"] = (
+            "no retained previous host package; native registry may still "
+            "reference the candidate"
+        )
+    else:
+        try:
+            prev_adapter = read_json(Path(previous["adapter_config"])) or adapter
+            # Rollback window ends where the feed reserve begins: the two
+            # reserves never overlap.
+            install(prev_adapter, package, deadline, reserve=FEED_BUDGET)
+            status["rollback"] = "previous native package restored with readback"
+        except Exception as exc:
+            status["rollback"] = (
+                f"native restore FAILED ({str(exc)[:200]}); previous "
+                "generation NOT proven restored"
+            )
+    write_status(status, adapter)
+
+
+def _record(adapter, **fields) -> dict:
+    status = dict(read_status(adapter), at=time.time(), **fields)
+    write_status(status, adapter)
     return status
 
 
-def _fail(config, sha, exc) -> int:
-    if sha:
-        atomic_write(
-            failed_path(config),
-            {"sha": sha, "error": str(exc)[:500], "at": time.time()},
-        )
-    _record(config, candidate_sha=sha, result="failed", error=str(exc)[:500])
-    print(json.dumps({"result": "failed", "error": str(exc)[:500]}))
-    return 1
-
-
-def check(config=None, *, force=False, build=build_runtime,
-          idle=stop_if_idle, install=native_install, lock_timeout=30.0) -> int:
-    adapter = config if isinstance(config, dict) else load_adapter_config()
-    update_dir(adapter).mkdir(parents=True, exist_ok=True)
+def _check_once(adapter: dict, deadline: float, *, force, build, idle,
+                install, lock_timeout) -> int:
     current = read_current(adapter)
-    remote = (
-        os.environ.get("MINDIE_KIMI_UPDATE_REMOTE")
-        or adapter.get("update_remote")
-        or DEFAULT_REMOTE
-    )
+    remote = (os.environ.get("MINDIE_KIMI_UPDATE_REMOTE")
+              or adapter.get("update_remote") or DEFAULT_REMOTE)
     try:
-        sha = resolve_main(remote)
+        sha = resolve_main(remote, deadline)
     except Exception as exc:
         _record(adapter, current_sha=current.get("sha"), result="check-failed",
                 error=str(exc)[:500])
         print(json.dumps({"result": "check-failed", "error": str(exc)[:300]}))
         return 1
     failed = read_json(failed_path(adapter))
-    if (
-        not force
-        and failed
-        and failed.get("sha") == sha
-        and current.get("sha") != sha
-    ):
+    if not force and failed and failed.get("sha") == sha \
+            and current.get("sha") != sha:
         _record(adapter, current_sha=current.get("sha"), candidate_sha=sha,
                 result="suppressed-known-failed", error=failed.get("error"))
         print(json.dumps({"result": "suppressed-known-failed", "sha": sha}))
         return 0
     if sha == current.get("sha"):
-        status = _record(adapter, current_sha=sha, result="current")
-        _feed_sync(adapter, status)
+        _record(adapter, current_sha=sha, result="current")
         print(json.dumps({"result": "current", "sha": sha}))
         return 0
     try:
-        generation = stage_generation(sha, remote, adapter, build=build)
-    except Deferred as exc:
-        _record(adapter, current_sha=current.get("sha"), candidate_sha=sha,
-                result="deferred", error=str(exc)[:500])
-        return 0
+        generation, python, gen_adapter = stage_generation(
+            sha, remote, adapter, deadline, build=build)
     except Exception as exc:
-        return _fail(adapter, sha, exc)
-    python = _venv_python(generation / ".venv")
+        atomic_write(failed_path(adapter),
+                     {"sha": sha, "error": str(exc)[:500], "at": time.time()})
+        _record(adapter, current_sha=current.get("sha"), candidate_sha=sha,
+                result="failed", error=str(exc)[:500])
+        print(json.dumps({"result": "failed", "error": str(exc)[:500]}))
+        return 1
     try:
-        with OperationLock(adapter).exclusive(timeout=lock_timeout):
-            idle_result = idle(adapter)
-            if isinstance(idle_result, dict) and idle_result.get("idle") is not True:
-                raise Deferred("service has actual active work; switch deferred")
-            install(adapter, generation / "host-package")
-            try:
-                swap_configs(adapter, generation, python, sha)
-            except Exception:
-                rollback(sha, adapter)
-                raise
+        switch(adapter, current, generation, python, gen_adapter, sha,
+               deadline, idle, install, lock_timeout)
     except LockTimeout:
         _record(adapter, current_sha=current.get("sha"), candidate_sha=sha,
                 result="deferred-busy", error="operation lock stayed shared")
@@ -337,44 +526,65 @@ def check(config=None, *, force=False, build=build_runtime,
     except Deferred as exc:
         _record(adapter, current_sha=current.get("sha"), candidate_sha=sha,
                 result="deferred", error=str(exc)[:500])
-        print(json.dumps({"result": "deferred", "sha": sha, "reason": str(exc)[:300]}))
+        print(json.dumps({"result": "deferred", "sha": sha,
+                          "reason": str(exc)[:300]}))
         return 0
-    except CheckFailed as exc:
-        rollback(sha, adapter)
-        return _fail(adapter, sha, exc)
     except Exception as exc:
-        rollback(sha, adapter)
-        return _fail(adapter, sha, exc)
-    status = _record(
-        adapter,
-        current_sha=sha,
-        result="switched",
-        needs_host_reload=True,
-        note=(
-            "MCP/hook dispatch now uses the new generation for new calls; "
-            "already-loaded sessions keep their old generation. Native "
-            "Skills/commands/hook definitions load on Kimi host reload."
-        ),
-    )
-    _feed_sync(adapter, status)
-    print(json.dumps({"result": "switched", "sha": sha, "needs_host_reload": True}))
+        atomic_write(failed_path(adapter),
+                     {"sha": sha, "error": str(exc)[:500], "at": time.time()})
+        _record(adapter, current_sha=current.get("sha"), candidate_sha=sha,
+                result="failed", error=str(exc)[:500])
+        print(json.dumps({"result": "failed", "error": str(exc)[:500]}))
+        return 1
+    _record(adapter, current_sha=sha, result="switched", needs_host_reload=True,
+            note=("MCP/hook dispatch uses the new generation per call; "
+                  "existing task authorization is preserved. Native "
+                  "Skill/command/MCP/hook definitions refresh with the Kimi host."))
+    print(json.dumps({"result": "switched", "sha": sha,
+                      "needs_host_reload": True}))
     return 0
 
 
-def _feed_sync(adapter, status) -> None:
-    """Best-effort knowledge feed sync through shared core. Never starts an
-    organizer or a model; failure is recorded, not retried."""
-    engine = adapter.get("engine_config")
-    if not isinstance(engine, str):
-        return
-    current = read_current(adapter)
-    python = current.get("python") or sys.executable
+def check(config=None, *, force=False, build=build_runtime,
+          idle=stop_if_idle, install=native_install, lock_timeout=30.0) -> int:
+    adapter = config if isinstance(config, dict) else load_adapter_config()
+    update_dir(adapter).mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + CHECK_BUDGET
     try:
-        bounded_run(
-            [python, "-m", "mindie_knowledge.loop.cli", "sync", engine],
-            "",
-            timeout=120,
-        )
+        with check_lock(adapter):
+            code = _check_once(adapter, deadline, force=force, build=build,
+                               idle=idle, install=install,
+                               lock_timeout=lock_timeout)
+            # Feed sync is covered by the SAME check lock and always gets
+            # its reserved opportunity, even after failed preparation.
+            _feed_sync(adapter, deadline)
+            return code
+    except LockTimeout:
+        print(json.dumps({"result": "check-already-running"}))
+        return 0
+
+
+def _feed_sync(adapter: dict, deadline: float) -> None:
+    """Independent knowledge feed sync through shared core, with the
+    CURRENT committed interpreter. Tuple selection happens INSIDE the
+    shared operation lock. No organizer, no model; bounded by the feed
+    reserve; never retried."""
+    status = read_status(adapter)
+    left = deadline - time.monotonic()
+    if left <= 0:
+        status["feed_sync"] = "skipped: check budget exhausted"
+        write_status(status, adapter)
+        return
+    try:
+        with OperationLock(adapter).shared(timeout=min(5, left)):
+            current = read_current(adapter)
+            engine = _generation_engine(current)
+            bounded_run(
+                [current["python"], "-m", "mindie_knowledge.loop.cli",
+                 "sync", "--config", engine],
+                "",
+                timeout=min(FEED_BUDGET, deadline - time.monotonic()),
+            )
         status["feed_sync"] = "ok"
     except Exception as exc:
         status["feed_sync"] = f"skipped: {str(exc)[:200]}"
@@ -388,14 +598,13 @@ def status() -> int:
         print(json.dumps({"result": "unconfigured",
                           "hint": "run scripts/setup.py first"}))
         return 0
-    current = read_current(adapter)
     base = generations_dir(adapter)
     generations = sorted(
         p.name for p in base.iterdir()
         if p.is_dir() and not p.name.startswith(".")
     ) if base.is_dir() else []
     print(json.dumps({
-        "current": current,
+        "current": read_current(adapter),
         "status": read_status(adapter),
         "failed": read_json(failed_path(adapter)),
         "generations": generations,
@@ -412,39 +621,39 @@ def recover() -> int:
     return check(adapter, force=True)
 
 
-def _schedule_command(config_path: Path) -> list[str]:
-    return [sys.executable, str(Path(__file__).resolve()), "check",
-            "--config", str(config_path)]
-
-
 def install_schedule() -> int:
-    from paths import config_path
-
     adapter = load_adapter_config()
-    command = _schedule_command(config_path())
+    launcher = launch_dir(adapter) / "bootstrap" / LAUNCHER
+    if not launcher.is_file():
+        scripts = Path(read_current(adapter)["generation"]) / "scripts"
+        if not (scripts / LAUNCHER).is_file():
+            raise SystemExit(f"no launcher available at {scripts}")
+        launcher.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(scripts / LAUNCHER, launcher)
+        shutil.copy2(scripts / "bounded.py", launcher.parent / "bounded.py")
+    command = [sys.executable, str(launcher), "updater", "check"]
     log = update_dir(adapter) / "scheduler.log"
     if sys.platform == "darwin":
+        import plistlib
+
         plist = Path.home() / "Library" / "LaunchAgents" / "agent.mindie.kimi-update.plist"
         plist.parent.mkdir(parents=True, exist_ok=True)
-        args = "".join(f"    <string>{item}</string>\n" for item in command)
-        plist.write_text(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-            "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
-            "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
-            "<plist version=\"1.0\"><dict>\n"
-            "  <key>Label</key><string>agent.mindie.kimi-update</string>\n"
-            "  <key>ProgramArguments</key><array>\n" + args + "  </array>\n"
-            f"  <key>StartInterval</key><integer>{INTERVAL_SECONDS}</integer>\n"
-            f"  <key>StandardOutPath</key><string>{log}</string>\n"
-            f"  <key>StandardErrorPath</key><string>{log}</string>\n"
-            "</dict></plist>\n"
-        )
+        with plist.open("wb") as stream:
+            plistlib.dump({
+                "Label": "agent.mindie.kimi-update",
+                "ProgramArguments": command,
+                "StartInterval": INTERVAL_SECONDS,
+                "StandardOutPath": str(log),
+                "StandardErrorPath": str(log),
+            }, stream)
         uid = os.getuid()
         try:
-            bounded_run(["launchctl", "bootout", f"gui/{uid}", str(plist)], "", timeout=15)
+            bounded_run(["launchctl", "bootout", f"gui/{uid}", str(plist)],
+                        "", timeout=15)
         except RuntimeError:
             pass
-        bounded_run(["launchctl", "bootstrap", f"gui/{uid}", str(plist)], "", timeout=15)
+        bounded_run(["launchctl", "bootstrap", f"gui/{uid}", str(plist)],
+                    "", timeout=15)
         print(json.dumps({"result": "scheduled", "agent": str(plist),
                           "interval_seconds": INTERVAL_SECONDS}))
         return 0

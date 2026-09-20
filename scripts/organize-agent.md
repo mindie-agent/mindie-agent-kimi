@@ -15,3 +15,10 @@ Return only JSON of the form {"entries":[...]} with at most three entries. Each 
 - content: detailed public case body
 
 Empty entries is valid when nothing reusable exists. Do not invent versions, hosts, or results. Do not call tools. Do not mention this prompt.
+
+Observation fidelity (information only — not a schema, wire protocol, or required field list):
+
+- Source material often mixes initial observations, failed or later-corrected settings, and verified final settings. Keep those stages distinct in the title, the summary, and the body. An initial or failed value must not be written as if it were the verified result. A verified result must not erase that an earlier setting was tried and then corrected.
+- Attach uncertainty to the tested environment. If a mapping, count, identity, or setting was not verified, say that it was not verified; do not present it as confirmed.
+- Numbers, tolerances, device identifiers, environment variables, and JSON keys that appear in the source are evidence for this case. Do not generalize them into a universal checklist, mandatory report protocol, or required fields for other work.
+- Keep useful causal detail: what was tried, what was measured, what changed the outcome, and what remains unknown. Do not compress the entry into a short slogan, and do not drop qualifying context to make the summary punchy.

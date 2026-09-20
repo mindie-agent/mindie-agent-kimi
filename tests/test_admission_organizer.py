@@ -99,6 +99,20 @@ class AdmissionOrganizerTests(unittest.TestCase):
         self.assertTrue(DOCS_AGENT.is_file())
         self.assertIn("`tools: []` disables all tools", DOCS_AGENT.read_text())
 
+    def test_organizer_prompt_distinguishes_initial_from_verified(self):
+        text = (SCRIPTS / "organize-agent.md").read_text()
+        lowered = text.lower()
+        self.assertIn("initial", lowered)
+        self.assertIn("verified", lowered)
+        self.assertIn("title", lowered)
+        self.assertIn("summary", lowered)
+        self.assertIn("uncertainty", lowered)
+        self.assertIn("not a schema", lowered)
+        self.assertIn("slogan", lowered)
+        self.assertNotIn("physical_mapping_verified", text)
+        self.assertNotIn("ASCEND_RT_VISIBLE_DEVICES", text)
+        self.assertNotIn("atol", lowered)
+
     def test_organizer_missing_kimi_is_failure_not_empty_success(self):
         env = env_for(extra={"PATH": "/usr/bin:/bin", "MINDIE_KIMI_BIN": "/no/such/kimi"})
         result = subprocess.run(

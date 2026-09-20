@@ -40,6 +40,7 @@ def main(argv=None):
             configured = None
         if isinstance(configured, str) and configured:
             python = configured
+    os.environ.pop("PYTHONPATH", None)
     os.execv(python, [python, str(script), *rest])
 
 
