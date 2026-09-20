@@ -24,6 +24,7 @@ class SetupInstallTests(unittest.TestCase):
                     str(config),
                     "--root",
                     str(root),
+                    "--no-schedule",
                 ],
                 capture_output=True,
                 text=True,
@@ -54,6 +55,7 @@ class SetupInstallTests(unittest.TestCase):
                     str(config),
                     "--root",
                     str(tmp / "data"),
+                    "--no-schedule",
                 ],
                 capture_output=True,
                 text=True,
@@ -86,6 +88,28 @@ class SetupInstallTests(unittest.TestCase):
             self.assertEqual(second.returncode, 0, second.stderr)
             payload = json.loads(second.stdout)
             self.assertEqual(payload["sharing"], "enabled")
+
+    def test_unconfigured_with_runtime_stays_on_this_python(self):
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            missing = tmp / "absent.json"
+            marker = tmp / "show.py"
+            marker.write_text("import sys; print(sys.executable)\n")
+            result = subprocess.run(
+                [sys.executable, str(SCRIPTS / "with_runtime.py"), str(marker)],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                env=env_for(extra={"MINDIE_KIMI_CONFIG": str(missing)}),
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), sys.executable)
+
+    def test_requirements_are_pinned_commits(self):
+        text = (SCRIPTS.parent / "runtime-requirements.txt").read_text()
+        self.assertIn("6155846c99b454e3d1c436a6dcfbae82d0ba7e51", text)
+        self.assertIn("13301ef7f52b53ffca0a6702a8a3c18f2edfcd52", text)
+        self.assertNotIn("@main", text)
 
     def test_install_helper_requires_explicit_home(self):
         result = subprocess.run(

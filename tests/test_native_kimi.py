@@ -34,4 +34,6 @@ class NativeKimiTests(unittest.TestCase):
         ).stdout
         self.assertNotIn("plugins install", help_text.lower())
         manifest = json.loads((ROOT / "kimi.plugin.json").read_text())
-        self.assertEqual(manifest["mcpServers"]["knowledge"]["command"], "./scripts/with_runtime.py")
+        knowledge = manifest["mcpServers"]["knowledge"]
+        self.assertEqual(knowledge["command"], "python3")
+        self.assertEqual(knowledge["args"][0], "./scripts/with_runtime.py")

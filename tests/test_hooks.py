@@ -28,12 +28,9 @@ class HookTests(unittest.TestCase):
             tmp = Path(raw)
             config = make_config(tmp, sharing=True, roots=[tmp])
             os.environ["MINDIE_KIMI_CONFIG"] = str(config)
-            try:
-                import admission as admission_mod
+            import admission as admission_mod
 
-                admission_mod.activate("ses_live", project_root=str(tmp.resolve()))
-            except ImportError:
-                pass
+            admission_mod.activate("ses_live", project_root=str(tmp.resolve()))
             result = run_bridge(
                 "stop",
                 {
@@ -48,6 +45,62 @@ class HookTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0)
             self.assertEqual(json.loads(result.stdout), {})
             self.assertFalse((tmp / "domain" / "vllm-ascend" / "connection.json").exists())
+
+    def test_turn_started_does_not_replay_plugin_command(self):
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            config = make_config(tmp)
+            home = tmp / "kimi-home"
+            write_session(
+                home,
+                "ses_hook",
+                [
+                    {
+                        "type": "context.append_message",
+                        "message": {
+                            "role": "user",
+                            "content": [{"type": "text", "text": "init"}],
+                            "origin": {
+                                "kind": "plugin_command",
+                                "pluginId": "mindie-agent",
+                                "commandName": "init",
+                                "commandArgs": "",
+                                "activationId": "act-hook",
+                                "trigger": "user-slash",
+                            },
+                        },
+                        "time": 2,
+                    }
+                ],
+            )
+            started = run_bridge(
+                "turn-started",
+                {
+                    "hook_event_name": "TurnStarted",
+                    "session_id": "ses_hook",
+                    "cwd": str(tmp),
+                    "origin_kind": "plugin_command",
+                    "turn_id": 0,
+                },
+                config,
+                kimi_home=home,
+            )
+            self.assertEqual(started.returncode, 0, started.stderr)
+            self.assertEqual(json.loads(started.stdout), {})
+            leftover = run_bridge(
+                "command",
+                {
+                    "hook_event_name": "TurnStarted",
+                    "session_id": "ses_hook",
+                    "cwd": str(tmp),
+                    "origin_kind": "plugin_command",
+                    "turn_id": 0,
+                },
+                config,
+                kimi_home=home,
+            )
+            self.assertEqual(leftover.returncode, 0)
+            self.assertEqual(json.loads(leftover.stdout), {})
 
     def test_quoted_marker_user_origin_does_not_activate(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -70,7 +123,7 @@ class HookTests(unittest.TestCase):
                 ],
             )
             result = run_bridge(
-                "command",
+                "turn-started",
                 {
                     "hook_event_name": "TurnStarted",
                     "session_id": "ses_quote",
@@ -83,53 +136,6 @@ class HookTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0)
             self.assertEqual(json.loads(result.stdout), {})
-
-    def test_plugin_command_init_uses_wire_origin(self):
-        with tempfile.TemporaryDirectory() as raw:
-            tmp = Path(raw)
-            config = make_config(tmp)
-            home = tmp / "kimi-home"
-            write_session(
-                home,
-                "ses_hook",
-                [
-                    {
-                        "type": "context.append_message",
-                        "message": {
-                            "role": "user",
-                            "content": [{"type": "text", "text": "init"}],
-                            "origin": {
-                                "kind": "plugin_command",
-                                "pluginId": "mindie-agent",
-                                "commandName": "init",
-                                "commandArgs": "",
-                                "trigger": "user-slash",
-                            },
-                        },
-                        "time": 2,
-                    }
-                ],
-            )
-            result = run_bridge(
-                "command",
-                {
-                    "hook_event_name": "TurnStarted",
-                    "session_id": "ses_hook",
-                    "cwd": str(tmp),
-                    "origin_kind": "plugin_command",
-                    "turn_id": 0,
-                },
-                config,
-                kimi_home=home,
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            payload = json.loads(result.stdout)
-            self.assertEqual(payload.get("command"), "init")
-            result_body = payload.get("result") or {}
-            if "error" in payload:
-                self.assertIn("Admission", payload["error"])
-            else:
-                self.assertEqual(result_body.get("activation", {}).get("session"), "ses_hook")
 
     def test_pretool_binds_qualified_tool_and_arguments(self):
         with tempfile.TemporaryDirectory() as raw:

@@ -31,6 +31,39 @@ NONCE_PROP = {
 
 KNOWLEDGE_TOOLS = [
     dict(
+        name="mindie_entry",
+        description=(
+            "Native MindIE slash entry. Call only for the current /mindie-agent:* "
+            "command. Requires a fresh request_nonce. Never pass a session id. "
+            "op=init returns first-use choices or status; op=choose stores "
+            "read-only or later; contribution requires sharing-enable with "
+            "repository, account, project root, and public visibility."
+        ),
+        inputSchema=dict(
+            type="object",
+            properties=dict(
+                op={
+                    "type": "string",
+                    "enum": [
+                        "init",
+                        "choose",
+                        "status",
+                        "deactivate",
+                        "sharing-enable",
+                        "sharing-disable",
+                        "sharing-status",
+                        "recover",
+                    ],
+                },
+                request_nonce=NONCE_PROP,
+                choice={"type": "string", "enum": ["read-only", "later"]},
+                arguments={"type": "string"},
+            ),
+            required=["op", "request_nonce"],
+            additionalProperties=False,
+        ),
+    ),
+    dict(
         name="knowledge_query",
         description="Search the selected domain's knowledge and experience. References are advisory.",
         inputSchema=dict(
@@ -196,7 +229,28 @@ def handle(surface, message):
         nonce = require_nonce(args.get("request_nonce"))
         session = claim_nonce(nonce, name, args)
         _, body = strip_nonce(args)
-        if surface == "knowledge":
+        if surface == "knowledge" and name == "mindie_entry":
+            from entry import dispatch
+            from identity import session_cwd
+
+            cwd = None
+            try:
+                cwd = session_cwd(session)
+            except Exception:
+                cwd = None
+            payload = dispatch(
+                session,
+                cwd,
+                body.get("op"),
+                body.get("arguments") or "",
+                body.get("choice"),
+            )
+            result = dict(
+                content=[dict(type="text", text=canonical(payload))],
+                structuredContent=payload,
+                isError=False,
+            )
+        elif surface == "knowledge":
             payload = knowledge_call(name, body, session)
             result = dict(
                 content=[dict(type="text", text=canonical(payload))],

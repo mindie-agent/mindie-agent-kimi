@@ -126,6 +126,14 @@ def locate_main_wire(session_id: str, *, kimi_home=None) -> Path:
     return wire.resolve()
 
 
+def session_cwd(session_id: str, *, kimi_home=None) -> str:
+    state = session_state(session_id, kimi_home=kimi_home)
+    cwd = state.get("cwd")
+    if not isinstance(cwd, str) or not os.path.isabs(cwd):
+        raise ValueError("native session cwd is unavailable")
+    return cwd
+
+
 def session_state(session_id: str, *, kimi_home=None) -> dict:
     root = locate_session_dir(session_id, kimi_home=kimi_home)
     path = root / "state.json"
@@ -171,8 +179,7 @@ def _from_index(index: Path, session_id: str, home: Path) -> Path | None:
     return matched
 
 
-def plugin_command_from_wire(session_id: str, *, kimi_home=None) -> dict | None:
-    """Exact native slash activation from this session's wire, not prompt text."""
+def _tail_records(session_id: str, *, kimi_home=None):
     wire = locate_main_wire(session_id, kimi_home=kimi_home)
     try:
         size = wire.stat().st_size
@@ -180,48 +187,87 @@ def plugin_command_from_wire(session_id: str, *, kimi_home=None) -> dict | None:
             if size > 256 * 1024:
                 stream.seek(size - 256 * 1024)
                 stream.readline()
-            raw = stream.read(256 * 1024 + 1)
+            raw = stream.read(256 * 1024)
     except OSError:
-        return None
-    if len(raw) > 256 * 1024:
-        raw = raw[-256 * 1024 :]
-    found = None
+        return []
+    records = []
     for line in raw.splitlines():
         try:
             record = json.loads(line)
         except ValueError:
             continue
-        if not isinstance(record, dict):
+        if isinstance(record, dict):
+            records.append(record)
+    return records
+
+
+def _opening_origin(record):
+    """Turn-opening native origin, or None if this record does not open a turn."""
+    if record.get("type") == "turn.prompt":
+        origin = record.get("origin")
+        return origin if isinstance(origin, dict) else {}
+    if record.get("type") == "context.append_message":
+        message = record.get("message")
+        if not isinstance(message, dict) or message.get("role") != "user":
+            return None
+        origin = message.get("origin")
+        if not isinstance(origin, dict):
+            return {}
+        if origin.get("kind") == "injection":
+            return None
+        return origin
+    return None
+
+
+def current_turn_origin(session_id: str, *, kimi_home=None) -> dict:
+    """CURRENT turn-opening origin only. Never the last matching MindIE command."""
+    for record in reversed(_tail_records(session_id, kimi_home=kimi_home)):
+        origin = _opening_origin(record)
+        if origin is None:
             continue
-        origin = None
-        if record.get("type") == "context.append_message":
-            message = record.get("message")
-            if isinstance(message, dict):
-                origin = message.get("origin")
-        elif record.get("type") == "turn.prompt":
-            origin = record.get("origin")
-        if not isinstance(origin, dict) or origin.get("kind") != "plugin_command":
-            continue
-        if origin.get("pluginId") != PLUGIN_ID:
-            continue
-        name = origin.get("commandName")
-        if name not in COMMANDS:
-            continue
-        args = origin.get("commandArgs")
-        found = dict(
-            command=name,
-            arguments=args if isinstance(args, str) else "",
-            activation_id=origin.get("activationId"),
-        )
-    return found
+        return origin
+    raise ValueError("current native turn origin is unavailable")
+
+
+def require_current_plugin_command(session_id: str, command: str, *, kimi_home=None) -> dict:
+    origin = current_turn_origin(session_id, kimi_home=kimi_home)
+    if origin.get("kind") != "plugin_command":
+        raise ValueError("current turn is not a native MindIE slash command")
+    if origin.get("pluginId") != PLUGIN_ID:
+        raise ValueError("current turn is not this plugin's slash command")
+    name = origin.get("commandName")
+    if name not in COMMANDS:
+        raise ValueError("current slash command is not a MindIE entry")
+    if name != command:
+        raise ValueError("current slash command does not match this operation")
+    activation_id = origin.get("activationId")
+    if not isinstance(activation_id, str) or not activation_id:
+        raise ValueError("native plugin command lacks activationId")
+    args = origin.get("commandArgs")
+    return dict(
+        command=command,
+        arguments=args if isinstance(args, str) else "",
+        activation_id=activation_id,
+    )
 
 
 def bind_db_path(config=None) -> Path:
     return state_dir(config) / "mcp-binds.sqlite3"
 
 
-def turn_db_path(config=None) -> Path:
-    return state_dir(config) / "turns.sqlite3"
+def current_turn_identity(session_id: str, *, kimi_home=None) -> str:
+    """CURRENT latest turn.prompt promptId from this task's own wire.
+
+    No persisted turn store: default-off tasks must create no state.
+    """
+    session_id = require_session(session_id)
+    for record in reversed(_tail_records(session_id, kimi_home=kimi_home)):
+        if record.get("type") != "turn.prompt":
+            continue
+        prompt_id = record.get("promptId")
+        if isinstance(prompt_id, str) and prompt_id:
+            return prompt_id[:256]
+    raise ValueError("current native turn identity is unavailable")
 
 
 def _connect(path: Path, *, create: bool):
@@ -234,45 +280,6 @@ def _connect(path: Path, *, create: bool):
     except OSError:
         pass
     return db
-
-
-def record_turn(session_id: str, turn_id, *, config=None) -> None:
-    session_id = require_session(session_id)
-    if turn_id is None:
-        return
-    text = str(turn_id)
-    if not text or len(text) > 256:
-        return
-    path = turn_db_path(config)
-    db = _connect(path, create=True)
-    try:
-        with db:
-            db.execute(
-                "CREATE TABLE IF NOT EXISTS turns("
-                "session TEXT PRIMARY KEY, turn TEXT NOT NULL, updated REAL NOT NULL)"
-            )
-            db.execute(
-                "INSERT INTO turns VALUES(?,?,?) "
-                "ON CONFLICT(session) DO UPDATE SET turn=excluded.turn, updated=excluded.updated",
-                (session_id, text, time.time()),
-            )
-    finally:
-        db.close()
-
-
-def last_turn(session_id: str, *, config=None) -> str | None:
-    session_id = require_session(session_id)
-    path = turn_db_path(config)
-    if not path.is_file():
-        return None
-    db = _connect(path, create=False)
-    try:
-        row = db.execute("SELECT turn FROM turns WHERE session=?", (session_id,)).fetchone()
-        return row[0] if row else None
-    except sqlite3.Error:
-        return None
-    finally:
-        db.close()
 
 
 def _ensure_binds(db):

@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from support import SCRIPTS, write_session
+from support import SCRIPTS, plugin_origin, turn_records, write_session
 
 sys.path.insert(0, str(SCRIPTS))
 import identity  # noqa: E402
@@ -41,49 +41,41 @@ class IdentityTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 identity.claim_nonce("nonce-bbbbbb", "knowledge_query", args)
 
-    def test_plugin_command_from_wire_not_quoted_text(self):
+    def test_current_turn_origin_not_last_matching_command(self):
         with tempfile.TemporaryDirectory() as raw:
             home = Path(raw)
-            records = [
-                {
-                    "type": "context.append_message",
-                    "message": {
-                        "role": "user",
-                        "content": [{"type": "text", "text": "MINDIE_AGENT_NATIVE_ENTRY op=init"}],
-                        "origin": {"kind": "user"},
-                    },
-                    "time": 1,
-                },
-                {
-                    "type": "context.append_message",
-                    "message": {
-                        "role": "user",
-                        "content": [{"type": "text", "text": "please init"}],
-                        "origin": {
-                            "kind": "plugin_command",
-                            "pluginId": "mindie-agent",
-                            "commandName": "init",
-                            "commandArgs": "",
-                            "activationId": "act-1",
-                            "trigger": "user-slash",
-                        },
-                    },
-                    "time": 2,
-                },
-            ]
+            records = turn_records(plugin_origin("init", "act-old"), "init", time=1)
+            records.extend(
+                turn_records(
+                    dict(
+                        kind="plugin_command",
+                        pluginId="other-plugin",
+                        commandName="foo",
+                        commandArgs="",
+                        activationId="act-other",
+                        trigger="user-slash",
+                    ),
+                    "foo",
+                    time=3,
+                )
+            )
             write_session(home, "ses_cmd", records)
-            found = identity.plugin_command_from_wire("ses_cmd", kimi_home=home)
-            self.assertEqual(found["command"], "init")
-            quoted_only = [
-                {
-                    "type": "context.append_message",
-                    "message": {
-                        "role": "user",
-                        "content": [{"type": "text", "text": "run MINDIE_AGENT_NATIVE_ENTRY op=init"}],
-                        "origin": {"kind": "user"},
-                    },
-                    "time": 3,
-                }
-            ]
+            origin = identity.current_turn_origin("ses_cmd", kimi_home=home)
+            self.assertEqual(origin.get("pluginId"), "other-plugin")
+            with self.assertRaises(ValueError):
+                identity.require_current_plugin_command("ses_cmd", "init", kimi_home=home)
+            quoted_only = turn_records(dict(kind="user"), "run /mindie-agent:init", time=4)
             write_session(home, "ses_quote", quoted_only, workdir="wd_b")
-            self.assertIsNone(identity.plugin_command_from_wire("ses_quote", kimi_home=home))
+            origin = identity.current_turn_origin("ses_quote", kimi_home=home)
+            self.assertEqual(origin.get("kind"), "user")
+            with self.assertRaises(ValueError):
+                identity.require_current_plugin_command("ses_quote", "init", kimi_home=home)
+
+    def test_require_current_plugin_command_uses_latest_opening(self):
+        with tempfile.TemporaryDirectory() as raw:
+            home = Path(raw)
+            records = turn_records(plugin_origin("init", "act-1"), "init", time=1)
+            write_session(home, "ses_ok", records)
+            found = identity.require_current_plugin_command("ses_ok", "init", kimi_home=home)
+            self.assertEqual(found["command"], "init")
+            self.assertEqual(found["activation_id"], "act-1")

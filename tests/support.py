@@ -86,12 +86,46 @@ def run_bridge(op, event, config, *, kimi_home=None, timeout=8):
     )
 
 
-def write_session(home: Path, session_id: str, records, *, workdir="wd_test_abc", state=None):
+def plugin_origin(command, activation_id, args=""):
+    return dict(
+        kind="plugin_command",
+        pluginId="mindie-agent",
+        commandName=command,
+        commandArgs=args,
+        activationId=activation_id,
+        trigger="user-slash",
+    )
+
+
+def turn_records(origin, text="cmd", time=2):
+    return [
+        dict(
+            type="turn.prompt",
+            origin=origin,
+            input=[dict(type="text", text=text)],
+            time=time,
+        ),
+        dict(
+            type="context.append_message",
+            message=dict(
+                role="user",
+                content=[dict(type="text", text=text)],
+                origin=origin,
+            ),
+            time=time,
+        ),
+    ]
+
+
+def write_session(home: Path, session_id: str, records, *, workdir="wd_test_abc", state=None, cwd=None):
     root = home / "sessions" / workdir / session_id
     wire = root / "agents" / "main" / "wire.jsonl"
     wire.parent.mkdir(parents=True, exist_ok=True)
     wire.write_text("".join(json.dumps(row) + "\n" for row in records))
-    write_json(root / "state.json", state or dict(title="t", createdAt=1000))
+    payload = dict(title="t", createdAt=1000, cwd=str(cwd or home.resolve()))
+    if state:
+        payload.update(state)
+    write_json(root / "state.json", payload)
     with (home / "session_index.jsonl").open("a") as stream:
         stream.write(
             json.dumps(dict(sessionId=session_id, sessionDir=str(root), workDir="/tmp/proj"))

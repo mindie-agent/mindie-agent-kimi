@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Stdlib-only trampoline: exec the configured interpreter before MindIE imports.
+"""Stdlib trampoline: configured interpreter, or this python if unconfigured.
 
-Plugin hooks and MCP stdio must not import mindie_knowledge or remote_dev
-under system python3. Windows uses this file as the command with python args.
+Unconfigured entry/status must still run offline. Sharing stays off and no
+service/model is started by this launcher.
 """
 
 from __future__ import annotations
@@ -32,12 +32,14 @@ def main(argv=None):
         script = here / script
     rest = argv[1:]
     path = _config_path()
-    try:
-        python = json.loads(path.read_text())["python"]
-    except (OSError, KeyError, ValueError, TypeError) as exc:
-        raise SystemExit(f"MindIE configured interpreter unavailable: {exc}"[:400])
-    if not isinstance(python, str) or not python:
-        raise SystemExit("adapter configuration has no runtime interpreter")
+    python = sys.executable
+    if path.is_file():
+        try:
+            configured = json.loads(path.read_text()).get("python")
+        except (OSError, ValueError, TypeError):
+            configured = None
+        if isinstance(configured, str) and configured:
+            python = configured
     os.execv(python, [python, str(script), *rest])
 
 

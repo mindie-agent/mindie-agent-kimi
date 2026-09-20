@@ -2,5 +2,5 @@
 description: Show community sharing status without starting a model
 ---
 
-Native `/mindie-agent:sharing-status` is bound from this session's plugin_command origin.
+Call `mindie_entry` once with `op=sharing-status` and a fresh `request_nonce`. Never pass a session id.
 $ARGUMENTS

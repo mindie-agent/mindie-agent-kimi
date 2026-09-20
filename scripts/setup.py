@@ -147,6 +147,12 @@ def main():
     parser.add_argument("--community-account")
     parser.add_argument("--community-fork")
     parser.add_argument("--community-visibility", choices=["public"])
+    parser.add_argument("--kimi-home", type=Path,
+                        help="explicit Kimi home for native plugin install/update")
+    parser.add_argument("--update-remote", default=None,
+                        help="git remote tracked for automatic updates")
+    parser.add_argument("--no-schedule", action="store_true",
+                        help="do not register the automatic update check")
     args = parser.parse_args()
     python = str(Path(args.knowledge_python).expanduser())
     if not os.path.isabs(python):
@@ -188,16 +194,38 @@ def main():
             )
         ]
     write_private(engine_config, value)
-    write_private(
-        config,
-        dict(
-            python=python,
-            engine_config=str(engine_config),
-            community_config=str(community_config),
-            state_dir=str(domain_root / "adapter-state"),
-        ),
+    adapter_value = dict(
+        python=python,
+        engine_config=str(engine_config),
+        community_config=str(community_config),
+        state_dir=str(domain_root / "adapter-state"),
     )
+    if args.kimi_home:
+        adapter_value["kimi_home"] = str(args.kimi_home.expanduser().absolute())
+    if args.update_remote:
+        adapter_value["update_remote"] = args.update_remote
+    write_private(config, adapter_value)
     sharing = write_community(community_config, community)
+    import genstate
+
+    genstate.write_current(
+        {"generation": str(PLUGIN_ROOT), "python": python, "sha": None},
+        adapter_value,
+    )
+    scheduled = "skipped"
+    if not args.no_schedule:
+        os.environ["MINDIE_KIMI_CONFIG"] = str(config)
+        try:
+            import contextlib
+            import io
+
+            import updater
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                code = updater.install_schedule()
+            scheduled = "registered" if code == 0 else "manual"
+        except Exception as exc:
+            scheduled = f"manual ({type(exc).__name__}: {str(exc)[:120]})"
     print(
         json.dumps(
             dict(
@@ -207,11 +235,13 @@ def main():
                 admission_path=str(admission),
                 domain=args.domain,
                 sharing=sharing,
+                update_schedule=scheduled,
                 plugin_install=(
-                    "Native install: POST /api/v1/plugins {source: <this-directory>} "
-                    "in an isolated or user Kimi home (scripts/install_kimi_plugin.py). "
-                    "Kimi 0.42.0 does not auto-update local-path plugins; reinstall via "
-                    "that same native API. Knowledge sync: mindie_knowledge.loop.cli sync."
+                    "Native install: POST /api/v1/plugins {source: <host-package>} "
+                    "in the selected Kimi home (scripts/install_kimi_plugin.py). "
+                    "Automatic updates: scripts/updater.py check (scheduled), "
+                    "status via scripts/updater.py status, recovery via "
+                    "scripts/updater.py recover. See docs/update.md."
                 ),
             ),
             indent=2,

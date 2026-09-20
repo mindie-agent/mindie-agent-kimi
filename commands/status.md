@@ -1,6 +1,6 @@
 ---
-description: Offline MindIE Agent status and recovery hints (no service or model start)
+description: Offline MindIE Agent status for this native Kimi session
 ---
 
-Native `/mindie-agent:status` is bound from this session's plugin_command origin. Do not guess a session id. Report configured state, sharing, and the contribution-inspect/reconcile/compact recovery commands.
+Call `mindie_entry` once with `op=status` and a fresh `request_nonce`. Never pass a session id. Report this session's configured/sharing/first-use state from the tool result. Do not list other tasks.
 $ARGUMENTS

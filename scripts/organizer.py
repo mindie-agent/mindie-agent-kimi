@@ -94,24 +94,97 @@ def auth_home():
     return Path.home() / ".kimi-code"
 
 
+def _toml_table(path, values):
+    out = "\n[" + ".".join(json.dumps(k) for k in path) + "]\n"
+    for key, value in values.items():
+        if not isinstance(value, dict):
+            out += json.dumps(key) + " = " + json.dumps(value) + "\n"
+    for key, value in values.items():
+        if isinstance(value, dict):
+            out += _toml_table(path + [key], value)
+    return out
+
+
+PROVIDER = "managed:kimi-code"
+
+
+def _table_values(values):
+    out = {}
+    for key, value in values.items():
+        if value is None:
+            continue
+        if isinstance(value, dict):
+            nested = _table_values(value)
+            if nested:
+                out[key] = nested
+        else:
+            out[key] = value
+    return out
+
+
 def prepare_isolated_home(base: Path) -> Path:
+    """Private 0600 config with selected provider/model/thinking. No hooks/plugins."""
+    import tomllib
+
     home = base / "kimi-home"
-    home.mkdir(mode=0o700)
-    (home / "config.toml").write_text("builtin_product_skills = false\n")
+    home.mkdir(mode=0o700, parents=True)
+    source = auth_home()
+    config_path = source / "config.toml"
+    if not config_path.is_file():
+        raise RuntimeError("native Kimi config.toml is missing; organizer cannot resolve a model")
+    parsed = tomllib.loads(config_path.read_text())
+    providers = parsed.get("providers") if isinstance(parsed.get("providers"), dict) else {}
+    models = parsed.get("models") if isinstance(parsed.get("models"), dict) else {}
+    provider = providers.get(PROVIDER)
+    model = models.get(MODEL)
+    if not isinstance(provider, dict) or not provider:
+        raise RuntimeError("native provider managed:kimi-code is missing; organizer cannot resolve a model")
+    if not isinstance(model, dict) or not model:
+        raise RuntimeError("native model kimi-code/k3 is missing; organizer cannot resolve a model")
+    thinking = parsed.get("thinking")
+    if not isinstance(thinking, dict):
+        thinking = {"enabled": True, "effort": "max"}
+    else:
+        thinking = dict(thinking)
+        thinking.setdefault("enabled", True)
+        thinking.setdefault("effort", "max")
+    conf = 'default_model = "kimi-code/k3"\nbuiltin_product_skills = false\n'
+    conf += _toml_table(["providers", PROVIDER], _table_values(provider))
+    conf += _toml_table(["models", MODEL], _table_values(model))
+    conf += _toml_table(["thinking"], _table_values(thinking))
+    target = home / "config.toml"
+    target.write_text(conf)
+    target.chmod(0o600)
     (home / "plugins").mkdir()
     (home / "plugins" / "installed.json").write_text('{"version":1,"plugins":[]}\n')
     (home / "skills").mkdir()
-    source = auth_home()
     for name in ("credentials", "oauth"):
         origin = source / name
-        target = home / name
-        if origin.exists() and not target.exists():
+        dest = home / name
+        if origin.exists() and not dest.exists():
             try:
-                os.symlink(origin, target, target_is_directory=origin.is_dir())
+                os.symlink(origin, dest, target_is_directory=origin.is_dir())
             except OSError:
                 if origin.is_file():
-                    shutil.copy2(origin, target)
+                    shutil.copy2(origin, dest)
     return home
+
+
+def doctor_isolated(home: Path) -> str:
+    config = Path(home) / "config.toml"
+    if not config.is_file():
+        raise RuntimeError("isolated organizer config is missing")
+    mode = config.stat().st_mode & 0o777
+    if mode & 0o077:
+        raise RuntimeError("isolated organizer config is not private")
+    env = {**os.environ, "KIMI_CODE_HOME": str(home), "KIMI_DISABLE_TELEMETRY": "1"}
+    return run(
+        [kimi_bin(), "doctor", "config", str(config)],
+        "",
+        timeout=20,
+        env=env,
+        cwd=str(home),
+    )
 
 
 def run_native(payload):

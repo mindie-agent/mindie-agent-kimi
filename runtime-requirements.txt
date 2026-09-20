@@ -1,3 +1,4 @@
-# Track main until root pins the release commits.
-mindie-knowledge @ git+https://github.com/mindie-agent/knowledge@main
-remote-dev @ git+https://github.com/mindie-agent/remote-dev@main
+# Pinned to the current core candidate and remote-dev commits.
+# Root may replace these before release. Local ../acceptance-venv is root-owned.
+mindie-knowledge @ git+https://github.com/mindie-agent/knowledge@6155846c99b454e3d1c436a6dcfbae82d0ba7e51
+remote-dev @ git+https://github.com/mindie-agent/remote-dev@13301ef7f52b53ffca0a6702a8a3c18f2edfcd52

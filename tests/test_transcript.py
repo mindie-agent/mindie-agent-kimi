@@ -42,6 +42,11 @@ class TranscriptTests(unittest.TestCase):
         self.assertEqual(source["records"], 0, source.get("text", "")[:200])
         forked = transcript.read_material(str(fork), 0, session_id=FORK_SESSION)
         self.assertEqual(forked["records"], 0, forked.get("text", "")[:200])
+        public = transcript.read_material(
+            str(src), 0, session_id=PROBE_SESSION, not_before=1789911712
+        )
+        self.assertEqual(public["records"], 6, public.get("text", "")[:200])
+        self.assertIn("call_id=", public["text"])
 
     def test_public_user_allowlist_skips_injection_and_think(self):
         with tempfile.TemporaryDirectory() as raw:

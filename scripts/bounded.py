@@ -1,12 +1,21 @@
-"""Managed child with process-group kill and bounded output."""
+"""Managed child with process-group kill and bounded output.
+
+The output bound is enforced DURING execution: reader threads cap each
+stream and kill the owned process tree immediately once a stream exceeds
+the budget. Timeout likewise terminates the whole process group.
+Windows uses process.kill() only; child-tree termination there is not
+verified.
+"""
 
 from __future__ import annotations
 
 import os
 import signal
 import subprocess
+import threading
 
 MAX_OUTPUT = 256 * 1024
+_CHUNK = 65536
 
 
 def run(argv, stdin="", *, timeout, env=None, cwd=None, max_output=MAX_OUTPUT):
@@ -24,24 +33,65 @@ def run(argv, stdin="", *, timeout, env=None, cwd=None, max_output=MAX_OUTPUT):
     if os.name != "nt":
         spawn["start_new_session"] = True
     process = subprocess.Popen(**spawn)
+    buffers = {"stdout": bytearray(), "stderr": bytearray()}
+    exceeded = []
+
+    def reader(stream, name):
+        total = 0
+        while True:
+            try:
+                chunk = stream.read(_CHUNK)
+            except (OSError, ValueError):
+                break
+            if not chunk:
+                break
+            total += len(chunk)
+            kept = buffers[name]
+            if len(kept) < max_output:
+                kept.extend(chunk[: max_output - len(kept)])
+            if total > max_output and name not in exceeded:
+                exceeded.append(name)
+                _kill_tree(process)
+                break
+        try:
+            stream.close()
+        except OSError:
+            pass
+
+    threads = [
+        threading.Thread(target=reader, args=(process.stdout, "stdout"), daemon=True),
+        threading.Thread(target=reader, args=(process.stderr, "stderr"), daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
     try:
-        stdout, stderr = process.communicate(data, timeout=timeout)
+        if data:
+            try:
+                process.stdin.write(data)
+            except (BrokenPipeError, OSError):
+                pass
+        process.stdin.close()
+    except OSError:
+        pass
+    try:
+        process.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         _kill_tree(process)
         try:
-            stdout, stderr = process.communicate(timeout=1)
+            process.wait(timeout=1)
         except subprocess.TimeoutExpired:
             _kill_tree(process, force=True)
-            stdout, stderr = process.communicate(timeout=1)
-        raise RuntimeError(
-            f"command timed out after {timeout}s: {(stderr or b'')[:200].decode('utf-8', 'replace')}"
-        )
-    if stdout is None:
-        stdout = b""
-    if stderr is None:
-        stderr = b""
-    if len(stdout) > max_output or len(stderr) > max_output:
-        raise RuntimeError("command output exceeds the bound")
+            process.wait(timeout=1)
+        for thread in threads:
+            thread.join(timeout=1)
+        raise RuntimeError(f"command timed out after {timeout}s")
+    for thread in threads:
+        thread.join(timeout=2)
+    if exceeded:
+        _kill_tree(process, force=True)
+        raise RuntimeError(f"command output exceeds the bound ({max_output} bytes)")
+    stdout = bytes(buffers["stdout"])
+    stderr = bytes(buffers["stderr"])
     if process.returncode != 0:
         err = stderr[:400].decode("utf-8", "replace")
         raise RuntimeError(f"command failed ({process.returncode}): {err}")

@@ -68,13 +68,31 @@ def community_config_path(config=None) -> Path:
     return Path(value)
 
 
+def default_state_dir() -> Path:
+    return (
+        Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+        / "mindie-agent"
+        / "state"
+    )
+
+
 def state_dir(config=None) -> Path:
-    config = config if config is not None else load_adapter_config()
+    try:
+        config = config if config is not None else load_adapter_config()
+    except FileNotFoundError:
+        return default_state_dir()
     value = config.get("state_dir")
     if isinstance(value, str) and os.path.isabs(value):
         return Path(value)
     engine = load_engine_config(config)
     return Path(engine["root"]) / "kimi-adapter"
+
+
+def first_use_path() -> Path:
+    try:
+        return config_path().with_name("kimi.first-use.json")
+    except Exception:
+        return default_state_dir().parent / "kimi.first-use.json"
 
 
 def kimi_home_from_env() -> Path | None:

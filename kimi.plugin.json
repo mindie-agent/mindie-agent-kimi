@@ -8,41 +8,30 @@
   "commands": "./commands/",
   "mcpServers": {
     "knowledge": {
-      "command": "./scripts/with_runtime.py",
-      "args": ["mcp_server.py", "knowledge"],
+      "command": "python3",
+      "args": ["./scripts/with_runtime.py", "mcp_server.py", "knowledge"],
       "cwd": "./"
     },
     "remote": {
-      "command": "./scripts/with_runtime.py",
-      "args": ["mcp_server.py", "remote"],
+      "command": "python3",
+      "args": ["./scripts/with_runtime.py", "mcp_server.py", "remote"],
       "cwd": "./"
     }
   },
   "hooks": [
     {
-      "event": "TurnStarted",
-      "matcher": "plugin_command",
-      "command": "./scripts/with_runtime.py bridge.py command",
-      "timeout": 8
-    },
-    {
       "event": "PreToolUse",
       "matcher": "mcp__plugin-mindie-agent_",
-      "command": "./scripts/with_runtime.py bridge.py pretool",
-      "timeout": 2
-    },
-    {
-      "event": "TurnStarted",
-      "command": "./scripts/with_runtime.py bridge.py turn-started",
+      "command": "python3 ./scripts/with_runtime.py bridge.py pretool",
       "timeout": 2
     },
     {
       "event": "Stop",
-      "command": "./scripts/with_runtime.py bridge.py stop",
+      "command": "python3 ./scripts/with_runtime.py bridge.py stop",
       "timeout": 2
     }
   ],
-  "systemPrompt": "MindIE Agent activates only from the native /mindie-agent:* slash command (plugin_command origin). Knowledge and remote-dev tools require a fresh request_nonce. Never pass a session id. Remote-dev works without knowledge activation. Stop capture must not continue the turn.",
+  "systemPrompt": "MindIE Agent activates only from the native /mindie-agent:* slash command (plugin_command origin). Call mindie_entry with a fresh request_nonce for that command; never pass a session id. Remote-dev works without knowledge activation. Stop capture must not continue the turn.",
   "interface": {
     "displayName": "MindIE Agent",
     "shortDescription": "Domain knowledge, optional public contribution, and general remote-dev for Kimi Code",

@@ -2,5 +2,5 @@
 description: Turn community contribution off (cancels pending capture; no backfill)
 ---
 
-Native `/mindie-agent:sharing-disable` is bound from this session's plugin_command origin.
+Call `mindie_entry` once with `op=sharing-disable` and a fresh `request_nonce`. Never pass a session id.
 $ARGUMENTS
