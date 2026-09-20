@@ -201,7 +201,7 @@ def write_community(path, community):
                 enabled=False,
                 generation=secrets.token_hex(16),
                 enabled_at=None,
-                repository="local/unconfigured",
+                repository=None,
                 branch="main",
                 project_roots=[],
                 idle_seconds=300,

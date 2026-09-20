@@ -40,6 +40,9 @@ class SetupInstallTests(unittest.TestCase):
             engine = json.loads(Path(payload["engine_config"]).read_text())
             self.assertNotIn("session_activation", engine)
             self.assertTrue(engine["admission_path"].endswith("admission.sqlite3"))
+            community = json.loads(config.with_name("kimi.community.json").read_text())
+            self.assertFalse(community["enabled"])
+            self.assertIsNone(community["repository"])
 
     def test_setup_configures_sharing_after_install(self):
         with tempfile.TemporaryDirectory() as raw:
