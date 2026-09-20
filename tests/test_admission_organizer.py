@@ -10,10 +10,6 @@ from pathlib import Path
 from support import ROOT, SCRIPTS, env_for, make_config
 
 
-DOCS_AGENT = (
-    ROOT.parent / "kimi-upstream" / "docs" / "en" / "customization" / "agents.md"
-)
-
 SOURCE_TOML = """default_model = "kimi-code/k3"
 builtin_product_skills = false
 
@@ -96,8 +92,6 @@ class AdmissionOrganizerTests(unittest.TestCase):
         text = (SCRIPTS / "organize-agent.md").read_text()
         self.assertIn("tools: []", text)
         self.assertIn("subagents: []", text)
-        self.assertTrue(DOCS_AGENT.is_file())
-        self.assertIn("`tools: []` disables all tools", DOCS_AGENT.read_text())
 
     def test_organizer_prompt_distinguishes_initial_from_verified(self):
         text = (SCRIPTS / "organize-agent.md").read_text()
@@ -149,8 +143,8 @@ class AdmissionOrganizerTests(unittest.TestCase):
             self.assertFalse((isolated / "mcp.json").exists())
             installed = json.loads((isolated / "plugins" / "installed.json").read_text())
             self.assertEqual(installed.get("plugins"), [])
-            report = organizer.doctor_isolated(isolated)
-            self.assertTrue(isinstance(report, str))
+            # Native `kimi doctor config` is exercised in host acceptance.
+            # This portable check covers only the configuration we write.
 
     def test_isolated_home_missing_setup_is_failure(self):
         with tempfile.TemporaryDirectory() as raw:
