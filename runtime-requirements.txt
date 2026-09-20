@@ -1,0 +1,3 @@
+# Track main until root pins the release commits.
+mindie-knowledge @ git+https://github.com/mindie-agent/knowledge@main
+remote-dev @ git+https://github.com/mindie-agent/remote-dev@main

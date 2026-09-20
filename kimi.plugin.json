@@ -1,0 +1,51 @@
+{
+  "name": "mindie-agent",
+  "version": "0.1.0",
+  "description": "MindIE Agent for Kimi Code: local knowledge retrieval, optional community contribution, and general remote-dev. No SessionStart auto-configuration.",
+  "keywords": ["mindie", "knowledge", "vllm-ascend", "remote-dev"],
+  "license": "MIT",
+  "skills": "./skills/",
+  "commands": "./commands/",
+  "mcpServers": {
+    "knowledge": {
+      "command": "./scripts/with_runtime.py",
+      "args": ["mcp_server.py", "knowledge"],
+      "cwd": "./"
+    },
+    "remote": {
+      "command": "./scripts/with_runtime.py",
+      "args": ["mcp_server.py", "remote"],
+      "cwd": "./"
+    }
+  },
+  "hooks": [
+    {
+      "event": "TurnStarted",
+      "matcher": "plugin_command",
+      "command": "./scripts/with_runtime.py bridge.py command",
+      "timeout": 8
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "mcp__plugin-mindie-agent_",
+      "command": "./scripts/with_runtime.py bridge.py pretool",
+      "timeout": 2
+    },
+    {
+      "event": "TurnStarted",
+      "command": "./scripts/with_runtime.py bridge.py turn-started",
+      "timeout": 2
+    },
+    {
+      "event": "Stop",
+      "command": "./scripts/with_runtime.py bridge.py stop",
+      "timeout": 2
+    }
+  ],
+  "systemPrompt": "MindIE Agent activates only from the native /mindie-agent:* slash command (plugin_command origin). Knowledge and remote-dev tools require a fresh request_nonce. Never pass a session id. Remote-dev works without knowledge activation. Stop capture must not continue the turn.",
+  "interface": {
+    "displayName": "MindIE Agent",
+    "shortDescription": "Domain knowledge, optional public contribution, and general remote-dev for Kimi Code",
+    "developerName": "MindIE Agent"
+  }
+}
