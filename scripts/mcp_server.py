@@ -43,8 +43,9 @@ KNOWLEDGE_TOOLS = [
     dict(
         name="mindie_entry",
         description=(
-            "Native MindIE slash entry. Call only for the current /mindie-agent:* "
-            "command. Requires a fresh request_nonce. Never pass a session id. "
+            "Native MindIE entry. Mutations require the current /mindie-agent:* "
+            "command; op=status can diagnose an already enabled or paused task. "
+            "Requires a fresh request_nonce. Never pass a session id. "
             "op=init returns first-use choices or status; op=choose stores "
             "read-only or later; contribution requires sharing-enable with "
             "repository, account, project root, and public visibility. "

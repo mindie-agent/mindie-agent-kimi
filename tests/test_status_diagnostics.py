@@ -60,6 +60,19 @@ class StatusDiagnosticTests(unittest.TestCase):
             self.assertNotIn("foreign-material", json.dumps(result))
             self.assertEqual(admission.inspect("task-A")["failures"], 3)
             self.assertEqual(self._status(adapter)["diagnostics"]["captures"], [])
+            scripts = Path(__file__).resolve().parents[1] / "scripts"
+            code = "import json,sys;sys.path.insert(0,sys.argv[1]);import entry;print(json.dumps(entry.op_status('task-A')))"
+            env = dict(os.environ, **{CONFIG_ENV: str(adapter)})
+            env.pop("KIMI_CODE_HOME", None)
+            proc = subprocess.run([sys.executable, "-c", code, str(scripts)], env=env,
+                                  capture_output=True, text=True, timeout=5)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertTrue(json.loads(proc.stdout)["this_session"]["paused"])
+            self.assertEqual(admission.inspect("task-A")["failures"], 3)
+            admission.deactivate("task-A")
+            proc = subprocess.run([sys.executable, "-c", code, str(scripts)], env=env,
+                                  capture_output=True, text=True, timeout=5)
+            self.assertNotEqual(proc.returncode, 0)
 
 
 if __name__ == "__main__":

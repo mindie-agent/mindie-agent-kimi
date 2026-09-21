@@ -2,7 +2,9 @@
 
 Native status reports existing knowledge configuration, service/storage health,
 this task's admission, a shared maintenance pause, and the latest five captures
-and contribution batches associated with the bound task. An absent identity
+and contribution batches associated with the bound task. An enabled or paused
+task can call status after a later failure without another user slash command;
+unadmitted tasks still require the explicit native status command. An absent identity
 returns no task records. Failed batch IDs let recover inspect the existing write;
 unknown publication results must be reconciled before any explicit retry.
 

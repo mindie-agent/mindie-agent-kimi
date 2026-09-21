@@ -248,7 +248,19 @@ def op_choose(session, choice):
 
 
 def op_status(session):
-    consume_slash(session, "status")
+    # A bound task that explicitly enabled MindIE can diagnose a later failure,
+    # including its paused lease, without another user slash command. This read
+    # does not consume an attempt or grant/reactivate authorization.
+    admitted = False
+    if _configured():
+        from admission import gate
+
+        try:
+            admitted = gate().inspect(session).get("status") in {"active", "paused"}
+        except (OSError, ValueError, TypeError):
+            pass
+    if not admitted:
+        require_current_plugin_command(session, "status")
     return status_payload(session)
 
 
