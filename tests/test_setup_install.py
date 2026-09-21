@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -115,10 +116,27 @@ class SetupInstallTests(unittest.TestCase):
             )
 
     def test_requirements_are_pinned_commits(self):
-        text = (SCRIPTS.parent / "runtime-requirements.txt").read_text()
-        self.assertIn("3f7c70d813377d3ba3140a0a585f48e1df04444b", text)
-        self.assertIn("13301ef7f52b53ffca0a6702a8a3c18f2edfcd52", text)
-        self.assertNotIn("@main", text)
+        expected = {
+            "mindie-knowledge": "https://github.com/mindie-agent/knowledge",
+            "remote-dev": "https://github.com/mindie-agent/remote-dev",
+        }
+        pattern = re.compile(
+            r"(?P<name>[^\s]+) @ git\+(?P<url>https://github.com/[^@]+)@(?P<sha>[0-9a-f]{40})$"
+        )
+        lines = (SCRIPTS.parent / "runtime-requirements.txt").read_text().splitlines()
+        actual = []
+        for line in lines:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            match = pattern.fullmatch(stripped)
+            self.assertIsNotNone(
+                match,
+                f"requirement must be NAME @ git+https://github.com/ORG/REPO@40hex: {stripped!r}",
+            )
+            actual.append((match.group("name"), match.group("url")))
+        self.assertEqual(dict(actual), expected)
+        self.assertEqual(len(actual), len(expected))
 
     def test_setup_bootstraps_generation_tuple_and_launcher(self):
         with tempfile.TemporaryDirectory() as raw:
