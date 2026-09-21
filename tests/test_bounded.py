@@ -1,7 +1,10 @@
 import os
+import json
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -40,7 +43,7 @@ def _wait_dead(pid: int, timeout=2.0) -> bool:
 class BoundedTests(unittest.TestCase):
     def test_timeout_kills_process_group(self):
         started = time.monotonic()
-        with self.assertRaises(RuntimeError):
+        with self.assertRaises(bounded.CommandTimedOut):
             bounded.run(
                 [sys.executable, "-c", "import time; time.sleep(30)"],
                 "",
@@ -50,7 +53,7 @@ class BoundedTests(unittest.TestCase):
 
     def test_output_bound_kills_runaway_during_execution(self):
         started = time.monotonic()
-        with self.assertRaises(RuntimeError) as ctx:
+        with self.assertRaises(bounded.OutputLimitExceeded) as ctx:
             bounded.run(
                 [sys.executable, "-c",
                  "import sys\nwhile True: sys.stdout.write('x' * 65536); "
@@ -60,7 +63,90 @@ class BoundedTests(unittest.TestCase):
                 max_output=128 * 1024,
             )
         self.assertIn("output exceeds the bound", str(ctx.exception))
+        self.assertIsInstance(ctx.exception, ValueError)
+        self.assertIsInstance(ctx.exception, RuntimeError)
         self.assertLess(time.monotonic() - started, 10)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX maintenance group contract")
+    def test_core_cancel_reaps_managed_child_and_grandchild(self):
+        self._managed_group_case(cancelled=True)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX maintenance group contract")
+    def test_core_success_reaps_managed_grandchild_without_killing_worker(self):
+        self._managed_group_case(cancelled=False)
+
+    def _managed_group_case(self, *, cancelled):
+        from mindie_knowledge.loop.process import MaintenanceCancelled, bounded_run
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            pidfile = root / "pids.json"
+            child = root / "child.py"
+            child.write_text(
+                "import json, os, subprocess, sys, time\n"
+                "from pathlib import Path\n"
+                "grand = subprocess.Popen([sys.executable, '-c', "
+                "'import time; time.sleep(30)'], stdin=subprocess.DEVNULL, "
+                "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+                f"Path({str(pidfile)!r}).write_text(json.dumps(dict("
+                "worker=os.getppid(), child=os.getpid(), grandchild=grand.pid, "
+                "worker_group=os.getpgid(os.getppid()), child_group=os.getpgrp(), "
+                "grandchild_group=os.getpgid(grand.pid))))\n"
+                + ("time.sleep(30)\n" if cancelled else "print('ok', flush=True)\n")
+            )
+            worker = root / "worker.py"
+            worker.write_text(
+                "import sys\n"
+                f"sys.path.insert(0, {str(SCRIPTS)!r})\n"
+                "from bounded import run\n"
+                f"print(run([sys.executable, {str(child)!r}], timeout=10), end='')\n"
+            )
+            cancel = threading.Event()
+            observed = {}
+            monitor_stop = threading.Event()
+
+            def observe():
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline and not monitor_stop.is_set():
+                    if pidfile.exists():
+                        try:
+                            observed.update(json.loads(pidfile.read_text()))
+                        except ValueError:
+                            continue
+                        if cancelled:
+                            cancel.set()
+                        return
+                    time.sleep(0.02)
+                cancel.set()
+
+            monitor = threading.Thread(target=observe, daemon=True)
+            monitor.start()
+            try:
+                if cancelled:
+                    with self.assertRaises(MaintenanceCancelled):
+                        bounded_run([sys.executable, str(worker)], "", timeout=8,
+                                    max_output=4096, cancel=cancel)
+                else:
+                    self.assertEqual(bounded_run(
+                        [sys.executable, str(worker)], "", timeout=8,
+                        max_output=4096, cancel=cancel).strip(), "ok")
+                monitor.join(timeout=1)
+                self.assertTrue(observed)
+                for key in ("worker_group", "child_group", "grandchild_group"):
+                    self.assertEqual(observed[key], observed["worker"])
+                for key in ("worker", "child", "grandchild"):
+                    self.assertTrue(_wait_dead(observed[key]), f"{key} survived")
+            finally:
+                monitor_stop.set()
+                monitor.join(timeout=1)
+                if not observed and pidfile.exists():
+                    observed.update(json.loads(pidfile.read_text()))
+                for key in ("worker", "child", "grandchild"):
+                    if key in observed and _alive(observed[key]):
+                        try:
+                            os.kill(observed[key], signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
 
     def test_timeout_kills_spawned_child_tree(self):
         started = time.monotonic()

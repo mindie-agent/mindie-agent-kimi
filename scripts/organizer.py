@@ -17,12 +17,31 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-from bounded import run
+from bounded import CommandTimedOut, OutputLimitExceeded, run
+from mindie_knowledge.loop.process import AGENT_ERROR_EXIT_CODES
 
 MAX_INPUT = 65536
 MAX_RESULT = 32768
 AGENT_FILE = HERE / "organize-agent.md"
 MODEL = "kimi-code/k3"
+
+EXIT_UNKNOWN = 2
+
+_DIAGNOSTICS = {
+    "configuration": "organizer configuration failed",
+    "deadline": "organizer invocation exceeded the deadline",
+    "native": "organizer native invocation failed",
+    "invalid_result": "organizer result was invalid",
+    "output_limit": "organizer output exceeded the bound",
+}
+
+
+class _Category(Exception):
+    """Typed stage/category marker; carries no provider or error text."""
+
+    def __init__(self, category):
+        super().__init__(category)
+        self.category = category
 
 
 def convert_conditions(value):
@@ -195,32 +214,49 @@ def run_native(payload):
     )
     isolated = Path(tempfile.mkdtemp(prefix="mindie-kimi-organizer-"))
     try:
-        home = prepare_isolated_home(isolated)
+        try:
+            home = prepare_isolated_home(isolated)
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise _Category("configuration") from exc
         empty_skills = home / "skills"
         env = {**os.environ, "KIMI_CODE_HOME": str(home), "KIMI_DISABLE_TELEMETRY": "1"}
-        output = run(
-            [
-                kimi_bin(),
-                "-p",
-                prompt,
-                "--output-format",
-                "text",
-                "--model",
-                MODEL,
-                "--agent-file",
-                str(AGENT_FILE),
-                "--skills-dir",
-                str(empty_skills),
-            ],
-            "",
-            timeout=120,
-            env=env,
-            cwd=str(isolated),
-            max_output=MAX_RESULT,
-        )
+        try:
+            binary = kimi_bin()
+        except RuntimeError as exc:
+            raise _Category("native") from exc
+        try:
+            output = run(
+                [
+                    binary,
+                    "-p",
+                    prompt,
+                    "--output-format",
+                    "text",
+                    "--model",
+                    MODEL,
+                    "--agent-file",
+                    str(AGENT_FILE),
+                    "--skills-dir",
+                    str(empty_skills),
+                ],
+                "",
+                timeout=120,
+                env=env,
+                cwd=str(isolated),
+                max_output=MAX_RESULT,
+            )
+        except CommandTimedOut as exc:
+            raise _Category("deadline") from exc
+        except OutputLimitExceeded as exc:
+            raise _Category("output_limit") from exc
+        except (OSError, RuntimeError) as exc:
+            raise _Category("native") from exc
         if not output.strip():
-            raise ValueError("organizer produced no output")
-        return normalize(extract_json(output))
+            raise _Category("invalid_result")
+        try:
+            return normalize(extract_json(output))
+        except ValueError as exc:
+            raise _Category("invalid_result") from exc
     finally:
         shutil.rmtree(isolated, ignore_errors=True)
 
@@ -228,16 +264,22 @@ def run_native(payload):
 def main():
     raw = sys.stdin.buffer.read(MAX_INPUT + 1)
     if len(raw) > MAX_INPUT:
-        raise SystemExit("organizer input exceeds limit")
-    payload = json.loads(raw.decode("utf-8"))
+        raise _Category("invalid_result")
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except ValueError as exc:
+        raise _Category("invalid_result") from exc
     if not isinstance(payload, dict):
-        raise SystemExit("organizer payload must be one JSON object")
+        raise _Category("invalid_result")
     print(json.dumps(run_native(payload), ensure_ascii=False))
 
 
 if __name__ == "__main__":
     try:
         main()
-    except (ValueError, OSError, RuntimeError, json.JSONDecodeError) as exc:
-        print(str(exc)[:400], file=sys.stderr)
-        raise SystemExit(2)
+    except _Category as exc:
+        print(_DIAGNOSTICS[exc.category], file=sys.stderr)
+        raise SystemExit(AGENT_ERROR_EXIT_CODES[exc.category])
+    except Exception:
+        print("organizer failed unexpectedly", file=sys.stderr)
+        raise SystemExit(EXIT_UNKNOWN)
