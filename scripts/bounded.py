@@ -5,7 +5,13 @@ cannot select() process pipes, so it uses two daemon reader threads and kills
 the tree with taskkill /T. The Windows path uses only standard primitives but
 has not been verified on real hardware yet.
 
-Final success still closes the owned tree so no descendant outlives this call.
+When this process is already the leader of an owned process group
+(MINDIE_MAINTENANCE_GROUP=1 set by the outer core), POSIX spawns stay in that
+group instead of a new session: the outer core owns whole-group terminal
+cleanup, so this module only kills the direct child, never the group.
+
+Final cleanup closes a standalone owned tree; managed descendants are closed
+by the outer core when the organizer returns.
 Stdin is a temporary file, never a blocking pipe write: a child that does not
 read cannot hang the parent past the deadline.
 """
@@ -29,7 +35,20 @@ MAX_OUTPUT = 256 * 1024
 _CHUNK = 8192
 
 
+class CommandTimedOut(RuntimeError):
+    """The command did not finish before the absolute deadline."""
+
+
+class OutputLimitExceeded(ValueError, RuntimeError):
+    """Captured output grew past the configured byte bound."""
+
+
 def _spawn(command, stdin, env, cwd):
+    inherited = (
+        POSIX
+        and os.environ.get("MINDIE_MAINTENANCE_GROUP") == "1"
+        and os.getpgrp() == os.getpid()
+    )
     kwargs = dict(
         args=list(command),
         stdin=stdin,
@@ -39,15 +58,26 @@ def _spawn(command, stdin, env, cwd):
         cwd=cwd,
     )
     if POSIX:
-        kwargs["start_new_session"] = True
+        kwargs["start_new_session"] = not inherited
     else:
         # Windows (unverified on real hardware).
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-    return subprocess.Popen(**kwargs)
+    process = subprocess.Popen(**kwargs)
+    process._mindie_inherited_group = inherited
+    return process
 
 
 def _kill_tree(process, pgid=None):
     if POSIX:
+        if getattr(process, "_mindie_inherited_group", False):
+            # Killing the shared group here would kill this organizer before
+            # it can report its result. Core owns the entire group on exit.
+            if process.poll() is None:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+            return
         try:
             os.killpg(pgid if pgid is not None else process.pid, signal.SIGKILL)
         except (OSError, ProcessLookupError):
@@ -70,7 +100,7 @@ class _Cap:
     def add(self, chunk):
         self.size += len(chunk)
         if self.size > self.max_output:
-            raise ValueError("output exceeds the bound")
+            raise OutputLimitExceeded("output exceeds the bound")
 
 
 def _run_posix(process, timeout, max_output, pgid, check):
@@ -202,14 +232,8 @@ def run(argv, stdin="", *, timeout, env=None, cwd=None, max_output=MAX_OUTPUT, c
                 result = _run_posix(process, timeout, max_output, pgid, check)
             else:
                 result = _run_windows(process, timeout, max_output, pgid, check)
-        except TimeoutError as exc:
-            raise RuntimeError(f"command timed out after {timeout}s") from exc
-        except ValueError as exc:
-            if "exceeds" in str(exc):
-                raise RuntimeError(
-                    f"command output exceeds the bound ({max_output} bytes)"
-                ) from exc
-            raise
+        except (TimeoutError, subprocess.TimeoutExpired) as exc:
+            raise CommandTimedOut(f"command timed out after {timeout}s") from exc
         finally:
             try:
                 atexit.unregister(cleanup)
