@@ -47,7 +47,8 @@ KNOWLEDGE_TOOLS = [
             "command. Requires a fresh request_nonce. Never pass a session id. "
             "op=init returns first-use choices or status; op=choose stores "
             "read-only or later; contribution requires sharing-enable with "
-            "repository, account, project root, and public visibility."
+            "repository, account, project root, and public visibility. "
+            "Status includes safe task failure categories and contribution batch IDs for recover inspection; it never retries work."
         ),
         inputSchema=dict(
             type="object",
