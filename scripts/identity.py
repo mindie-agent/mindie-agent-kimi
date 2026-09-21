@@ -36,6 +36,9 @@ COMMANDS = {
     "sharing-disable",
     "sharing-status",
     "recover",
+    "reporting-status",
+    "reporting-enable",
+    "reporting-disable",
 }
 
 

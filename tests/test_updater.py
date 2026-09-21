@@ -66,7 +66,8 @@ def make_remote(tmp: Path):
     # modules so post-switch idle probes exercise the actual interface.
     import shutil
 
-    for name in ("knowledge_service.py", "paths.py", "transcript.py"):
+    for name in ("knowledge_service.py", "paths.py", "transcript.py",
+                 "diagnostic_support.py", "diagnostic_fallback.py"):
         shutil.copy2(SCRIPTS / name, src / "scripts" / name)
     (src / "marker.txt").write_text("one")
     git(["init", "-b", "main"], src)
