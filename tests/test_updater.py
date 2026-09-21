@@ -220,7 +220,7 @@ class UpdaterTests(unittest.TestCase):
         self.assertIsNone(genstate.read_current(self.adapter)["sha"])
         self.assertEqual(genstate.read_status(self.adapter)["result"], "deferred")
 
-    def test_idle_fails_closed_without_runtime(self):
+    def test_idle_uses_reviewed_updater_helper_not_old_generation_scripts(self):
         empty = self.tmp / "empty-gen"
         (empty / "scripts").mkdir(parents=True)
         genstate.write_current({
@@ -231,10 +231,9 @@ class UpdaterTests(unittest.TestCase):
         }, self.adapter)
         result = self.run_check()
         self.assertEqual(result, 0)
-        self.assertEqual(self.installs, [])
+        self.assertEqual(len(self.installs), 1)
         status = genstate.read_status(self.adapter)
-        self.assertEqual(status["result"], "deferred")
-        self.assertIn("runtime import failed", status["error"])
+        self.assertEqual(status["result"], "switched")
 
     def test_shared_lock_blocks_exclusive_switch(self):
         holder = subprocess.Popen(
@@ -384,7 +383,7 @@ class UpdaterTests(unittest.TestCase):
         self.assertEqual(self.run_check(install=uncertain), 1)
         self.assertEqual(calls[1][0], package_a)
         # Rollback's reserved window ends where the feed reserve begins.
-        self.assertEqual(calls[1][1], updater.FEED_BUDGET)
+        self.assertEqual(calls[1][1], updater.FEED_BUDGET + updater.HANDOFF_BUDGET)
         current = genstate.read_current(self.adapter)
         self.assertEqual(current["sha"], first["sha"])
         status = genstate.read_status(self.adapter)
