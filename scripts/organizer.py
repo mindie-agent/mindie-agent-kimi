@@ -189,12 +189,8 @@ def doctor_isolated(home: Path) -> str:
 
 def run_native(payload):
     prompt = (
-        "Organize this increment. Keep initial, changed, untested, failed, "
-        "and verified states distinct in every title, summary, and body. "
-        "Call a setting failed only when the evidence records a failure; "
-        "a value changed before execution is not a failed experiment. "
-        "Do not invent trial history. Do not turn case-specific evidence "
-        "into a universal protocol. Return only JSON {\"entries\":[...]}.\n\n"
+        "Record only the supplied increment following the system instructions; "
+        "return JSON.\n\n"
         + json.dumps(payload, ensure_ascii=False)
     )
     isolated = Path(tempfile.mkdtemp(prefix="mindie-kimi-organizer-"))
