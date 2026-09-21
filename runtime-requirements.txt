@@ -1,0 +1,3 @@
+# Reviewed core and remote-dev revisions; adapter acceptance is separate.
+mindie-knowledge @ git+https://github.com/mindie-agent/knowledge@3f7c70d813377d3ba3140a0a585f48e1df04444b
+remote-dev @ git+https://github.com/mindie-agent/remote-dev@13301ef7f52b53ffca0a6702a8a3c18f2edfcd52

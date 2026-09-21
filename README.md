@@ -1,9 +1,59 @@
 # MindIE Agent for Kimi Code
 
-The independent Kimi Code adapter for [MindIE Agent](https://github.com/mindie-agent/mindie-agent).
+Design inherits all nine [VAWS / MindIE Agent principles](https://github.com/mindie-agent/mindie-agent/blob/main/docs/design-principles.md). Retiring the old runtime does not retire those principles.
 
-MindIE Agent inherits all nine [VAWS design principles](https://github.com/mindie-agent/mindie-agent/blob/main/docs/design-principles.md). The plugin architecture and Harness-specific adapters follow those same principles.
+Thin native Kimi plugin. Shared knowledge runtime lives in `mindie-knowledge`.
+This repository owns Kimi identity, `wire.jsonl` parsing, MCP dispatch, and
+the K3 organizer runner.
 
-This repository owns native Kimi task identity, explicit entry and first-use configuration, Hook and MCP adaptation, public-record parsing, the native organizer runner, and installation/update integration. Shared knowledge and publication belong to [knowledge](https://github.com/mindie-agent/knowledge); general remote tools belong to [remote-dev](https://github.com/mindie-agent/remote-dev).
+## Install
 
-Implementation and real macOS acceptance are in progress. This is not a released or fully accepted plugin. Old domain Skills and profiling analysis remain deferred.
+Requires Python 3.11+, Git and an installed Kimi Code with native plugin support.
+This is a pre-release implementation; see [acceptance status](docs/acceptance.md).
+
+Run `python3 scripts/setup.py`. It builds the pinned runtime, writes MindIE's
+configuration, leaves community sharing off, and registers the model-free
+update check. `--knowledge-python /absolute/path/to/python` is an optional
+operator override. Use `--no-schedule` for an isolated development install.
+
+Setup prints `native_package`. Install that exact package through the host:
+
+```sh
+python3 scripts/install_kimi_plugin.py --kimi-home /absolute/path/to/kimi-home --plugin-root /absolute/native_package/from/setup
+```
+
+The helper uses Kimi's native plugin API. It does not fabricate the host's
+installed-plugin registry. The generated package points to the persistent
+launcher, so already-loaded entrypoints remain callable across updates.
+
+Configuration defaults to `~/.config/mindie-agent/`; local runtime data defaults
+to `~/.local/share/mindie-agent/kimi`. Setup supports `--community-*` after
+installation; no reinstall or hand-edited JSON is needed to opt in later.
+
+## First use
+
+`/mindie-agent:init` — one `mindie_entry` MCP call bound by PreToolUse nonce
+and the current turn-opening `plugin_command` origin. No SessionStart model
+launch. Unconfigured status still works offline (sharing off, no service).
+
+Three choices: recommended public contribution, read-only, or later. Reply
+`read-only`/`later`, or run `/mindie-agent:init read-only|later`. Enabling
+contribution requires explicit repository, account, project root, and
+`--visibility public`.
+
+## Tools
+
+Knowledge MCP requires init and a fresh `request_nonce`. Remote-dev is
+independent of knowledge activation and also requires `request_nonce`.
+
+## Updates
+
+This adapter updates its local-path plugin package through the native host API,
+driven by the OS scheduler (launchd every
+5 minutes on macOS; Windows registration unverified). Each check resolves
+remote `main` to one SHA, stages an immutable generation with its own
+pinned venv, asks shared core `stop_if_idle` under the exclusive operation
+lock, installs through Kimi's native plugin API with readback, and
+atomically flips the generation pointer — rollback receipt included.
+Details, status/recovery commands, and the host-reload boundary:
+[docs/update.md](docs/update.md).
