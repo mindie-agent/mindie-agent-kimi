@@ -109,7 +109,7 @@ class UpdaterTests(unittest.TestCase):
         bootstrap.parent.mkdir(parents=True, exist_ok=True)
         bootstrap.write_text("# live bootstrap launcher\n")
         self._sync = updater._feed_sync
-        updater._feed_sync = lambda adapter, deadline: None
+        updater._feed_sync = lambda adapter, deadline: True
         self.installs = []
 
     def tearDown(self):
@@ -278,7 +278,7 @@ class UpdaterTests(unittest.TestCase):
 
     def test_interrupted_staging_suppresses_and_recovers(self):
         calls = []
-        updater._feed_sync = lambda adapter, deadline: calls.append("sync")
+        updater._feed_sync = lambda adapter, deadline: calls.append("sync") or True
 
         def broken(generation, deadline):
             raise RuntimeError("venv creation interrupted")
@@ -345,7 +345,7 @@ class UpdaterTests(unittest.TestCase):
 
         def spy(argv, stdin="", **kw):
             recorded.append(argv)
-            return ""
+            return "[]"
 
         updater.bounded_run = spy
         try:

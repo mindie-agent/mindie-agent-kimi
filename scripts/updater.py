@@ -109,6 +109,74 @@ print(json.dumps(result))
 """
 
 
+_FEED_OK = frozenset({"synced", "unchanged"})
+_FEED_PENDING = frozenset({"busy", "deferred"})
+_FEED_ERROR = frozenset({"unavailable", "invalid", "exhausted"})
+_FEED_KNOWN = _FEED_OK | _FEED_PENDING | _FEED_ERROR
+
+
+def fold_feed_results(output):
+    """Fold core `sync` stdout, which MUST be one JSON list (no prefix/suffix).
+
+    Empty list is ok. busy/deferred means not completed now, not a failed
+    attempt: all-pending folds to deferred. Mix of completed (synced/unchanged)
+    with pending or failed folds to degraded. No completed rows plus at least
+    one unavailable/invalid/exhausted folds to sync_failed. Every original
+    row is preserved. Unknown status or malformed stdout raises.
+    """
+    text = (output or "").strip()
+    if not text:
+        raise ValueError("knowledge sync returned empty output")
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError("knowledge sync returned non-JSON") from exc
+    if not isinstance(payload, list):
+        raise ValueError("knowledge sync result is not a list")
+    rows = []
+    for item in payload:
+        if not isinstance(item, dict):
+            raise ValueError("knowledge sync row is not an object")
+        status = item.get("status")
+        repo = item.get("repository")
+        if not isinstance(status, str) or not status:
+            raise ValueError("knowledge sync row missing status")
+        if not isinstance(repo, str) or not repo:
+            raise ValueError("knowledge sync row missing repository")
+        if status not in _FEED_KNOWN:
+            raise ValueError("knowledge sync unknown status: " + status)
+        rows.append(item)
+    good = sum(1 for row in rows if row["status"] in _FEED_OK)
+    pending = sum(1 for row in rows if row["status"] in _FEED_PENDING)
+    failed = sum(1 for row in rows if row["status"] in _FEED_ERROR)
+    if not rows or good == len(rows):
+        aggregate = "ok"
+        summary = None
+    elif good and (pending or failed):
+        aggregate = "degraded"
+        summary = _feed_error_summary(rows)
+    elif failed:
+        aggregate = "sync_failed"
+        summary = _feed_error_summary(rows)
+    elif pending:
+        aggregate = "deferred"
+        summary = _feed_error_summary(rows)
+    else:
+        aggregate = "sync_failed"
+        summary = _feed_error_summary(rows)
+    return aggregate, rows, summary
+
+
+def _feed_error_summary(rows):
+    parts = []
+    for row in rows:
+        if row["status"] in _FEED_OK:
+            continue
+        detail = row.get("detail") or row.get("cause") or ""
+        parts.append(f"{row['repository']}:{row['status']}:{str(detail)[:80]}")
+    return "; ".join(parts)[:240]
+
+
 class CheckFailed(RuntimeError):
     """A failed check: suppress this exact revision until recover."""
 
@@ -612,31 +680,45 @@ def check(config=None, *, force=False, build=build_runtime,
         return 0
 
 
-def _feed_sync(adapter: dict, deadline: float) -> None:
+def _feed_sync(adapter: dict, deadline: float) -> bool:
     """Independent knowledge feed sync through shared core, with the
     CURRENT committed interpreter. Tuple selection happens INSIDE the
     shared operation lock. No organizer, no model; bounded by the feed
-    reserve; never retried."""
+    reserve; never retried. Returns True only when every feed is
+    synced/unchanged (or the configured list is empty)."""
     status = read_status(adapter)
     left = deadline - time.monotonic()
     if left <= 0:
         status["feed_sync"] = "skipped: check budget exhausted"
+        status["feed_error"] = "skipped: check budget exhausted"
+        status.pop("feed_results", None)
         write_status(status, adapter)
-        return
+        return False
     try:
         with OperationLock(adapter).shared(timeout=min(5, left)):
             current = read_current(adapter)
             engine = _generation_engine(current)
-            bounded_run(
+            output = bounded_run(
                 [current["python"], "-m", "mindie_knowledge.loop.cli",
                  "sync", "--config", engine],
                 "",
                 timeout=min(FEED_BUDGET, deadline - time.monotonic()),
             )
-        status["feed_sync"] = "ok"
+        aggregate, rows, summary = fold_feed_results(output)
+        status["feed_sync"] = aggregate
+        status["feed_results"] = rows
+        if summary:
+            status["feed_error"] = summary
+        else:
+            status.pop("feed_error", None)
+        write_status(status, adapter)
+        return aggregate == "ok"
     except Exception as exc:
-        status["feed_sync"] = f"skipped: {str(exc)[:200]}"
-    write_status(status, adapter)
+        status["feed_sync"] = "sync_failed"
+        status["feed_error"] = str(exc)[:240]
+        status.pop("feed_results", None)
+        write_status(status, adapter)
+        return False
 
 
 def status() -> int:
@@ -678,14 +760,10 @@ def install_schedule(config_file=None) -> int:
     else:
         adapter = load_adapter_config()
         config_file = config_path()
-    launcher = launch_dir(adapter) / "bootstrap" / LAUNCHER
-    if not launcher.is_file():
-        scripts = Path(read_current(adapter)["generation"]) / "scripts"
-        if not (scripts / LAUNCHER).is_file():
-            raise SystemExit(f"no launcher available at {scripts}")
-        launcher.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(scripts / LAUNCHER, launcher)
-        shutil.copy2(scripts / "bounded.py", launcher.parent / "bounded.py")
+    current = read_current(adapter)
+    launcher = launch_dir(adapter) / (current.get("sha") or "bootstrap") / LAUNCHER
+    if not launcher.is_file() or not (launcher.parent / "bounded.py").is_file():
+        raise SystemExit(f"no launcher available at {launcher.parent}")
     command = schedule_command(launcher, config_file)
     log = update_dir(adapter) / "scheduler.log"
     if sys.platform == "darwin":
