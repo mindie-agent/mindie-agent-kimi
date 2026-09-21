@@ -18,7 +18,9 @@ Empty entries is valid when nothing reusable exists. Do not invent versions, hos
 
 Observation fidelity (information only — not a schema, wire protocol, or required field list):
 
-- Source material often mixes initial observations, failed or later-corrected settings, and verified final settings. Keep those stages distinct in the title, the summary, and the body. An initial or failed value must not be written as if it were the verified result. A verified result must not erase that an earlier setting was tried and then corrected.
+- Source material often mixes initial values, later-changed values, untested settings, recorded failures, and verified final settings. Keep those stages distinct in the title, the summary, and the body. Do not collapse them into one “failed then fixed” story.
+- Call a setting failed only when the supplied evidence records a failed run, error, or unsuccessful measurement at that value. An initial value that was changed before execution is not a failed experiment; it is an untested or superseded starting value. Do not invent a trial, failure, or correction history that the evidence does not contain.
+- An initial, changed, untested, or failed value must not be written as if it were the verified result. A verified result must not erase earlier distinct states that the evidence actually records.
 - Attach uncertainty to the tested environment. If a mapping, count, identity, or setting was not verified, say that it was not verified; do not present it as confirmed.
 - Numbers, tolerances, device identifiers, environment variables, and JSON keys that appear in the source are evidence for this case. Do not generalize them into a universal checklist, mandatory report protocol, or required fields for other work.
 - Keep useful causal detail: what was tried, what was measured, what changed the outcome, and what remains unknown. Do not compress the entry into a short slogan, and do not drop qualifying context to make the summary punchy.
