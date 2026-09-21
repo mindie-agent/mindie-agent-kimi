@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -22,6 +23,15 @@ from identity import claim_nonce, finish_nonce, require_nonce
 from paths import load_adapter_config, load_engine_config, state_dir
 
 MAX_LINE = 128 * 1024
+MAX_YIELD_TIME_MS = 30000
+REMOTE_ERROR_CATEGORIES = frozenset({
+    "internal", "caller", "validation", "permission", "remote_execution",
+    "cancelled", "connection_capacity", "connection_timeout",
+    "connection_unavailable", "rpc_disconnected", "rpc_send", "rpc_timeout",
+    "command_exit", "command_protocol", "command_timeout", "remote_worker",
+    "worker_capacity",
+})
+JOB_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{2,95}$")
 NONCE_PROP = {
     "type": "string",
     "minLength": 8,
@@ -33,11 +43,13 @@ KNOWLEDGE_TOOLS = [
     dict(
         name="mindie_entry",
         description=(
-            "Native MindIE slash entry. Call only for the current /mindie-agent:* "
-            "command. Requires a fresh request_nonce. Never pass a session id. "
+            "Native MindIE entry. Mutations require the current /mindie-agent:* "
+            "command; op=status can diagnose an already enabled or paused task. "
+            "Requires a fresh request_nonce. Never pass a session id. "
             "op=init returns first-use choices or status; op=choose stores "
             "read-only or later; contribution requires sharing-enable with "
-            "repository, account, project root, and public visibility."
+            "repository, account, project root, and public visibility. "
+            "Status includes safe task failure categories and contribution batch IDs for recover inspection; it never retries work."
         ),
         inputSchema=dict(
             type="object",
@@ -124,6 +136,70 @@ def failure(exc):
     return dict(content=[dict(type="text", text=text)], isError=True)
 
 
+def _validated_job_ref(args):
+    if not isinstance(args, dict):
+        return None, None
+    for key in ("job_id", "session_id"):
+        value = args.get(key)
+        if isinstance(value, str) and JOB_ID_RE.fullmatch(value):
+            return key, value
+    return None, None
+
+
+def remote_stage_failure(args, name, stage, exc=None):
+    structured = {"stage": stage, "remote_outcome": "unconfirmed"}
+    if exc is not None:
+        from remote_dev.core.errors import error_details
+
+        details = error_details(exc)
+        category = details.get("category")
+        structured["category"] = (
+            category if isinstance(category, str) and category in REMOTE_ERROR_CATEGORIES
+            else "internal"
+        )
+        certainty = details.get("submission_state")
+        if isinstance(certainty, str) and certainty in {"not_sent", "uncertain", "acknowledged"}:
+            structured["submission_state"] = certainty
+        if type(details.get("retryable")) is bool:
+            structured["retryable"] = details["retryable"]
+    key, value = _validated_job_ref(args)
+    if key:
+        structured[key] = value
+        text = (
+            f"Remote outcome unconfirmed ({stage}). "
+            f"Inspect or stop original {key} {value} before a deliberate repeat."
+        )
+    elif name == "remote_bash":
+        if structured.get("submission_state") == "not_sent":
+            structured["remote_outcome"] = "not_sent"
+            text = f"Remote request was not sent ({stage})."
+        else:
+            text = (
+                f"Remote submission unconfirmed ({stage}). "
+                "Inspect local remote-dev job records before a deliberate repeat."
+            )
+    else:
+        text = f"Unavailable ({stage}). Continue independently."
+    for key in ("category", "submission_state"):
+        if key in structured:
+            text += f" {key}={structured[key]}."
+    return dict(
+        content=[dict(type="text", text=text[:500])],
+        isError=True,
+        structuredContent=structured,
+    )
+
+
+def clamp_remote_args(args):
+    body = dict(args)
+    if "yield_time_ms" in body:
+        yield_ms = body["yield_time_ms"]
+        if type(yield_ms) is not int:
+            raise ValueError("yield_time_ms must be an integer")
+        body["yield_time_ms"] = min(yield_ms, MAX_YIELD_TIME_MS)
+    return body
+
+
 def reject_native_identity_args(args, surface):
     """Native task ownership is never taken from tool arguments.
 
@@ -197,7 +273,7 @@ def remote_call(name, args, session):
     os.environ["REMOTE_DEV_SESSION_ID"] = session
     os.environ["REMOTE_DEV_STATE_DIR"] = str(root)
     canonical_name = ALIASES.get(name, name)
-    return call_tool(canonical_name, args)
+    return call_tool(canonical_name, clamp_remote_args(args))
 
 
 def handle(surface, message):
@@ -269,7 +345,14 @@ def handle(surface, message):
                 isError=False,
             )
         else:
-            payload = remote_call(name, body, session)
+            try:
+                payload = remote_call(name, body, session)
+            except (ValueError, OSError, RuntimeError, KeyError, TypeError) as exc:
+                return dict(
+                    jsonrpc="2.0",
+                    id=ident,
+                    result=remote_stage_failure(body, name, "helper_failed", exc),
+                )
             text = payload.get("text") if isinstance(payload, dict) else canonical(payload)
             result = dict(
                 content=[dict(type="text", text=text if isinstance(text, str) else canonical(payload))],

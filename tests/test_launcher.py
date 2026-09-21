@@ -1,5 +1,6 @@
 import json
 import os
+import selectors
 import subprocess
 import sys
 import tempfile
@@ -480,14 +481,29 @@ class LauncherTests(unittest.TestCase):
                 },
             )
             write_current(config, generation)
-            listed = run_launch(
-                ["--config", str(config), "mcp", "knowledge"],
-                json.dumps(dict(jsonrpc="2.0", id=1, method="tools/list")) + "\n",
-                env=env,
+            # Keep the MCP transport open until the response; EOF cancels work.
+            listed = subprocess.Popen(
+                [sys.executable, str(LAUNCH), "--config", str(config), "mcp", "knowledge"],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, env=env,
             )
-            self.assertEqual(listed.returncode, 0, listed.stderr)
-            payload = json.loads(listed.stdout.splitlines()[-1])
-            self.assertEqual(payload["result"]["tools"][0]["name"], "from-custom")
+            selector = selectors.DefaultSelector()
+            try:
+                listed.stdin.write(json.dumps(dict(jsonrpc="2.0", id=1, method="tools/list")) + "\n")
+                listed.stdin.flush()
+                selector.register(listed.stdout, selectors.EVENT_READ)
+                self.assertTrue(selector.select(3), "MCP response deadline")
+                payload = json.loads(listed.stdout.readline())
+                self.assertEqual(payload["result"]["tools"][0]["name"], "from-custom")
+                listed.stdin.close()
+                self.assertEqual(listed.wait(timeout=3), 0)
+            finally:
+                selector.close()
+                if listed.poll() is None:
+                    listed.kill()
+                    listed.wait(timeout=3)
+                for stream in (listed.stdin, listed.stdout, listed.stderr):
+                    stream.close()
 
     def test_front_dispatches_once_to_real_generation_scripts(self):
         with tempfile.TemporaryDirectory() as raw:

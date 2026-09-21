@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -41,6 +42,13 @@ HOOK_TOTAL = 1.5
 HOOK_LOCK_BUDGET = 0.3
 CALL_LOCK_BUDGET = 5.0
 CALL_CHILD_BUDGET = 60.0
+MAX_RPC_ID = 256
+WORK_LIMIT = 3
+CONTROL_LIMIT = 1
+EOF_JOIN = 3.0
+OUTPUT_BUDGET = 1.0
+CONTROL_TOOLS = {"remote_job_status", "remote_job_stop", "remote_job_tail"}
+JOB_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{2,95}$")
 
 
 _CONFIG_FILE = None
@@ -139,7 +147,7 @@ def _unlock(descriptor) -> None:
         pass
 
 
-def _shared_lock(state: Path, deadline: float):
+def _shared_lock(state: Path, deadline: float, cancel=None):
     """Bounded nonblocking shared lock. Never executes unprotected."""
     lock_path = state / "update" / "operation.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -147,6 +155,8 @@ def _shared_lock(state: Path, deadline: float):
     acquired = False
     try:
         while True:
+            if cancel is not None and cancel.is_set():
+                raise bounded.CommandCancelled("command cancelled")
             try:
                 _try_lock_shared(descriptor)
                 acquired = True
@@ -318,28 +328,82 @@ def _local_answer(message: dict):
     return None
 
 
-def _error(ident, text: str):
+def _valid_rpc_id(value) -> bool:
+    if isinstance(value, bool) or value is None:
+        return False
+    if isinstance(value, int):
+        return True
+    return isinstance(value, str) and 1 <= len(value) <= MAX_RPC_ID
+
+
+def _local_tool_name(message):
+    params = message.get("params") if isinstance(message.get("params"), dict) else {}
+    name = params.get("name")
+    if not isinstance(name, str) or not name:
+        return None
+    return name.rsplit("__", 1)[-1]
+
+
+def _validated_remote_ref(message):
+    params = message.get("params") if isinstance(message.get("params"), dict) else {}
+    args = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
+    for key in ("job_id", "session_id"):
+        value = args.get(key)
+        if isinstance(value, str) and JOB_ID_RE.fullmatch(value):
+            return key, value
+    return None, None
+
+
+def _front_reject(ident, text: str):
     return dict(
         jsonrpc="2.0",
         id=ident,
         result=dict(
-            content=[
-                dict(
-                    type="text",
-                    text=f"Unavailable: {text}. Continue independently."[:500],
-                )
-            ],
+            content=[dict(type="text", text=text[:500])],
             isError=True,
         ),
     )
 
 
-def _dispatch(surface: str, raw: bytes, ident):
+def _stage_error(ident, message, stage: str, surface: str):
+    structured = {"stage": stage}
+    text = f"Unavailable ({stage}). Continue independently."
+    if surface == "remote":
+        structured["remote_outcome"] = "unconfirmed"
+        key, value = _validated_remote_ref(message)
+        name = _local_tool_name(message)
+        if key:
+            structured[key] = value
+            text = (
+                f"Remote outcome unconfirmed ({stage}). "
+                f"Inspect or stop original {key} {value} before a deliberate repeat."
+            )
+        elif name == "remote_bash":
+            text = (
+                f"Remote submission unconfirmed ({stage}). "
+                "Inspect local remote-dev job records before a deliberate repeat."
+            )
+    return dict(
+        jsonrpc="2.0",
+        id=ident,
+        result=dict(
+            content=[dict(type="text", text=text[:500])],
+            isError=True,
+            structuredContent=structured,
+        ),
+    )
+
+
+def _dispatch(surface: str, raw: bytes, ident, cancel=None):
     """One bounded one-shot request through CURRENT generation. Never replayed."""
+    if cancel is not None and cancel.is_set():
+        raise bounded.CommandCancelled("command cancelled")
     state = _state_dir()
     deadline = time.monotonic() + CALL_LOCK_BUDGET
-    descriptor = _shared_lock(state, deadline)
+    descriptor = _shared_lock(state, deadline, cancel=cancel)
     try:
+        if cancel is not None and cancel.is_set():
+            raise bounded.CommandCancelled("command cancelled")
         current = _current(state)
         script = Path(current["generation"]) / "scripts" / "mcp_server.py"
         if not script.is_file():
@@ -351,7 +415,10 @@ def _dispatch(surface: str, raw: bytes, ident):
             timeout=CALL_CHILD_BUDGET,
             env=_child_env(current),
             cwd=str(Path(current["generation"])),
+            cancel=cancel,
         )
+        if cancel is not None and cancel.is_set():
+            raise bounded.CommandCancelled("command cancelled")
         lines = [line for line in out.splitlines() if line.strip()]
         if len(lines) != 1:
             raise RuntimeError("generation returned no single response; not replayed")
@@ -384,36 +451,191 @@ def _read_mcp_line(stdin, limit: int):
 
 
 def _mcp(surface: str) -> int:
-    write = sys.stdout.buffer
+    output_fd = sys.stdout.fileno()
+    if os.name == "posix":
+        os.set_blocking(output_fd, False)
     stdin = sys.stdin.buffer
-    while True:
-        raw = _read_mcp_line(stdin, MAX_LINE)
-        if raw is False:
-            break
-        if raw is None or not raw.strip():
-            continue
+    output_lock = threading.Lock()
+    transport_closed = threading.Event()
+    pending_lock = threading.Lock()
+    pending = {}
+    workers = []
+    active_work = 0
+    active_control = 0
+
+    def send(response):
+        # A client that stops reading must not hold cancellation/EOF forever.
+        deadline = time.monotonic() + OUTPUT_BUDGET
+        if not output_lock.acquire(timeout=OUTPUT_BUDGET):
+            raise TimeoutError("response output unavailable")
         try:
-            message = json.loads(raw)
-        except ValueError:
-            continue
-        if not isinstance(message, dict) or "id" not in message:
-            continue
-        ident = message["id"]
-        response = _local_answer(message)
-        if response is None:
-            if message.get("method") not in {"tools/list", "tools/call"}:
-                response = dict(
-                    jsonrpc="2.0",
-                    id=ident,
-                    error=dict(code=-32601, message="Method not found"),
-                )
-            else:
+            data = memoryview(json.dumps(response, ensure_ascii=False).encode() + b"\n")
+            while data:
+                if transport_closed.is_set() or time.monotonic() >= deadline:
+                    raise TimeoutError("response output unavailable")
                 try:
-                    response = _dispatch(surface, raw, ident)
-                except Exception as exc:
-                    response = _error(ident, str(exc)[:300])
-        write.write(json.dumps(response, ensure_ascii=False).encode() + b"\n")
-        write.flush()
+                    count = os.write(output_fd, data)
+                except BlockingIOError:
+                    transport_closed.wait(0.02)
+                    continue
+                if not count:
+                    raise BrokenPipeError("response transport closed")
+                data = data[count:]
+        finally:
+            output_lock.release()
+
+    def reap():
+        alive = []
+        for thread in workers:
+            if thread.is_alive():
+                alive.append(thread)
+            else:
+                thread.join(timeout=0)
+        workers[:] = alive
+
+    def execute(raw, message, ident, cancel, slot):
+        nonlocal active_work, active_control
+        try:
+            try:
+                if cancel.is_set():
+                    raise bounded.CommandCancelled("command cancelled")
+                response = _dispatch(surface, raw, ident, cancel=cancel)
+            except bounded.CommandCancelled:
+                response = _stage_error(ident, message, "cancelled", surface)
+            except (bounded.CommandTimedOut, LockUnavailable):
+                response = _stage_error(ident, message, "deadline", surface)
+            except Exception:
+                response = _stage_error(ident, message, "helper_failed", surface)
+            # Terminal selection is atomic with cancellation; no state lock
+            # spans output I/O. A later cancellation cannot change completion.
+            with pending_lock:
+                if cancel.is_set():
+                    response = _stage_error(ident, message, "cancelled", surface)
+                if pending.get(ident) is cancel:
+                    pending.pop(ident)
+            send(response)
+        except OSError:
+            transport_closed.set()
+            with pending_lock:
+                for event in pending.values():
+                    event.set()
+        finally:
+            with pending_lock:
+                if pending.get(ident) is cancel:
+                    pending.pop(ident)
+                if slot == "control":
+                    active_control -= 1
+                else:
+                    active_work -= 1
+
+    try:
+        while not transport_closed.is_set():
+            raw = _read_mcp_line(stdin, MAX_LINE)
+            if raw is False:
+                break
+            if raw is None or not raw.strip():
+                continue
+            try:
+                message = json.loads(raw)
+            except ValueError:
+                continue
+            if not isinstance(message, dict):
+                continue
+            method = message.get("method")
+            if method == "notifications/cancelled":
+                params = (
+                    message.get("params")
+                    if isinstance(message.get("params"), dict)
+                    else {}
+                )
+                request_id = params.get("requestId")
+                if _valid_rpc_id(request_id):
+                    with pending_lock:
+                        event = pending.get(request_id)
+                        if event is not None:
+                            event.set()
+                continue
+            if "id" not in message:
+                continue
+            ident = message["id"]
+            if not _valid_rpc_id(ident):
+                send(
+                    dict(
+                        jsonrpc="2.0",
+                        id=None,
+                        error=dict(code=-32600, message="Invalid request id"),
+                    )
+                )
+                continue
+            local = _local_answer(message)
+            if local is not None:
+                with pending_lock:
+                    duplicate = ident in pending
+                if duplicate:
+                    send(_front_reject(ident, "Duplicate pending request; not executed."))
+                    continue
+                send(local)
+                continue
+            if method not in {"tools/list", "tools/call"}:
+                send(
+                    dict(
+                        jsonrpc="2.0",
+                        id=ident,
+                        error=dict(code=-32601, message="Method not found"),
+                    )
+                )
+                continue
+            is_control = (
+                method == "tools/call" and _local_tool_name(message) in CONTROL_TOOLS
+            )
+            slot = None
+            cancel = None
+            with pending_lock:
+                reap()
+                if ident in pending:
+                    duplicate = True
+                else:
+                    duplicate = False
+                    if is_control:
+                        if active_work < WORK_LIMIT:
+                            slot = "work"
+                        elif active_control < CONTROL_LIMIT:
+                            slot = "control"
+                    elif active_work < WORK_LIMIT:
+                        slot = "work"
+                    if slot == "work":
+                        active_work += 1
+                    elif slot == "control":
+                        active_control += 1
+                    if slot:
+                        cancel = threading.Event()
+                        pending[ident] = cancel
+            if duplicate:
+                send(_front_reject(ident, "Duplicate pending request; not executed."))
+                continue
+            if slot is None:
+                send(_front_reject(ident, "Request capacity reached; not executed."))
+                continue
+            thread = threading.Thread(
+                target=execute,
+                args=(raw, message, ident, cancel, slot),
+                name=f"mindie-mcp-{ident}",
+                daemon=True,  # EOF does not join a blocked transport writer forever.
+            )
+            thread.start()
+            workers.append(thread)
+    finally:
+        transport_closed.set()
+        with pending_lock:
+            events = list(pending.values())
+        for event in events:
+            event.set()
+        deadline = time.monotonic() + EOF_JOIN
+        for thread in list(workers):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            thread.join(timeout=remaining)
     return 0
 
 

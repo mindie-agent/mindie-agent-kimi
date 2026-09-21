@@ -319,3 +319,48 @@ class McpTests(unittest.TestCase):
             self.assertEqual(payload["id"], 12)
             self.assertTrue(payload["result"]["isError"])
             self.assertIn("replay", payload["result"]["content"][0]["text"].lower())
+
+
+class RemoteObservationBoundTests(unittest.TestCase):
+    def test_only_poll_yield_is_capped(self):
+        import mcp_server
+        args = {"yield_time_ms": 300000, "timeout_ms": 600000}
+        self.assertEqual(mcp_server.clamp_remote_args(args),
+                         {"yield_time_ms": 30000, "timeout_ms": 600000})
+        self.assertEqual(args["yield_time_ms"], 300000)
+        for invalid in ("300000", True, 1.5):
+            with self.subTest(value=invalid), self.assertRaises(ValueError):
+                mcp_server.clamp_remote_args({"yield_time_ms": invalid})
+
+
+class RemoteFailureProjectionTests(unittest.TestCase):
+    def test_only_typed_fields_survive(self):
+        import mcp_server
+        from remote_dev.core.errors import RemoteExecutionError, caller_error
+        result = mcp_server.remote_stage_failure(
+            {"job_id": "original-job"}, "remote_job_status", "helper_failed",
+            RemoteExecutionError("PRIVATE_SENTINEL", category="rpc_timeout",
+                                 submission_state="uncertain", retryable=False))
+        self.assertEqual(result["structuredContent"], {
+            "stage": "helper_failed", "remote_outcome": "unconfirmed",
+            "job_id": "original-job", "category": "rpc_timeout",
+            "submission_state": "uncertain", "retryable": False})
+        self.assertNotIn("PRIVATE_SENTINEL", json.dumps(result))
+        result = mcp_server.remote_stage_failure(
+            {}, "remote_bash", "helper_failed", caller_error("PRIVATE_SENTINEL"))
+        self.assertEqual(result["structuredContent"]["remote_outcome"], "not_sent")
+        self.assertNotIn("unconfirmed", json.dumps(result))
+        self.assertNotIn("PRIVATE_SENTINEL", json.dumps(result))
+
+    def test_unrecognized_category_cannot_expose_lowercase_secret(self):
+        import mcp_server
+        from remote_dev.core.errors import RemoteExecutionError
+        result = mcp_server.remote_stage_failure(
+            {}, "remote_bash", "helper_failed",
+            RemoteExecutionError("other_secret", category="lower_case_secret"))
+        self.assertEqual(result["structuredContent"]["category"], "internal")
+        self.assertNotIn("secret", json.dumps(result))
+
+
+if __name__ == "__main__":
+    unittest.main()
