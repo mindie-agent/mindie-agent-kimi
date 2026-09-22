@@ -34,8 +34,56 @@ import threading
 import time
 from pathlib import Path
 
+def _load_diagnostic_support():
+    """Use adjacent modules, or this old-packed launcher's exact generation.
+
+    Never search PYTHONPATH or select modules through current.json. The old
+    packer copies only launcher/bounded; the complete source remains beside it
+    in update/generations/<the launcher's own revision>/scripts.
+    """
+    import importlib.util
+    import stat
+
+    directory = Path(__file__).resolve().parent
+
+    def regular(path):
+        try:
+            return stat.S_ISREG(path.lstat().st_mode)
+        except OSError:
+            return False
+
+    if not regular(directory / "diagnostic_support.py"):
+        if (directory.parent.name != "launch" or directory.parent.parent.name != "update"
+                or not (directory.name == "bootstrap" or re.fullmatch(r"[0-9a-f]{40}", directory.name))):
+            raise ModuleNotFoundError("MindIE launcher diagnostics are missing")
+        directory = directory.parent.parent / "generations" / directory.name / "scripts"
+        if directory.resolve() != directory:
+            raise ModuleNotFoundError("MindIE generation diagnostics path is invalid")
+
+    def load(name):
+        path = directory / (name + ".py")
+        if not regular(path):
+            raise ModuleNotFoundError("MindIE generation diagnostics are missing")
+        existing = sys.modules.get(name)
+        if existing is not None and getattr(existing, "__file__", None) == str(path):
+            return existing
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        try:
+            spec.loader.exec_module(module)
+        except BaseException:
+            sys.modules.pop(name, None)
+            raise
+        return module
+
+    load("diagnostic_fallback")
+    return load("diagnostic_support")
+
+
 import bounded
-import diagnostic_support
+
+diagnostic_support = _load_diagnostic_support()
 
 MAX_LINE = 128 * 1024
 MAX_HOOK_BYTES = 128 * 1024
@@ -133,7 +181,6 @@ def _dispatch_failure(current, stage, category, exc, started):
         stage,
         category,
         exception=exc,
-        revision=current.get("sha"),
         elapsed_ms=elapsed_ms,
     )
     return DispatchFailure(diagnostic, stage)
@@ -307,7 +354,6 @@ def _hook(op: str) -> int:
                 "hook",
                 "helper_missing",
                 "missing_committed_file",
-                revision=current.get("sha"),
                 reportable=(op != "stop"),
             )
             return _fail_open()
@@ -322,7 +368,6 @@ def _hook(op: str) -> int:
                 stage,
                 category,
                 exception=exc,
-                revision=current.get("sha"),
                 reportable=(op != "stop"),
                 elapsed_ms=max(0, int((time.monotonic() - started) * 1000)),
             )
@@ -730,7 +775,6 @@ def _updater(rest) -> int:
             "updater",
             "helper_missing",
             "missing_committed_file",
-            revision=current.get("sha"),
         )
         print("committed generation lacks updater.py", file=sys.stderr)
         return 2
@@ -745,7 +789,6 @@ def _updater(rest) -> int:
             "updater",
             "helper_failed",
             "child_failure",
-            revision=current.get("sha"),
         )
         print("committed generation updater could not start", file=sys.stderr)
         return 2

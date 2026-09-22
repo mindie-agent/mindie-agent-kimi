@@ -24,36 +24,130 @@ def _hex(value, length):
     return None
 
 
-def build_metadata():
-    """Read this package's diagnostic-build.json. No subprocess or network."""
+_VERSION_RE = re.compile(r"[0-9A-Za-z][0-9A-Za-z.+-]{0,79}")
+
+
+def _read_small(path, limit=2048):
+    """Bounded regular-file read; rejects symlinks where O_NOFOLLOW is available.
+
+    FileNotFoundError if the path is absent. None if present but unusable
+    (non-regular, oversize, unreadable, or a symlink on those platforms). No writes.
+    """
     fd = None
     try:
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "diagnostic-build.json")
         flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
         fd = os.open(path, flags)
         info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or info.st_size > 2048:
-            return {}
-        raw = os.read(fd, 2049)
-        if len(raw) > 2048:
-            return {}
-        data = json.loads(raw.decode())
-        if not isinstance(data, dict):
-            return {}
-        revision = _hex(data.get("revision"), 40)
-        version = data.get("version")
-        result = {"revision": revision} if revision else {}
-        if isinstance(version, str) and re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z.+-]{0,79}", version):
-            result["version"] = version
-        return result
-    except Exception:
-        return {}
+        if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+            return None
+        raw = os.read(fd, limit + 1)
+        if len(raw) > limit:
+            return None
+        return raw
+    except FileNotFoundError:
+        raise
+    except OSError:
+        return None
     finally:
         if fd is not None:
             try:
                 os.close(fd)
-            except Exception:
+            except OSError:
                 pass
+
+
+def _own_generation():
+    """Generation that owns this module, or None.
+
+    scripts/diagnostic_support.py -> parent of scripts.
+    update/launch/<id>/diagnostic_support.py -> update/generations/<same id>.
+    """
+    directory = os.path.dirname(os.path.abspath(__file__))
+    parent = os.path.dirname(directory)
+    if os.path.basename(directory) == "scripts":
+        return parent
+    if os.path.basename(parent) != "launch":
+        return None
+    update = os.path.dirname(parent)
+    if os.path.basename(update) != "update":
+        return None
+    return os.path.join(update, "generations", os.path.basename(directory))
+
+
+def _version_of(raw):
+    try:
+        data = json.loads(raw.decode())
+    except (UnicodeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    version = data.get("version")
+    if isinstance(version, str) and _VERSION_RE.fullmatch(version):
+        return version
+    return None
+
+
+def _generation_metadata():
+    """Installed host-package version and completed-generation revision.
+
+    Used only when diagnostic-build.json is absent. No current.json, git, or writes.
+    """
+    generation = _own_generation()
+    if not generation:
+        return {}
+    result = {}
+    plugin = os.path.join(generation, "host-package", "kimi.plugin.json")
+    try:
+        raw = _read_small(plugin, 16384)
+    except FileNotFoundError:
+        raw = None
+    if raw:
+        version = _version_of(raw)
+        if version:
+            result["version"] = version
+    base = os.path.basename(generation)
+    if _hex(base, 40):
+        marker = os.path.join(generation, ".mindie-generation-complete")
+        try:
+            raw = _read_small(marker)
+        except FileNotFoundError:
+            raw = None
+        if raw is not None:
+            try:
+                text = raw.decode()
+            except UnicodeError:
+                text = None
+            # Updater writes the sha plus a single trailing newline.
+            if text in (base, base + "\n"):
+                result["revision"] = base
+    return result
+
+
+def build_metadata():
+    """Read this package's diagnostic-build.json. No subprocess or network.
+
+    An explicit adjacent file stays authoritative. Only a genuinely missing
+    file falls back to this generation's host package and completion marker.
+    """
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "diagnostic-build.json")
+    try:
+        raw = _read_small(path)
+    except FileNotFoundError:
+        return _generation_metadata()
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw.decode())
+    except (UnicodeError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    revision = _hex(data.get("revision"), 40)
+    version = data.get("version")
+    result = {"revision": revision} if revision else {}
+    if isinstance(version, str) and _VERSION_RE.fullmatch(version):
+        result["version"] = version
+    return result
 
 
 def _warn():
