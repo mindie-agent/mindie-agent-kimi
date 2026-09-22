@@ -28,10 +28,10 @@ _VERSION_RE = re.compile(r"[0-9A-Za-z][0-9A-Za-z.+-]{0,79}")
 
 
 def _read_small(path, limit=2048):
-    """Bytes of a nofollow regular file within the supplied byte limit.
+    """Bounded regular-file read; rejects symlinks where O_NOFOLLOW is available.
 
     FileNotFoundError if the path is absent. None if present but unusable
-    (symlink, non-regular, oversize, or unreadable). No writes.
+    (non-regular, oversize, unreadable, or a symlink on those platforms). No writes.
     """
     fd = None
     try:
