@@ -62,7 +62,9 @@ def _warn():
         return
     _warned = True
     try:
-        print(_STORAGE, file=sys.stderr)
+        descriptor = sys.stderr.fileno()
+        if not os.get_blocking(descriptor):
+            os.write(descriptor, (_STORAGE + "\n").encode("ascii"))
     except Exception:
         pass
 
@@ -144,7 +146,7 @@ def attach(result, diagnostic):
         return result
     result = dict(result, diagnostic=projected)
     incident = projected.get("incident_id")
-    text = (f"MindIE incident {incident}; use /mindie-agent:reporting-status."
+    text = (f"MindIE incident {incident}; read-only local status: /mindie-agent:reporting-status. Upload remains a separate opt-in."
             if incident else _STORAGE)
     content = result.get("content")
     if isinstance(content, list):

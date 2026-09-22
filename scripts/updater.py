@@ -762,17 +762,18 @@ def _logging_maintenance(adapter, deadline):
     try:
         with OperationLock(adapter).shared(timeout=min(0.5, remaining)):
             current = read_current(adapter)
-            output = bounded_run(
-                [current["python"], "-m", "mindie_diagnostics.cli",
-                 "reporting", "maintain", "--config",
-                 str(diagnostic_support.reporting_config_path())],
-                "",
-                timeout=min(5, deadline - time.monotonic()),
-            )
+        output = bounded_run(
+            [current["python"], "-m", "mindie_diagnostics.cli",
+             "reporting", "maintain", "--config",
+             str(diagnostic_support.reporting_config_path())],
+            "",
+            timeout=max(0.05, min(5, deadline - time.monotonic())),
+            max_output=65536,
+        )
         payload = json.loads((output or "").strip() or "null")
         if not isinstance(payload, dict):
             raise ValueError("maintenance result is not an object")
-        status["logging_maintenance"] = {"status": "completed"}
+        status["logging_maintenance"] = payload
     except LockTimeout:
         status["logging_maintenance"] = {"status": "deferred"}
     except Exception as exc:

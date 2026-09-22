@@ -319,7 +319,6 @@ def _build_event(
         "event": "operation.end",
         "operation_id": incident,
         "trace_id": incident,
-        "process_instance_id": _process_instance_id_unlocked(),
         "operation": operation,
         "status": "error",
     }
@@ -345,6 +344,8 @@ def _append_event(root, component, event) -> bool:
         base = _as_local_absolute(default_root() if root is None else root)
         if base is None or not _ancestors_are_real_dirs(base, create=True):
             return False
+        if _retention_blocked(base):
+            return False
         leaf = base / "events" / component
         if not _ensure_owned_tree(base, leaf):
             return False
@@ -360,6 +361,26 @@ def _append_event(root, component, event) -> bool:
         return False
     finally:
         _lock.release()
+
+
+def _retention_blocked(root):
+    """Offline-maintained quota gate. Unknown markers fail closed, no hot counter."""
+    path = root / "retention-state.json"
+    try:
+        info = os.lstat(path)
+        if os.name != "nt" and stat.S_IMODE(info.st_mode) & 0o077:
+            return True
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    raw = _read_regular_bounded(path, 2048)
+    try:
+        data = json.loads(raw) if raw is not None else None
+        return not (isinstance(data, dict) and data.get("schema") == 1
+                    and type(data.get("blocked")) is bool and data["blocked"] is False)
+    except (ValueError, TypeError):
+        return True
 
 
 def _append_line(directory, filename, payload) -> bool:
@@ -586,11 +607,6 @@ def _owned(info) -> bool:
         return False
 
 
-def _process_instance_id_unlocked() -> str:
-    """Placeholder replaced under the lock before the line is written."""
-    return "0" * 32
-
-
 def _process_instance_id_locked() -> str:
     global _process_pid, _process_uuid
     pid = os.getpid()
@@ -611,8 +627,12 @@ def _warn_once() -> None:
             return
         _warned = True
         try:
-            sys.stderr.write(_STATIC_WARN)
-            sys.stderr.flush()
+            # The failure result is authoritative. A full stderr pipe must not
+            # block business cleanup, and changing its flags would affect peers.
+            if os.name == "posix":
+                descriptor = sys.stderr.fileno()
+                if not os.get_blocking(descriptor):
+                    os.write(descriptor, _STATIC_WARN.encode("ascii"))
         except Exception:
             pass
     finally:

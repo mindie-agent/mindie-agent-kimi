@@ -151,7 +151,7 @@ def status_payload(session=None):
 
     payload = dict(_knowledge_status_payload(session))
     payload["reporting"] = diagnostic_support.reporting_status()
-    if payload.get("first_use") is None:
+    if payload["reporting"].get("status") == "not_configured":
         payload["reporting_choice"] = diagnostic_support.reporting_hint()
     return payload
 
