@@ -35,6 +35,7 @@ import time
 from pathlib import Path
 
 import bounded
+import diagnostic_support
 
 MAX_LINE = 128 * 1024
 MAX_HOOK_BYTES = 128 * 1024
@@ -114,6 +115,28 @@ def _sharing_enabled() -> bool:
 
 class LockUnavailable(RuntimeError):
     pass
+
+
+class DispatchFailure(RuntimeError):
+    """Known frontend contract failure. Only a safe stage and diagnostic."""
+
+    def __init__(self, diagnostic, stage):
+        super().__init__(stage)
+        self.diagnostic = diagnostic
+        self.stage = stage
+
+
+def _dispatch_failure(current, stage, category, exc, started):
+    elapsed_ms = max(0, int((time.monotonic() - started) * 1000))
+    diagnostic = diagnostic_support.failure(
+        "mcp_dispatch",
+        stage,
+        category,
+        exception=exc,
+        revision=current.get("sha"),
+        elapsed_ms=elapsed_ms,
+    )
+    return DispatchFailure(diagnostic, stage)
 
 
 def _try_lock_shared(descriptor) -> None:
@@ -280,10 +303,30 @@ def _hook(op: str) -> int:
         current = _current(state)
         script = Path(current["generation"]) / "scripts" / "bridge.py"
         if not script.is_file():
+            diagnostic_support.failure(
+                "hook",
+                "helper_missing",
+                "missing_committed_file",
+                revision=current.get("sha"),
+                reportable=(op != "stop"),
+            )
             return _fail_open()
         remaining = deadline - time.monotonic()
         if remaining <= 0.05:
             return _fail_open()
+        started = time.monotonic()
+
+        def _hook_failure(stage, category, exc=None):
+            diagnostic_support.failure(
+                "hook",
+                stage,
+                category,
+                exception=exc,
+                revision=current.get("sha"),
+                reportable=(op != "stop"),
+                elapsed_ms=max(0, int((time.monotonic() - started) * 1000)),
+            )
+
         try:
             out = bounded.run(
                 [current["python"], str(script), op],
@@ -291,16 +334,22 @@ def _hook(op: str) -> int:
                 timeout=remaining,
                 env=_child_env(current),
                 cwd=str(Path(current["generation"])),
-                check=False,
+                check=True,
             )
-        except Exception:
+        except bounded.CommandTimedOut as exc:
+            _hook_failure("helper_deadline", "child_deadline", exc)
+            return _fail_open()
+        except Exception as exc:
+            _hook_failure("helper_failed", "child_failure", exc)
             return _fail_open()
         text = out.strip() or "{}"
         try:
             value = json.loads(text.splitlines()[0] if text else "{}")
         except ValueError:
+            _hook_failure("helper_protocol", "protocol_mismatch")
             return _fail_open()
         if not isinstance(value, dict):
+            _hook_failure("helper_protocol", "protocol_mismatch")
             return _fail_open()
         print(json.dumps(value, ensure_ascii=False), flush=True)
         return 0
@@ -405,28 +454,49 @@ def _dispatch(surface: str, raw: bytes, ident, cancel=None):
         if cancel is not None and cancel.is_set():
             raise bounded.CommandCancelled("command cancelled")
         current = _current(state)
+        started = time.monotonic()
         script = Path(current["generation"]) / "scripts" / "mcp_server.py"
         if not script.is_file():
-            raise RuntimeError("committed generation lacks mcp_server.py")
+            raise _dispatch_failure(
+                current, "helper_missing", "missing_committed_file", None, started
+            )
         payload = raw if raw.endswith(b"\n") else raw + b"\n"
-        out = bounded.run(
-            [current["python"], str(script), surface, "--once"],
-            payload,
-            timeout=CALL_CHILD_BUDGET,
-            env=_child_env(current),
-            cwd=str(Path(current["generation"])),
-            cancel=cancel,
-        )
+        try:
+            out = bounded.run(
+                [current["python"], str(script), surface, "--once"],
+                payload,
+                timeout=CALL_CHILD_BUDGET,
+                env=_child_env(current),
+                cwd=str(Path(current["generation"])),
+                cancel=cancel,
+            )
+        except bounded.CommandCancelled:
+            raise
+        except bounded.CommandTimedOut as exc:
+            raise _dispatch_failure(
+                current, "helper_deadline", "child_deadline", exc, started
+            ) from None
+        except Exception as exc:
+            raise _dispatch_failure(
+                current, "helper_failed", "child_failure", exc, started
+            ) from None
         if cancel is not None and cancel.is_set():
             raise bounded.CommandCancelled("command cancelled")
         lines = [line for line in out.splitlines() if line.strip()]
         if len(lines) != 1:
-            raise RuntimeError("generation returned no single response; not replayed")
-        response = json.loads(lines[0])
-        if not isinstance(response, dict):
-            raise RuntimeError("generation returned an invalid response; not replayed")
-        if response.get("id") != ident:
-            raise RuntimeError("generation response id does not match request; not replayed")
+            raise _dispatch_failure(
+                current, "helper_protocol", "protocol_mismatch", None, started
+            )
+        try:
+            response = json.loads(lines[0])
+        except ValueError:
+            raise _dispatch_failure(
+                current, "helper_protocol", "protocol_mismatch", None, started
+            ) from None
+        if not isinstance(response, dict) or response.get("id") != ident:
+            raise _dispatch_failure(
+                current, "helper_protocol", "protocol_mismatch", None, started
+            )
         return response
     finally:
         _release(descriptor)
@@ -502,6 +572,11 @@ def _mcp(surface: str) -> int:
                 response = _dispatch(surface, raw, ident, cancel=cancel)
             except bounded.CommandCancelled:
                 response = _stage_error(ident, message, "cancelled", surface)
+            except DispatchFailure as exc:
+                response = _stage_error(ident, message, exc.stage, surface)
+                response["result"] = diagnostic_support.attach(
+                    response["result"], exc.diagnostic
+                )
             except (bounded.CommandTimedOut, LockUnavailable):
                 response = _stage_error(ident, message, "deadline", surface)
             except Exception:
@@ -651,13 +726,29 @@ def _updater(rest) -> int:
         return 2
     script = Path(current["generation"]) / "scripts" / "updater.py"
     if not script.is_file():
+        diagnostic_support.failure(
+            "updater",
+            "helper_missing",
+            "missing_committed_file",
+            revision=current.get("sha"),
+        )
         print("committed generation lacks updater.py", file=sys.stderr)
         return 2
-    os.execve(
-        current["python"],
-        [current["python"], str(script), *rest],
-        _child_env(current),
-    )
+    try:
+        os.execve(
+            current["python"],
+            [current["python"], str(script), *rest],
+            _child_env(current),
+        )
+    except OSError:
+        diagnostic_support.failure(
+            "updater",
+            "helper_failed",
+            "child_failure",
+            revision=current.get("sha"),
+        )
+        print("committed generation updater could not start", file=sys.stderr)
+        return 2
     return 2
 
 

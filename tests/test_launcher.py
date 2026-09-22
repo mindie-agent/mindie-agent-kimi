@@ -131,7 +131,7 @@ class LauncherTests(unittest.TestCase):
             env=env,
         )
 
-    def test_hook_forwards_stdin_and_never_exits_2(self):
+    def test_abnormal_hook_child_fails_open_without_forwarding_its_output(self):
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
             config = make_config(tmp, sharing=True, roots=[tmp])
@@ -152,7 +152,7 @@ class LauncherTests(unittest.TestCase):
                 env=env_for(config),
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(json.loads(result.stdout), {"ok": True, "n": 1})
+            self.assertEqual(json.loads(result.stdout), {})
 
     def test_hook_writer_keeps_pipe_open_returns_empty_under_budget(self):
         with tempfile.TemporaryDirectory() as raw:

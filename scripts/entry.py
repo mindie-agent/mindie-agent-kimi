@@ -95,7 +95,7 @@ def _diagnostics(session):
         )
 
 
-def status_payload(session=None):
+def _knowledge_status_payload(session=None):
     if not _configured():
         payload = three_choices()
         if payload["first_use"] in {"read-only", "later", "contribute"}:
@@ -142,6 +142,17 @@ def status_payload(session=None):
             "Sharing is off: no Stop capture or organizer. "
             "Knowledge retrieval works after /mindie-agent:init."
         )
+    return payload
+
+
+def status_payload(session=None):
+    """Read-only. Reporting is independent of knowledge setup and activation."""
+    import diagnostic_support
+
+    payload = dict(_knowledge_status_payload(session))
+    payload["reporting"] = diagnostic_support.reporting_status()
+    if payload["reporting"].get("status") == "not_configured":
+        payload["reporting_choice"] = diagnostic_support.reporting_hint()
     return payload
 
 
@@ -349,6 +360,22 @@ def op_recover(session, _model_arguments=""):
     return result
 
 
+def op_reporting(session, command):
+    """Native command only. Does not ensure the reporter or change knowledge."""
+    found, first = consume_slash(session, command)
+    del found
+    import diagnostic_support
+
+    if command == "reporting-status":
+        return diagnostic_support.reporting_status()
+    if not first:
+        return dict(diagnostic_support.reporting_status(), already=True)
+    if not _configured():
+        raise ValueError("MindIE is not configured; run scripts/setup.py first")
+    python = load_adapter_config()["python"]
+    return diagnostic_support.configure_reporting(command == "reporting-enable", python)
+
+
 def dispatch(session, cwd, op, arguments="", choice=None):
     if op == "init":
         return op_init(session, cwd)
@@ -370,4 +397,6 @@ def dispatch(session, cwd, op, arguments="", choice=None):
         return op_sharing_status(session)
     if op == "recover":
         return op_recover(session, arguments)
+    if op in {"reporting-status", "reporting-enable", "reporting-disable"}:
+        return op_reporting(session, op)
     raise ValueError("unknown MindIE entry operation")

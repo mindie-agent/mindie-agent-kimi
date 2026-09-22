@@ -182,42 +182,53 @@ def main():
     env = dict(os.environ)
     env["KIMI_CODE_HOME"] = str(home)
     env.pop("CODEX_THREAD_ID", None)
-    log = home / "mindie-native-install.log"
+    started = time.monotonic()
     process = None
     report = {}
     try:
-        with log.open("wb") as out:
-            # No start_new_session: the owned web server stays in THIS
-            # helper's process group, so an outer supervised kill (e.g.
-            # bounded.run deadline) terminates helper and server together.
-            process = subprocess.Popen(
-                [KIMI, "web", "--no-open", "--port", str(port)],
-                cwd=str(home),
-                env=env,
-                stdout=out,
-                stderr=out,
+        # No start_new_session: the owned web server stays in THIS
+        # helper's process group, so an outer supervised kill (e.g.
+        # bounded.run deadline) terminates helper and server together.
+        process = subprocess.Popen(
+            [KIMI, "web", "--no-open", "--port", str(port)],
+            cwd=str(home),
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        token_path = home / "server.token"
+        deadline = time.monotonic() + 20
+        ready = False
+        while time.monotonic() < deadline and process.poll() is None:
+            if token_path.exists():
+                try:
+                    token = token_path.read_text().strip()
+                    report["before"] = call(port, token, "GET", "/api/v1/plugins")
+                    ready = True
+                    break
+                except (OSError, ValueError):
+                    pass
+            time.sleep(0.4)
+        if not ready:
+            from diagnostic_support import failure
+            failure("native_install", "native_api_start", "native_unavailable",
+                    elapsed_ms=(time.monotonic() - started) * 1000,
+                    exit_code=process.poll(), reportable=False)
+            raise SystemExit("native Kimi plugin API did not become ready")
+        token = token_path.read_text().strip()
+        if not args.readback:
+            report["install"] = call(
+                port, token, "POST", "/api/v1/plugins", {"source": source}
             )
-            token_path = home / "server.token"
-            deadline = time.monotonic() + 20
-            ready = False
-            while time.monotonic() < deadline and process.poll() is None:
-                if token_path.exists():
-                    try:
-                        token = token_path.read_text().strip()
-                        report["before"] = call(port, token, "GET", "/api/v1/plugins")
-                        ready = True
-                        break
-                    except (OSError, ValueError):
-                        pass
-                time.sleep(0.4)
-            if not ready:
-                raise SystemExit("native Kimi plugin API did not become ready")
-            token = token_path.read_text().strip()
-            if not args.readback:
-                report["install"] = call(
-                    port, token, "POST", "/api/v1/plugins", {"source": source}
-                )
-            report["after"] = call(port, token, "GET", "/api/v1/plugins")
+        report["after"] = call(port, token, "GET", "/api/v1/plugins")
+    except Exception as exc:
+        from diagnostic_support import failure
+        diagnostic = failure("native_install", "native_api", "native_unavailable",
+                             exception=exc, reportable=False,
+                             elapsed_ms=(time.monotonic() - started) * 1000)
+        incident = diagnostic.get("incident_id")
+        suffix = f"; incident {incident}" if incident else ""
+        raise SystemExit(f"native Kimi plugin API failed ({type(exc).__name__}){suffix}") from None
     finally:
         if process is not None:
             # Clean up ONLY our own direct server child. No killpg: the
@@ -239,7 +250,16 @@ def main():
         print(json.dumps(report, indent=2))
         return
     manifest = json.loads((args.plugin_root.expanduser().resolve() / "kimi.plugin.json").read_text())
-    verify_install_report(report, Path(source), manifest)
+    try:
+        verify_install_report(report, Path(source), manifest)
+    except Exception as exc:
+        from diagnostic_support import failure
+        diagnostic = failure("native_install", "readback", "contract_mismatch",
+                             exception=exc,
+                             elapsed_ms=(time.monotonic() - started) * 1000)
+        incident = diagnostic.get("incident_id")
+        suffix = f"; incident {incident}" if incident else ""
+        raise SystemExit(f"native Kimi installation readback failed ({type(exc).__name__}){suffix}") from None
     print(json.dumps(report, indent=2))
 
 
