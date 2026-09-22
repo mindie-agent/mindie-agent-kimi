@@ -69,4 +69,32 @@ the adapter itself was already released. It does not upgrade the earlier
 model-answer fidelity result or prove native SSH, Stop-to-publication, or
 Windows acceptance.
 
+The previous updater (`a2c93fd3ac33e316dc9e261d92f377a67ca3a65c`) was
+also exercised separately. Its real packer copied only `mindie_launch.py` and
+`bounded.py` when packaging the first diagnostics release
+(`fd2e694cc8e0f553d16bd4901a8c29f3f08bdced`). The resulting launcher exited
+with missing `diagnostic_support`, even for sharing-off Stop. Fresh installation
+did not cover this upgrade path.
+
+After the bootstrap correction, the same unmodified old controller installed
+its original plugin into a fresh isolated Kimi home, then actually staged,
+packaged and switched to candidate `e1ddbf4e48f2fec51b98e72b703873474cda5651`.
+That native upgrade completed in 5.249 seconds. Native readback was enabled,
+`ok`, without errors, with two MCPs, two hooks and ten commands. Both installed
+MCP commands completed initialize/list exchanges and exited zero. Sharing-off
+Stop returned `{}` in 0.112 seconds; updater status and read-only diagnostics
+status succeeded, with reporting still unconfigured and sharing off. No model,
+business tool, schedule or upload was invoked; the global configuration was
+unchanged and no owned process remained.
+
+The old-packed launch directory still contained exactly the original two files;
+no diagnostic stamp or missing module was written into it. The launcher loaded
+diagnostics from its own matching generation only. Version came from that
+generation's actual host manifest and revision from its matching completion
+marker. Missing evidence stays unknown; invalid explicit stamps do not trigger
+a fallback. A conflicting current pointer or external same-name module cannot
+change that attribution. Six focused process checks and the full 129-check
+component suite passed. This is macOS upgrade evidence, not Windows or the
+business Stop-to-publication loop.
+
 Shared actual log, transport, GitHub and macOS service evidence: [diagnostics acceptance](https://github.com/mindie-agent/diagnostics/blob/main/docs/dfx-acceptance-2026-09-22.md). Windows hardware remains unverified.
