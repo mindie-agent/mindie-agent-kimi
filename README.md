@@ -8,10 +8,16 @@ the K3 organizer runner.
 
 ## Install
 
-Requires Python 3.11+, Git and an installed Kimi Code with native plugin support.
+Requires Python 3.11+, Git and an installed, signed-in Kimi Code with native plugin support.
 This is a pre-release implementation; see [acceptance status](docs/acceptance.md).
 
-Run `python3 scripts/setup.py`. It builds the pinned runtime, writes MindIE's
+```sh
+git clone https://github.com/mindie-agent/mindie-agent-kimi.git
+cd mindie-agent-kimi
+python3 scripts/setup.py
+```
+
+Setup builds the pinned runtime in persistent MindIE data, writes MindIE's
 configuration, leaves community sharing off, and registers the model-free
 update check. `--knowledge-python /absolute/path/to/python` is an optional
 operator override. Use `--no-schedule` for an isolated development install.
@@ -19,10 +25,15 @@ operator override. Use `--no-schedule` for an isolated development install.
 Setup prints `native_package`. Install that exact package through the host:
 
 ```sh
-python3 scripts/install_kimi_plugin.py --kimi-home /absolute/path/to/kimi-home --plugin-root /absolute/native_package/from/setup
+python3 scripts/install_kimi_plugin.py \
+  --kimi-home "${KIMI_CODE_HOME:-$HOME/.kimi-code}" \
+  --plugin-root /absolute/native_package/from/setup
 ```
 
-The helper uses Kimi's native plugin API. It does not fabricate the host's
+Replace the package placeholder with the exact `native_package` printed by
+setup. After installation succeeds, the downloaded source can be moved or
+removed; keep the persistent runtime and launchers. The helper uses Kimi's
+native plugin API. It does not fabricate the host's
 installed-plugin registry. The generated package points to the persistent
 launcher, so already-loaded entrypoints remain callable across updates.
 
@@ -41,6 +52,15 @@ Three choices: recommended public contribution, read-only, or later. Reply
 contribution requires explicit repository, account, project root, and
 `--visibility public`.
 
+For example:
+
+```text
+/mindie-agent:sharing-enable --repository owner/repo --account USER --project-root /absolute/path --visibility public
+```
+
+With sharing off there is no Stop transcript collection, capture or organizer
+model call. Public knowledge synchronization and remote-dev remain available.
+
 ## Tools
 
 Knowledge MCP requires init and a fresh `request_nonce`. Remote-dev is
@@ -58,6 +78,27 @@ atomically flips the generation pointer — rollback receipt included.
 Details, status/recovery commands, and the host-reload boundary:
 [docs/update.md](docs/update.md).
 
+The following selects a retained launcher using installed configuration, so it
+works after the downloaded source is removed:
+
+```sh
+MINDIE_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/mindie-agent/kimi.json"
+MINDIE_LAUNCHER=$(python3 - "$MINDIE_CONFIG" <<'PYCODE'
+import json, sys
+from pathlib import Path
+adapter = json.loads(Path(sys.argv[1]).read_text())
+update = Path(adapter["state_dir"]) / "update"
+current = json.loads((update / "current.json").read_text())
+print(update / "launch" / (current["sha"] or "bootstrap") / "mindie_launch.py")
+PYCODE
+)
+python3 "$MINDIE_LAUNCHER" --config "$MINDIE_CONFIG" updater status
+```
+
+Replace `status` with `check` to check main, or `uninstall-schedule` to stop
+automatic checks. `install-schedule` restores scheduling. Use `recover` only
+after inspecting a recorded failure; it is an explicit new attempt.
+
 ## Optional product failure reporting
 
 Product failure reporting is a separate user choice from knowledge contribution.
@@ -68,8 +109,12 @@ with the other MindIE adapters.
 - `/mindie-agent:reporting-enable` enables sanitized product fault reporting to
   `mindie-agent/mindie-agent` and returns an exact command to prepare the reporter.
   Run that command once outside the Hook and check the result before treating
-  the reporter as ready. A failed preparation is not retried automatically.
+  the reporter as ready: runtime ready and worker healthy must both be present.
+  A failed preparation is not retried automatically.
 - `/mindie-agent:reporting-disable` revokes future reporting; local diagnostics remain.
+
+`not_configured` describes upload consent, not whether local logs exist.
+Enabling or disabling this shared user setting affects all MindIE adapters.
 
 Incidents contain static product stages, error types and installed code versions.
 They do not collect task transcripts, prompts, commands, environment or credentials.
@@ -81,3 +126,21 @@ Updater checks perform bounded offline log maintenance even with reporting off.
 launchd output goes to the null device; updater state and bounded diagnostics carry
 failure evidence. No unbounded `scheduler.log` is created. Native-host/reporting
 acceptance is separate from component checks; see the acceptance documentation.
+
+## Stop or uninstall
+
+`/mindie-agent:deactivate` ends the current task's knowledge access.
+`/mindie-agent:sharing-disable` stops contribution for the configured scope.
+These do not uninstall the plugin or stop model-free updates.
+
+Before removing the plugin, close tasks using it and run the retained launcher's
+`updater uninstall-schedule`. A failed cancellation preserves the plist and
+reports failure. Then remove MindIE Agent in Kimi's native Plugins UI. Keep
+runtime data, receipts and old launchers while they may still be in use; do not
+recursively remove shared data. Uninstalling this adapter does not disable the
+shared reporter. Disable reporting separately only if that is the desired
+choice across all adapters.
+
+Windows real-machine acceptance will follow on the user's dedicated machine
+after merge. Old business Skills and profiling remain deferred; a successful
+install does not establish the complete contribution and Bot loop.
