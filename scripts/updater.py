@@ -25,6 +25,7 @@ import os
 import re
 import shlex
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -749,9 +750,14 @@ def check(config=None, *, force=False, build=build_runtime,
 def _logging_maintenance(adapter, deadline):
     """Offline diagnostic retention under the existing check lock.
 
-    Selects the committed interpreter and runs reporting maintain. Does
-    not start the reporter, ensure the service, retry, or change the
-    updater return code. Shared reporting may be disabled.
+    Selects the committed interpreter and runs reporting maintain with
+    --update-running: a bounded handoff of an ALREADY enabled and
+    healthy-running reporter. It never starts a disabled, absent, or
+    crashed service, never ensures the service, never retries, and never
+    changes the updater return code. Shared reporting may be disabled. The
+    actual JSON result (including aggregate status=degraded from a failed
+    or conflicting handoff) is exposed via check=False: a nonzero exit
+    with a JSON result is parsed normally, never silently discarded.
     """
     status = read_status(adapter)
     remaining = deadline - time.monotonic()
@@ -762,13 +768,23 @@ def _logging_maintenance(adapter, deadline):
     try:
         with OperationLock(adapter).shared(timeout=min(0.5, remaining)):
             current = read_current(adapter)
+        # Pass the REAL remaining window: the CLI's 75s default includes
+        # offline work and skips the upgrade unless a full 60s handoff plus
+        # 1s exit remains; 2s is this parent's exit/startup margin.
+        available = min(75, deadline - time.monotonic())
+        if available <= 0:
+            status["logging_maintenance"] = {"status": "skipped_budget"}
+            write_status(status, adapter)
+            return
         output = bounded_run(
             [current["python"], "-m", "mindie_diagnostics.cli",
-             "reporting", "maintain", "--config",
-             str(diagnostic_support.reporting_config_path())],
+             "reporting", "maintain", "--update-running", "--config",
+             str(diagnostic_support.reporting_config_path()),
+             "--budget-seconds", str(max(0, available - 2))],
             "",
-            timeout=max(0.05, min(5, deadline - time.monotonic())),
+            timeout=available,
             max_output=65536,
+            check=False,
         )
         payload = json.loads((output or "").strip() or "null")
         if not isinstance(payload, dict):
@@ -913,24 +929,191 @@ def install_schedule(config_file=None) -> int:
     return 1
 
 
-def uninstall_schedule() -> int:
-    if sys.platform == "darwin":
-        plist = Path.home() / "Library" / "LaunchAgents" / "agent.mindie.kimi-update.plist"
-        if plist.exists():
-            try:
-                bounded_run(["launchctl", "bootout", f"gui/{os.getuid()}",
-                             str(plist)], "", timeout=15)
-            except RuntimeError:
-                pass
-            plist.unlink()
-    elif os.name == "nt":
+def _native_run(argv, timeout):
+    """One bounded native scheduler control command with a KNOWN return code.
+
+    bounded.run returns stdout only and discards returncode/stderr, but
+    scheduler truth needs them: launchctl print exit 113 is positive
+    missing-service evidence while any other failure is not absence. These
+    are fixed small-output OS control commands (launchctl/PowerShell), so a
+    plain bounded subprocess.run suffices; callers cap any retained
+    diagnostic text. Returns (returncode, stdout, stderr); raises
+    subprocess.TimeoutExpired past the bounded deadline and OSError when
+    the manager executable itself is unavailable.
+    """
+    completed = subprocess.run(
+        argv, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+        errors="replace", timeout=timeout)
+    return completed.returncode, completed.stdout or "", completed.stderr or ""
+
+
+def _launchd_state(label, uid, timeout=10):
+    """Actual launchd state for the exact service target.
+
+    "absent" ONLY on positive missing-service evidence (launchctl print
+    exit 113); permission, manager, and parse failures are "unknown",
+    never absence.
+    """
+    try:
+        code, _, stderr = _native_run(
+            ["launchctl", "print", f"gui/{uid}/{label}"], timeout)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return "unknown", f"{type(exc).__name__}: {exc}"[:240]
+    if code == 0:
+        return "loaded", ""
+    if code == 113:
+        return "absent", ""
+    return "unknown", (stderr or "").strip()[:240] or f"launchctl print exited {code}"
+
+
+def _task_state(task, timeout=30):
+    """Exact scheduled-task state via structured PowerShell enumeration.
+
+    ErrorAction Stop makes a manager error exit nonzero; a successful
+    enumeration with zero exact TaskPath/TaskName matches proves absence.
+    Localized arbitrary error text is never treated as absence.
+    """
+    escaped = task.replace("'", "''")
+    script = (
+        "$ErrorActionPreference='Stop'; "
+        "$m = @(Get-ScheduledTask -ErrorAction Stop | Where-Object { "
+        f"$_.TaskName -eq '{escaped}' -and $_.TaskPath -eq '\\' }}); "
+        "Write-Output $m.Count"
+    )
+    try:
+        code, stdout, stderr = _native_run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            timeout)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return "unknown", f"{type(exc).__name__}: {exc}"[:240]
+    if code != 0:
+        return "unknown", (stderr or "").strip()[:240] or f"powershell exited {code}"
+    try:
+        count = int((stdout or "").strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return "unknown", "unparseable task enumeration"
+    return ("present" if count else "absent"), ""
+
+
+def _schedule_failed(stage, category, *, plist=None, task=None, detail=""):
+    payload = {"result": "failed", "stage": stage, "category": category}
+    if plist is not None:
+        payload["retained_plist"] = str(plist)
+    if task is not None:
+        payload["retained_task"] = task
+    if detail:
+        payload["error"] = str(detail)[:240]
+    print(json.dumps(payload))
+    return 1
+
+
+def _uninstall_launchd(label, plist):
+    """Truthful launchd removal of the exact owned service target.
+
+    Query before any mutation; one bootout by service target (a missing
+    plist with a still-loaded label is still a service); bounded absence
+    readback, never a second mutation; the plist is unlinked only after
+    absence is established. Uncertain bootout failure can still end in
+    success when the readback proves absence.
+    """
+    uid = os.getuid()
+    target = f"gui/{uid}/{label}"
+    state, detail = _launchd_state(label, uid)
+    if state == "unknown":
+        return _schedule_failed("query", "manager-or-permission",
+                                plist=plist, detail=detail)
+    if state == "loaded":
+        bootout_detail = ""
         try:
-            bounded_run(["schtasks", "/Delete", "/F", "/TN", "MindIEKimiUpdate"],
-                        "", timeout=30)
-        except RuntimeError:
-            pass
+            code, _, stderr = _native_run(["launchctl", "bootout", target], 15)
+            if code:
+                bootout_detail = (stderr or "").strip()[:240]
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            bootout_detail = f"{type(exc).__name__}: {exc}"[:240]
+        cutoff = time.monotonic() + 3.0
+        while state != "absent" and time.monotonic() < cutoff:
+            time.sleep(0.2)
+            left = cutoff - time.monotonic()
+            if left <= 0:
+                break
+            state, detail = _launchd_state(label, uid, timeout=min(5.0, left))
+        if state != "absent":
+            return _schedule_failed(
+                "readback",
+                "service-retained" if state == "loaded" else "state-unproven",
+                plist=plist, detail=detail or bootout_detail)
+    plist.unlink(missing_ok=True)
     print(json.dumps({"result": "unscheduled"}))
     return 0
+
+
+def _uninstall_task(task):
+    """Truthful scheduled-task removal: structured query, one unregister,
+    then one bounded absence readback. Manager errors fail; they are never
+    claimed as absence."""
+    state, detail = _task_state(task)
+    if state == "unknown":
+        return _schedule_failed("query", "manager-or-permission",
+                                task=task, detail=detail)
+    if state == "present":
+        escaped = task.replace("'", "''")
+        script = (f"Unregister-ScheduledTask -TaskName '{escaped}' "
+                  "-TaskPath '\\' -Confirm:$false -ErrorAction Stop")
+        try:
+            code, _, stderr = _native_run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                30)
+            if code:
+                detail = (stderr or "").strip()[:240]
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            detail = f"{type(exc).__name__}: {exc}"[:240]
+        cutoff = time.monotonic() + 3.0
+        while state != "absent" and time.monotonic() < cutoff:
+            time.sleep(0.2)
+            left = cutoff - time.monotonic()
+            if left <= 0:
+                break
+            state, query_detail = _task_state(task, timeout=min(10.0, left))
+            if state != "present":
+                detail = query_detail or detail
+        if state != "absent":
+            return _schedule_failed(
+                "readback",
+                "service-retained" if state == "present" else "state-unproven",
+                task=task, detail=detail)
+    print(json.dumps({"result": "unscheduled"}))
+    return 0
+
+
+def uninstall_schedule(*, label=None, plist_path=None, schedule_root=None,
+                       task=None) -> int:
+    """Remove ONLY this adapter's update schedule, truthfully.
+
+    Defaults are the current label/path; the keyword-only explicit
+    label/plist-path/schedule-root/task exist for isolated native
+    acceptance. Never touches the diagnostics/shared reporter or the other
+    adapter's scheduler. Only positively identified absence is idempotent
+    success; unproven state returns nonzero JSON and retains the plist and
+    runnable artifacts.
+    """
+    if sys.platform == "darwin":
+        label = label or "agent.mindie.kimi-update"
+        if plist_path is not None:
+            plist = Path(plist_path).expanduser().absolute()
+        else:
+            root = (Path(schedule_root).expanduser().absolute() if schedule_root
+                    else Path.home() / "Library" / "LaunchAgents")
+            plist = root / (label + ".plist")
+        return _uninstall_launchd(label, plist)
+    if os.name == "nt":
+        # Windows removal: explicit but NOT natively verified.
+        return _uninstall_task(task or "MindIEKimiUpdate")
+    print(json.dumps({
+        "result": "unsupported-platform",
+        "hint": "remove the agent.mindie.kimi-update schedule with your "
+                "platform tools",
+    }))
+    return 1
 
 
 def main(argv=None) -> int:
