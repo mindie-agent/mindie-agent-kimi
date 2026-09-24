@@ -16,7 +16,6 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-MAX_WINDOW = 256 * 1024
 MAX_TEXT = 48 * 1024
 MAX_RECORDS = 200
 ANCHOR_BYTES = 512
@@ -139,6 +138,20 @@ def _session_in_path(path) -> str | None:
 
 def _timestamp(record):
     return to_seconds(record.get("time")) or to_seconds(record.get("created_at"))
+
+
+def _record_turn_id(record):
+    """This record's own native turnId (loop events carry it on the event).
+    Body-evidence label only; never carried across records, never guessed."""
+    ident = record.get("turnId")
+    if type(ident) is int and 0 <= ident < 10**15:
+        return ident
+    event = record.get("event")
+    if isinstance(event, dict):
+        ident = event.get("turnId")
+        if type(ident) is int and 0 <= ident < 10**15:
+            return ident
+    return None
 
 
 def _text_parts(content):
@@ -270,7 +283,6 @@ def read_material(
     recognized = 0
     included = []
     text_size = 0
-    turn = None
     begun = time.monotonic()
     try:
         fork_time = _fork_boundary(path)
@@ -363,10 +375,6 @@ def read_material(
                 if isinstance(record, dict):
                     if record.get("type") in KNOWN:
                         recognized += 1
-                    if record.get("type") == "turn.ended":
-                        ident = record.get("turnId")
-                        if ident is not None:
-                            turn = ident
                     stamp = _timestamp(record)
                     extracted = _extract(record)
                     if fork_time is not None and (stamp is None or stamp < fork_time):
@@ -378,9 +386,10 @@ def read_material(
                         extracted = None
                     else:
                         kind, text = extracted
+                        turn_id = _record_turn_id(record)
                         label = (
                             f"[{kind} timestamp={stamp if stamp is not None else 'unknown'} "
-                            f"turn={turn if turn is not None else 'unknown'} "
+                            f"turn={turn_id if turn_id is not None else 'unknown'} "
                             f"bytes={offset}:{stream.tell()}]"
                         )
                         rendered = label + "\n" + text
@@ -411,11 +420,24 @@ def read_material(
         records=len(included),
     )
     if result["end"] == start:
-        result["status"] = "unchanged"
-    elif not recognized:
+        # A trailing half-written record is pending material, not proof of
+        # no-new-material: report partial/more and leave the cursor unmoved
+        # for a finite deferred read. Only a truly empty page is unchanged.
+        if not result["partial"]:
+            result["status"] = "unchanged"
+    elif not recognized and start == 0 and not result["more"]:
+        # Whole-file unknown-format only with whole-file evidence: a first
+        # page scanned to EOF without one recognized record. A positive
+        # offset is not proof of recognition either, so continuation pages
+        # never judge; the cumulative verdict belongs to the core cursor.
         result.update(
             status="unknown-format",
             text="",
             coverage_note="no recognized native Kimi wire signature",
+        )
+    elif not recognized:
+        result["coverage_note"] = (
+            "page held no recognized records while bytes remain; "
+            "format verdict deferred to the owning cursor"
         )
     return result

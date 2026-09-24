@@ -145,20 +145,34 @@ def _state_dir(config=None) -> Path:
 def _sharing_enabled() -> bool:
     """True only when community sharing is explicitly enabled.
 
-    Missing config or any read failure is off. Reads existing files only;
-    never creates update.lock, state, or a service.
+    A missing adapter/community config or an explicit off is quiet off. An
+    existing but unreadable or malformed config is a recorded configuration
+    failure, never mistaken for off. Reads existing files only; never
+    creates update.lock, state, or a service.
     """
-    config = _load_config()
-    if not isinstance(config, dict):
-        return False
-    community = config.get("community_config")
-    if not isinstance(community, str) or not os.path.isabs(community):
+    path = _config_path()
+    if not path.is_file():
         return False
     try:
-        data = json.loads(Path(community).read_text())
+        data = json.loads(path.read_text())
     except (OSError, ValueError):
+        _record_hook("sharing-probe", "configuration")
         return False
-    return isinstance(data, dict) and data.get("enabled") is True
+    if not isinstance(data, dict):
+        _record_hook("sharing-probe", "configuration")
+        return False
+    community = data.get("community_config")
+    if not isinstance(community, str) or not os.path.isabs(community):
+        return False
+    community_path = Path(community)
+    if not community_path.is_file():
+        return False
+    try:
+        raw = json.loads(community_path.read_text())
+    except (OSError, ValueError):
+        _record_hook("sharing-probe", "configuration")
+        return False
+    return isinstance(raw, dict) and raw.get("enabled") is True
 
 
 class LockUnavailable(RuntimeError):
@@ -284,6 +298,15 @@ def _fail_open() -> int:
     return 0
 
 
+def _record_hook(stage, category, op="stop"):
+    """One bounded static diagnostic for an outer hook-entry failure.
+    Never blocks the business fail-open, never records genuine off."""
+    try:
+        diagnostic_support.failure("hook", stage, category, reportable=(op != "stop"))
+    except Exception:
+        pass
+
+
 def _read_hook_stdin(deadline: float) -> bytes:
     """Read at most MAX_HOOK_BYTES before deadline. Never block until EOF.
 
@@ -337,17 +360,29 @@ def _hook(op: str) -> int:
     deadline = started + HOOK_TOTAL
     if op == "stop" and not _sharing_enabled():
         return _fail_open()
+    if not _config_path().is_file():
+        return _fail_open()
+    config = _load_config()
+    if config is None:
+        _record_hook("entry", "configuration", op)
+        return _fail_open()
     raw = _read_hook_stdin(deadline)
     lock_deadline = min(deadline, time.monotonic() + HOOK_LOCK_BUDGET)
     if lock_deadline <= time.monotonic():
+        _record_hook("entry", "deadline", op)
         return _fail_open()
     try:
-        state = _state_dir()
+        state = _state_dir(config)
         descriptor = _shared_lock(state, lock_deadline)
     except Exception:
+        _record_hook("entry", "lock-unavailable", op)
         return _fail_open()
     try:
-        current = _current(state)
+        try:
+            current = _current(state)
+        except Exception:
+            _record_hook("entry", "generation-unavailable", op)
+            return _fail_open()
         script = Path(current["generation"]) / "scripts" / "bridge.py"
         if not script.is_file():
             diagnostic_support.failure(
