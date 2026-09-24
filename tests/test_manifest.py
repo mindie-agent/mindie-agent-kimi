@@ -14,7 +14,9 @@ class ManifestTests(unittest.TestCase):
         self.assertNotIn("sessionStart", self.manifest)
         events = [item["event"] for item in self.manifest["hooks"]]
         self.assertNotIn("UserPromptSubmit", events)
-        # No TurnStarted hook: default-off tasks must create no turn store.
+        # No TurnStarted hook: the host omits the native turn id from Stop
+        # and no asynchronous record can prove it, so Stop is a thin
+        # notification; there is no adapter identity cache.
         self.assertEqual(events.count("TurnStarted"), 0)
         self.assertFalse(any(item.get("matcher") == "plugin_command" for item in self.manifest["hooks"]))
         stop = next(item for item in self.manifest["hooks"] if item["event"] == "Stop")

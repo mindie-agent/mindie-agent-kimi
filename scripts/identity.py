@@ -260,21 +260,6 @@ def bind_db_path(config=None) -> Path:
     return state_dir(config) / "mcp-binds.sqlite3"
 
 
-def current_turn_identity(session_id: str, *, kimi_home=None) -> str:
-    """CURRENT latest turn.prompt promptId from this task's own wire.
-
-    No persisted turn store: default-off tasks must create no state.
-    """
-    session_id = require_session(session_id)
-    for record in reversed(_tail_records(session_id, kimi_home=kimi_home)):
-        if record.get("type") != "turn.prompt":
-            continue
-        prompt_id = record.get("promptId")
-        if isinstance(prompt_id, str) and prompt_id:
-            return prompt_id[:256]
-    raise ValueError("current native turn identity is unavailable")
-
-
 def _connect(path: Path, *, create: bool):
     if not path.exists() and not create:
         raise FileNotFoundError(str(path))

@@ -542,3 +542,53 @@ class LauncherTests(unittest.TestCase):
                 proc.stdin.close()
                 proc.kill()
                 proc.wait(timeout=2)
+
+
+def _diag_events(root: Path):
+    events = []
+    for path in Path(root).rglob("*.jsonl"):
+        try:
+            events.extend(path.read_text().splitlines())
+        except OSError:
+            pass
+    return events
+
+
+class LauncherEntryDiagnosticTests(unittest.TestCase):
+    def test_malformed_adapter_config_is_recorded_not_off(self):
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            diag = Path(raw).resolve() / "diag"
+            config = make_config(tmp, sharing=True, roots=[tmp])
+            config.write_text("{ not json")
+            env = env_for(config, extra={"MINDIE_DIAGNOSTICS_ROOT": str(diag)})
+            result = run_launch(["hook", "stop"], STOP_EVENT, env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout), {})
+            events = _diag_events(diag)
+            self.assertTrue(any("configuration" in event for event in events), events)
+
+    def test_malformed_community_config_is_recorded_not_off(self):
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            diag = Path(raw).resolve() / "diag"
+            config = make_config(tmp, sharing=True, roots=[tmp])
+            community = tmp / "kimi.community.json"
+            community.write_text("{ not json")
+            env = env_for(config, extra={"MINDIE_DIAGNOSTICS_ROOT": str(diag)})
+            result = run_launch(["hook", "stop"], STOP_EVENT, env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout), {})
+            events = _diag_events(diag)
+            self.assertTrue(any("configuration" in event for event in events), events)
+
+    def test_explicit_sharing_off_stays_quiet(self):
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            diag = Path(raw).resolve() / "diag"
+            config = make_config(tmp, sharing=False)
+            env = env_for(config, extra={"MINDIE_DIAGNOSTICS_ROOT": str(diag)})
+            result = run_launch(["hook", "stop"], STOP_EVENT, env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout), {})
+            self.assertEqual(_diag_events(diag), [])
