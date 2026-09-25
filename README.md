@@ -11,6 +11,10 @@ the K3 organizer runner.
 Requires Python 3.11+, Git and an installed, signed-in Kimi Code with native plugin support.
 This is a pre-release implementation; see [acceptance status](docs/acceptance.md).
 
+The knowledge interpreter also needs SQLite 3.43.0 or newer with FTS5 and
+`contentless_delete` support. Installation checks the actual SQLite library;
+the Python version alone does not establish this capability.
+
 ```sh
 git clone https://github.com/mindie-agent/mindie-agent-kimi.git
 cd mindie-agent-kimi

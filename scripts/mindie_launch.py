@@ -91,6 +91,8 @@ HOOK_TOTAL = 1.5
 HOOK_LOCK_BUDGET = 0.3
 CALL_LOCK_BUDGET = 5.0
 CALL_CHILD_BUDGET = 60.0
+# Knowledge stdout only. A legal maximum page measured 817407 bytes.
+KNOWLEDGE_MAX_OUTPUT = 1024 * 1024
 MAX_RPC_ID = 256
 WORK_LIMIT = 3
 CONTROL_LIMIT = 1
@@ -549,6 +551,11 @@ def _dispatch(surface: str, raw: bytes, ident, cancel=None):
                 env=_child_env(current),
                 cwd=str(Path(current["generation"])),
                 cancel=cancel,
+                **(
+                    {"max_output": KNOWLEDGE_MAX_OUTPUT}
+                    if surface == "knowledge"
+                    else {}
+                ),
             )
         except bounded.CommandCancelled:
             raise

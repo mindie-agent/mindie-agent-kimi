@@ -24,7 +24,10 @@ Stop capture or organizer.
 Every knowledge and remote MCP call MUST include a fresh `request_nonce`.
 Remote-dev does not require knowledge activation.
 
-Recovery uses core `contribution-inspect`, `contribution-reconcile`, and
-`contribution-compact` with `--batch`. Details:
-[activation lifecycle](references/activation-lifecycle.md),
+A transient local or network sharing failure is recovered by the existing
+worker. Do not run a contribution command or another model turn for it.
+Sharing status is how a problem is seen. Authentication, trust, rejected
+content, or invalid configuration can need an explicit user or operator
+action. Batch inspection is optional troubleshooting, not an activation step.
+Details: [activation lifecycle](references/activation-lifecycle.md),
 [domain tooling](references/domain-skills.md).
