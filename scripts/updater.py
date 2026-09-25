@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import random
 import re
 import shlex
 import shutil
@@ -180,15 +181,15 @@ def _op_timeout(deadline: float, reserve: float, cap: float) -> float:
     return min(cap, left)
 
 
-def _git(args, *, timeout, deadline, cwd=None):
+def _git(args, *, timeout, deadline, cwd=None, transport=False):
     return bounded_run(["git", *args], "",
                        timeout=min(timeout, _remaining(deadline, RESERVE)),
-                       cwd=cwd, env=GIT_ENV)
+                       cwd=cwd, env=GIT_ENV, transport=transport)
 
 
 def resolve_main(remote: str, deadline: float) -> str:
     output = _git(["ls-remote", remote, "refs/heads/main"], timeout=30,
-                  deadline=deadline)
+                  deadline=deadline, transport=True)
     match = re.search(rf"\b({SHA})\s+refs/heads/main", output)
     if not match:
         raise CheckFailed("remote main did not resolve to a commit SHA")
@@ -220,6 +221,7 @@ def build_runtime(generation: Path, deadline: float) -> Path:
         timeout=min(600, _remaining(deadline, RESERVE)),
         max_output=512 * 1024,
         env=PIP_ENV,
+        transport=True,
     )
     return python
 
@@ -369,7 +371,7 @@ def stage_generation(sha: str, remote: str, adapter: dict, deadline: float,
         _git(["remote", "add", "origin", remote], timeout=15,
              deadline=deadline, cwd=staging)
         _git(["fetch", "--depth", "1", "origin", sha], timeout=180,
-             deadline=deadline, cwd=staging)
+             deadline=deadline, cwd=staging, transport=True)
         _git(["checkout", "-q", "--detach", "FETCH_HEAD"], timeout=60,
              deadline=deadline, cwd=staging)
         os.replace(staging, target)
@@ -655,42 +657,255 @@ def _record(adapter, **fields) -> dict:
     return status
 
 
+_RETRYABLE = frozenset({"temporary_network", "rate_limited"})
+_ACTIONABLE = frozenset({"authentication", "permission", "hook_trust", "certificate"})
+_QUARANTINE = frozenset({"resolver", "bad_content"})
+_STATIC_FAILURE = {
+    "temporary_network": "temporary network failure",
+    "rate_limited": "rate limited",
+    "authentication": "authentication failed",
+    "permission": "permission denied",
+    "hook_trust": "host hook trust required",
+    "certificate": "certificate verification failed",
+    "resolver": "dependency resolver conflict",
+    "bad_content": "package content rejected",
+}
+
+
+def _retry_delay(count, retry_after=None):
+    """One later scheduled check. Exponential delay, jitter, no in-call retry."""
+    failures = max(1, int(count))
+    delay = min(INTERVAL_SECONDS * (2 ** min(failures - 1, 6)), 6 * 3600)
+    delay += random.uniform(0, max(1.0, delay * 0.1))
+    if retry_after is not None:
+        try:
+            delay = max(delay, float(retry_after))
+        except (TypeError, ValueError):
+            pass
+    return delay
+
+
+def _failure_category(exc):
+    category = getattr(exc, "category", None)
+    if category in _RETRYABLE or category in _ACTIONABLE or category in _QUARANTINE:
+        return category
+    return None
+
+
+def _failure_history(previous, category):
+    history = previous.get("history") if isinstance(previous, dict) else None
+    if not isinstance(history, list):
+        history = []
+    history = list(history)
+    history.append({"at": time.time(), "class": category or "unknown"})
+    del history[:-8]
+    return history
+
+
+def _remember_failure(adapter, sha, exc):
+    """Persist a same-SHA failure without storing command output."""
+    previous = read_json(failed_path(adapter)) or {}
+    if not isinstance(previous, dict) or previous.get("sha") != sha or previous.get("phase"):
+        previous = {}
+    count = int(previous.get("count") or 0) + 1
+    first = previous.get("first_failure_at")
+    if not isinstance(first, (int, float)) or isinstance(first, bool):
+        first = time.time()
+    category = _failure_category(exc)
+    if category:
+        error = _STATIC_FAILURE[category]
+    else:
+        error = str(exc).replace("\n", " ")[:500]
+    record = {
+        "sha": sha,
+        "at": time.time(),
+        "first_failure_at": first,
+        "count": count,
+        "error": error,
+        "history": _failure_history(previous, category),
+    }
+    if category:
+        record["failure_class"] = category
+        if category in _RETRYABLE or category in _ACTIONABLE:
+            record["next_retry_at"] = time.time() + _retry_delay(
+                count, getattr(exc, "retry_after", None)
+            )
+        else:
+            record["quarantined"] = True
+    atomic_write(failed_path(adapter), record)
+    return record
+
+
+def _clear_active_failure(adapter, sha):
+    failed = read_json(failed_path(adapter))
+    if not isinstance(failed, dict) or failed.get("sha") != sha or failed.get("phase"):
+        return
+    cleared = {
+        "sha": sha,
+        "at": failed.get("at"),
+        "first_failure_at": failed.get("first_failure_at"),
+        "count": failed.get("count"),
+        "history": failed.get("history"),
+    }
+    atomic_write(
+        failed_path(adapter),
+        {key: value for key, value in cleared.items() if value is not None},
+    )
+
+
+def _failure_gate(failed):
+    """'wait', 'suppress', or None. Legacy records without a class stay suppressed."""
+    if not isinstance(failed, dict) or failed.get("phase"):
+        return None
+    klass = failed.get("failure_class")
+    if klass in _RETRYABLE or klass in _ACTIONABLE:
+        due = failed.get("next_retry_at")
+        if isinstance(due, (int, float)) and not isinstance(due, bool) and due > time.time():
+            return "wait"
+        return None
+    if klass in _QUARANTINE or failed.get("quarantined") or failed.get("error"):
+        return "suppress"
+    return None
+
+
+def _resolve_is_waiting(adapter, force):
+    if force:
+        return False
+    status = read_status(adapter)
+    if not status.get("resolve_wait"):
+        return False
+    due = status.get("next_retry_at")
+    return isinstance(due, (int, float)) and not isinstance(due, bool) and due > time.time()
+
+
+def _note_resolve_failure(adapter, exc, current_sha):
+    status = read_status(adapter)
+    count = int(status.get("resolve_failures") or 0) + 1
+    first = status.get("resolve_failure_at")
+    if not isinstance(first, (int, float)) or isinstance(first, bool):
+        first = time.time()
+    category = _failure_category(exc)
+    if category:
+        error = _STATIC_FAILURE[category]
+        result = "action-required" if category in _ACTIONABLE else "check-failed"
+    else:
+        error = str(exc).replace("\n", " ")[:500]
+        result = "check-failed"
+    fields = dict(
+        current_sha=current_sha,
+        result=result,
+        error=error,
+        resolve_failures=count,
+        resolve_failure_at=first,
+        resolve_wait=True,
+        resolve_failure_class=category,
+        next_retry_at=time.time() + _retry_delay(
+            count, getattr(exc, "retry_after", None) if category else None
+        ),
+        diagnostic=_update_diagnostic("resolve_main", exc),
+    )
+    if not category:
+        fields["failure_class"] = None
+    else:
+        fields["failure_class"] = category
+    return _record(adapter, **fields)
+
+
+def _clear_resolve_wait(adapter):
+    """Clear the active resolve outage. Keep the first-failure evidence."""
+    status = read_status(adapter)
+    changed = False
+    seen = status.get("resolve_failures")
+    if isinstance(seen, int) and not isinstance(seen, bool) and seen > 0:
+        if not isinstance(status.get("resolve_failures_seen"), int) or isinstance(
+            status.get("resolve_failures_seen"), bool
+        ):
+            status["resolve_failures_seen"] = seen
+        status["resolve_failures"] = 0
+        changed = True
+    for key in ("resolve_wait", "next_retry_at", "resolve_failure_class", "failure_class", "error"):
+        if key in status:
+            status.pop(key, None)
+            changed = True
+    if changed:
+        write_status(status, adapter)
+
+
 def _check_once(adapter: dict, deadline: float, *, force, build, idle,
                 install, lock_timeout) -> int:
     current = read_current(adapter)
     remote = (os.environ.get("MINDIE_KIMI_UPDATE_REMOTE")
               or adapter.get("update_remote") or DEFAULT_REMOTE)
+    if _resolve_is_waiting(adapter, force):
+        status = read_status(adapter)
+        print(json.dumps({
+            "result": "retry-waiting" if status.get("resolve_failure_class") in _RETRYABLE
+            else status.get("result", "check-failed"),
+            "error": status.get("error"),
+            "failure_class": status.get("resolve_failure_class"),
+            "next_retry_at": status.get("next_retry_at"),
+        }))
+        return 0
     try:
         sha = resolve_main(remote, deadline)
     except Exception as exc:
-        diagnostic = _update_diagnostic("resolve_main", exc)
-        _record(adapter, current_sha=current.get("sha"), result="check-failed",
-                error=str(exc)[:500], diagnostic=diagnostic)
-        print(json.dumps({"result": "check-failed", "error": str(exc)[:300],
-                          "diagnostic": diagnostic}))
+        recorded = _note_resolve_failure(adapter, exc, current.get("sha"))
+        print(json.dumps({
+            "result": recorded.get("result", "check-failed"),
+            "error": recorded.get("error"),
+            "failure_class": recorded.get("resolve_failure_class"),
+            "next_retry_at": recorded.get("next_retry_at"),
+            "diagnostic": recorded.get("diagnostic"),
+        }))
         return 1
+    _clear_resolve_wait(adapter)
     failed = read_json(failed_path(adapter))
-    if not force and failed and failed.get("sha") == sha \
+    if not force and isinstance(failed, dict) and failed.get("sha") == sha \
             and current.get("sha") != sha:
-        _record(adapter, current_sha=current.get("sha"), candidate_sha=sha,
-                result="suppressed-known-failed", error=failed.get("error"))
-        print(json.dumps({"result": "suppressed-known-failed", "sha": sha}))
-        return 0
+        gate = _failure_gate(failed)
+        if gate == "wait":
+            result_name = (
+                "action-required" if failed.get("failure_class") in _ACTIONABLE
+                else "retry-waiting"
+            )
+            _record(adapter, current_sha=current.get("sha"), candidate_sha=sha,
+                    result=result_name, error=failed.get("error"),
+                    failure_class=failed.get("failure_class"),
+                    next_retry_at=failed.get("next_retry_at"))
+            print(json.dumps({
+                "result": result_name, "sha": sha,
+                "failure_class": failed.get("failure_class"),
+                "next_retry_at": failed.get("next_retry_at"),
+                "error": failed.get("error"),
+            }))
+            return 0
+        if gate == "suppress":
+            _record(adapter, current_sha=current.get("sha"), candidate_sha=sha,
+                    result="suppressed-known-failed", error=failed.get("error"),
+                    failure_class=failed.get("failure_class"))
+            print(json.dumps({"result": "suppressed-known-failed", "sha": sha}))
+            return 0
     if sha == current.get("sha"):
-        status = _record(adapter, current_sha=sha, result="current")
+        _clear_active_failure(adapter, sha)
+        status = _record(adapter, current_sha=sha, result="current", error=None)
         print(json.dumps(status))
         return int(status["result"] == "degraded")
     try:
         generation, python, gen_adapter = stage_generation(
             sha, remote, adapter, deadline, build=build)
     except Exception as exc:
+        record = _remember_failure(adapter, sha, exc)
         diagnostic = _update_diagnostic("stage_generation", exc)
-        atomic_write(failed_path(adapter),
-                     {"sha": sha, "error": str(exc)[:500], "at": time.time()})
         _record(adapter, current_sha=current.get("sha"), candidate_sha=sha,
-                result="failed", error=str(exc)[:500], diagnostic=diagnostic)
-        print(json.dumps({"result": "failed", "error": str(exc)[:500],
-                          "diagnostic": diagnostic}))
+                result="failed", error=record.get("error"),
+                failure_class=record.get("failure_class"),
+                next_retry_at=record.get("next_retry_at"), diagnostic=diagnostic)
+        print(json.dumps({
+            "result": "failed", "error": record.get("error"),
+            "failure_class": record.get("failure_class"),
+            "next_retry_at": record.get("next_retry_at"),
+            "diagnostic": diagnostic,
+        }))
         return 1
     try:
         switch(adapter, current, generation, python, gen_adapter, sha,
@@ -707,15 +922,22 @@ def _check_once(adapter: dict, deadline: float, *, force, build, idle,
                           "reason": str(exc)[:300]}))
         return 0
     except Exception as exc:
+        record = _remember_failure(adapter, sha, exc)
         diagnostic = _update_diagnostic("switch", exc)
-        atomic_write(failed_path(adapter),
-                     {"sha": sha, "error": str(exc)[:500], "at": time.time()})
         _record(adapter, current_sha=current.get("sha"), candidate_sha=sha,
-                result="failed", error=str(exc)[:500], diagnostic=diagnostic)
-        print(json.dumps({"result": "failed", "error": str(exc)[:500],
-                          "diagnostic": diagnostic}))
+                result="failed", error=record.get("error"),
+                failure_class=record.get("failure_class"),
+                next_retry_at=record.get("next_retry_at"), diagnostic=diagnostic)
+        print(json.dumps({
+            "result": "failed", "error": record.get("error"),
+            "failure_class": record.get("failure_class"),
+            "next_retry_at": record.get("next_retry_at"),
+            "diagnostic": diagnostic,
+        }))
         return 1
+    _clear_active_failure(adapter, sha)
     status = _record(adapter, current_sha=sha, result="switched", needs_host_reload=True,
+            error=None,
             note=("MCP/hook dispatch uses the new generation per call; "
                   "existing task authorization is preserved. Native "
                   "Skill/command/MCP/hook definitions refresh with the Kimi host."))

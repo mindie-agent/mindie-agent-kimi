@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import stat
 from pathlib import Path
 
 from entry_state import consume_activation_id, first_use, set_first_use, three_choices
@@ -95,6 +96,170 @@ def _diagnostics(session):
         )
 
 
+def _bounded_text(value, limit):
+    if not isinstance(value, str) or not value:
+        return None
+    return value[:limit]
+
+
+_META_LIMIT = 65536
+
+
+def _read_regular_json(path):
+    """Small JSON object from a regular file.
+
+    Missing is "missing". FIFO, socket, device, and malformed files are
+    "unavailable" and are not read as a blocking stream. A symlink is
+    followed only when its target is a regular file.
+    """
+    try:
+        descriptor = os.open(str(path), os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    except FileNotFoundError:
+        return "missing", None
+    except OSError:
+        return "unavailable", None
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > _META_LIMIT:
+            return "unavailable", None
+        blob = os.read(descriptor, _META_LIMIT + 1)
+    except OSError:
+        return "unavailable", None
+    finally:
+        os.close(descriptor)
+    if len(blob) > _META_LIMIT:
+        return "unavailable", None
+    try:
+        value = json.loads(blob.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError, ValueError):
+        return "unavailable", None
+    if not isinstance(value, dict):
+        return "unavailable", None
+    return None, value
+
+
+def _number(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return value
+
+
+def _launcher_command(adapter, operation, current):
+    """Absolute retained launcher command from an already-read current tuple."""
+    try:
+        from genstate import launch_dir
+
+        if not isinstance(current, dict):
+            return None
+        sha = current.get("sha") if isinstance(current.get("sha"), str) and current.get("sha") else "bootstrap"
+        python = current.get("python")
+        if not isinstance(python, str) or not python:
+            return None
+        launcher = launch_dir(adapter) / sha / "mindie_launch.py"
+        if not stat.S_ISREG(launcher.stat().st_mode):
+            return None
+        config_value = adapter.get("base_config") if isinstance(adapter.get("base_config"), str) else str(config_path())
+        config_file = str(Path(config_value).expanduser().resolve())
+        return shlex.join([python, str(launcher.resolve()), "--config", config_file, "updater", operation])
+    except OSError:
+        return None
+    except Exception:
+        return None
+
+
+def _updater_view():
+    """Read updater failure state. Does not check the network or mutate it."""
+    try:
+        from genstate import current_path, failed_path, status_path
+
+        adapter = load_adapter_config()
+        if not isinstance(adapter, dict):
+            return {"status": "unavailable"}
+        failed_state, failed = _read_regular_json(failed_path(adapter))
+        status_state, status = _read_regular_json(status_path(adapter))
+        current_state, current = _read_regular_json(current_path(adapter))
+    except Exception:
+        return {"status": "unavailable"}
+    if "unavailable" in {failed_state, status_state, current_state}:
+        return {"status": "unavailable"}
+    failed = failed or {}
+    status = status or {}
+    current = current or {}
+    if not isinstance(failed, dict):
+        failed = {}
+    if not isinstance(status, dict):
+        status = {}
+    klass = failed.get("failure_class") if isinstance(failed.get("failure_class"), str) else None
+    if klass is None and isinstance(status.get("resolve_failure_class"), str):
+        klass = status.get("resolve_failure_class")
+    phase = failed.get("phase") if isinstance(failed.get("phase"), str) else None
+    retryable = klass in {"temporary_network", "rate_limited"} and phase != "package-refresh"
+    certificate = klass == "certificate"
+    actionable = klass in {"authentication", "permission", "hook_trust", "certificate"}
+    quarantined = klass in {"resolver", "bad_content"} or failed.get("quarantined") is True
+    unknown = bool(failed.get("error")) and not retryable and not actionable and not quarantined
+    nxt = _number(failed.get("next_retry_at"))
+    if nxt is None:
+        nxt = _number(status.get("next_retry_at"))
+    active = bool(
+        failed.get("error") or klass or failed.get("quarantined") or phase or nxt is not None
+        or status.get("error") or status.get("resolve_wait")
+        or status.get("result") in {
+            "failed", "check-failed", "action-required",
+            "suppressed-known-failed", "retry-waiting",
+        }
+    )
+    if not active:
+        if isinstance(failed.get("sha"), str) or failed.get("history") or failed.get("count"):
+            return {
+                "status": "recovered",
+                "recovery": "recovered",
+                "active_failure": False,
+                "note": "no active updater failure; history remains in updater status",
+            }
+        return None
+    view = {"active_failure": True}
+    if isinstance(status.get("result"), str):
+        view["result"] = status["result"][:80]
+    if isinstance(failed.get("sha"), str):
+        view["failed_sha"] = failed["sha"][:64]
+    error = _bounded_text(failed.get("error"), 200) or _bounded_text(status.get("error"), 200)
+    if error:
+        view["error"] = error
+    if klass:
+        view["failure_class"] = klass[:40]
+    if nxt is not None:
+        view["next_retry_at"] = nxt
+    if isinstance(failed.get("count"), int) and not isinstance(failed.get("count"), bool):
+        view["attempts"] = failed["count"]
+    if isinstance(failed.get("first_failure_at"), (int, float)) and not isinstance(failed.get("first_failure_at"), bool):
+        view["first_failure_at"] = failed["first_failure_at"]
+    if phase:
+        view["phase"] = phase[:40]
+    if retryable:
+        view["recovery"] = "automatic"
+        view["note"] = "scheduled checks retry this temporary failure"
+        operation = "status"
+    elif certificate:
+        view["recovery"] = "action_required"
+        view["note"] = "certificate trust needs repair; scheduled checks retry after backoff"
+        operation = "status"
+    elif actionable:
+        view["recovery"] = "action_required"
+        view["note"] = "credentials or host permission need attention"
+        operation = "status"
+    elif quarantined or unknown or phase == "package-refresh":
+        view["recovery"] = "manual"
+        view["note"] = "manual recovery is required for this revision"
+        operation = "recover"
+    else:
+        operation = "status"
+    command = _launcher_command(adapter, operation, current)
+    if command:
+        view["command"] = command
+    return view
+
+
 def _knowledge_status_payload(session=None):
     if not _configured():
         payload = three_choices()
@@ -142,6 +307,9 @@ def _knowledge_status_payload(session=None):
             "Sharing is off: no Stop capture or organizer. "
             "Knowledge retrieval works after /mindie-agent:init."
         )
+    update = _updater_view()
+    if update:
+        payload["update"] = update
     return payload
 
 
