@@ -95,13 +95,27 @@ KNOWLEDGE_TOOLS = [
     ),
     dict(
         name="knowledge_explain",
-        description="Read one domain reference. offset/limit are character positions.",
+        description=(
+            "Read one page of a domain reference. The page is a slice, not the full case. "
+            "offset and limit are Unicode characters, not lines or bytes. "
+            "When next_offset is an integer, pass it as offset to read another page only if that page is still relevant; "
+            "do not count characters. next_offset is null at the end."
+        ),
         inputSchema=dict(
             type="object",
             properties=dict(
                 ref={"type": "string"},
-                offset={"type": "integer", "minimum": 0},
-                limit={"type": "integer", "minimum": 1, "maximum": 65536},
+                offset={
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Unicode character offset. Use the previous next_offset; omit for the first page.",
+                },
+                limit={
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 32768,
+                    "description": "Maximum Unicode characters in this page.",
+                },
                 request_nonce=NONCE_PROP,
             ),
             required=["ref", "request_nonce"],
