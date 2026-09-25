@@ -96,8 +96,11 @@ python3 "$MINDIE_LAUNCHER" --config "$MINDIE_CONFIG" updater status
 ```
 
 Replace `status` with `check` to check main, or `uninstall-schedule` to stop
-automatic checks. `install-schedule` restores scheduling. Use `recover` only
-after inspecting a recorded failure; it is an explicit new attempt.
+automatic checks. `install-schedule` restores scheduling. A known temporary
+network or certificate-trust failure is retried by the next scheduled check
+when its recorded retry time is due. TLS validation stays enabled.
+`recover` is only for quarantined content or an unknown failure, not the
+normal network path.
 
 ## Optional product failure reporting
 

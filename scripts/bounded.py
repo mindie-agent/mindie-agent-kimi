@@ -17,14 +17,16 @@ read cannot hang the parent past the deadline.
 
 An optional cancel Event is checked before spawn, while draining/waiting
 (including after the child has closed its pipes), and before returning a
-result. Stderr bytes count toward the output bound and are then discarded;
-failures report only a static category and returncode.
+result. Stderr bytes count toward the output bound and are then discarded.
+Updater transport commands may attach a static failure category; raw
+stderr, argv and URLs are not retained. This call does not retry.
 """
 
 from __future__ import annotations
 
 import atexit
 import os
+import re
 import subprocess
 import tempfile
 import threading
@@ -46,6 +48,11 @@ class CommandCancelled(RuntimeError):
 
 class CommandTimedOut(RuntimeError):
     """The command did not finish before the absolute deadline."""
+
+    def __init__(self, message, *args, category=None, retry_after=None):
+        super().__init__(message, *args)
+        self.category = category
+        self.retry_after = retry_after
 
 
 class OutputLimitExceeded(ValueError, RuntimeError):
@@ -116,20 +123,220 @@ def _cancelled(cancel):
     return cancel is not None and cancel.is_set()
 
 
-def _run_posix(process, timeout, max_output, pgid, check, cancel):
+_RETRY_AFTER = re.compile(r"retry-after\s*[:=]\s*(\d{1,6})\b", re.I)
+_HTTP_STATUS = re.compile(
+    r"(?:http\s*/\s*1\.[01]\s+|status(?:\s+code)?\s*[:=]\s*|"
+    r"error\s*[:=]\s*|returned error:\s*|http error\s+|http\s+)(\d{3})\b",
+    re.I,
+)
+_CERT_PHRASES = (
+    "certificate verify failed",
+    "sslcertverificationerror",
+    "certificate has expired",
+    "self-signed certificate",
+    "self signed certificate",
+    "unable to get local issuer certificate",
+    "certificate_verify_failed",
+    "ssl: certificate",
+    "ssl certificate problem",
+    "unknown ca",
+    "curl: (60)",
+)
+_RESOLVER_PHRASES = (
+    "resolutionimpossible",
+    "conflicting dependencies",
+    "package versions have conflicting",
+    "the conflict is caused by",
+    "resolver conflict",
+)
+_HASH_PHRASES = (
+    "these packages do not match the hashes",
+    "does not match the hashes",
+    "hash mismatch",
+)
+_GENERIC_CONTENT_PHRASES = (
+    "no matching distribution",
+    "could not find a version that satisfies",
+)
+_AUTH_PHRASES = (
+    "authentication failed",
+    "could not read username",
+    "terminal prompts disabled",
+    "permission denied (publickey)",
+    "invalid credentials",
+    "http basic: access denied",
+    "support for password authentication was removed",
+    "authentication required",
+    "invalid username or password",
+)
+_RATE_PHRASES = (
+    "rate limit",
+    "too many requests",
+    "secondary rate limit",
+)
+_HOOK_PHRASES = (
+    "hook trust",
+    "requires native trust",
+    "changed hooks require",
+)
+_CONNECT_PHRASES = (
+    "could not resolve host",
+    "temporary failure in name resolution",
+    "name or service not known",
+    "nodename nor servname",
+    "temporary failure resolving",
+    "network is unreachable",
+    "connection timed out",
+    "connection reset by peer",
+    "connection refused",
+    "connection aborted",
+    "failed to connect",
+    "operation timed out",
+    "read operation timed out",
+    "timed out",
+    "curl: (6)",
+    "curl: (7)",
+    "curl: (28)",
+    "curl: (56)",
+    "newconnectionerror",
+    "remote end closed connection",
+    "unexpected eof",
+    "connection broken",
+    "bad gateway",
+    "service unavailable",
+    "gateway time-out",
+    "gateway timeout",
+    "error sending request",
+    "dns error",
+    "recv failure",
+    "send failure",
+    "max retries exceeded",
+    "proxy connect aborted",
+)
+
+
+def _has_phrase(text, phrases):
+    return any(phrase in text for phrase in phrases)
+
+
+def classify_transport_text(text):
+    """Return (category, retry_after_seconds) or None.
+
+    `text` is command output examined only in memory. The result is a static
+    category and an optional Retry-After. It never includes the output.
+    Exit status alone is not a category: 128 and a bare 403 are not enough.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return None
+    sample = text[:65536]
+    lower = sample.lower()
+    retry_after = None
+    match = _RETRY_AFTER.search(sample)
+    if match:
+        retry_after = _finite_delay(match.group(1))
+    codes = {int(item) for item in _HTTP_STATUS.findall(sample)}
+    if _has_phrase(lower, _CERT_PHRASES):
+        return ("certificate", None)
+    if _has_phrase(lower, _HASH_PHRASES):
+        return ("bad_content", None)
+    if _has_phrase(lower, _RESOLVER_PHRASES):
+        return ("resolver", None)
+    if 429 in codes or _has_phrase(lower, _RATE_PHRASES):
+        return ("rate_limited", retry_after)
+    if 401 in codes or _has_phrase(lower, _AUTH_PHRASES):
+        return ("authentication", None)
+    if 403 in codes or (
+        ("access denied" in lower and "http basic" not in lower)
+        or "write access to repository not granted" in lower
+        or ("forbidden" in lower and "403" in lower)
+        or ("permission denied" in lower and "publickey" not in lower)
+    ):
+        return ("permission", None)
+    if _has_phrase(lower, _HOOK_PHRASES):
+        return ("hook_trust", None)
+    # A demonstrated transport failure wins over pip's generic final summary.
+    if (codes & {500, 502, 503, 504}) or _has_phrase(lower, _CONNECT_PHRASES):
+        return ("temporary_network", retry_after)
+    if _has_phrase(lower, _GENERIC_CONTENT_PHRASES):
+        return ("bad_content", None)
+    return None
+
+
+def _finite_delay(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if number != number or number == float("inf") or number == float("-inf") or number < 0:
+        return None
+    return number
+
+
+_STREAM_EDGE = 4096
+
+
+def _stream_edges(buf):
+    """Head and tail of one stream. The raw bytes are not retained."""
+    if not buf:
+        return ""
+    if isinstance(buf, str):
+        text = buf
+    else:
+        text = bytes(buf).decode("utf-8", "replace")
+    if len(text) <= _STREAM_EDGE * 2:
+        return text
+    return text[:_STREAM_EDGE] + "\n" + text[-_STREAM_EDGE:]
+
+
+def _joined_output(stdout, stderr):
+    parts = []
+    for buf in (stdout, stderr):
+        piece = _stream_edges(buf)
+        if piece:
+            parts.append(piece)
+    return "\n".join(parts)
+
+
+def _attach_transport(exc, stdout, stderr, *, timed_out):
+    kind = classify_transport_text(_joined_output(stdout, stderr))
+    if kind is not None:
+        category, retry_after = kind
+        exc.category = category
+        if retry_after is not None:
+            exc.retry_after = retry_after
+        return
+    if timed_out:
+        exc.category = "temporary_network"
+
+
+def _run_posix(process, timeout, max_output, pgid, check, cancel, transport=False):
     selector = selectors.DefaultSelector()
     selector.register(process.stdout, selectors.EVENT_READ, "out")
     selector.register(process.stderr, selectors.EVENT_READ, "err")
     deadline = time.monotonic() + timeout
     output = bytearray()
+    errors = bytearray() if transport else None
     cap = _Cap(max_output)
+
+    def timeout_error():
+        err = TimeoutError("deadline exceeded")
+        if transport:
+            _attach_transport(err, output, errors, timed_out=True)
+        return err
+
+    def failed_error():
+        err = RuntimeError(f"command failed ({process.returncode})")
+        if transport:
+            _attach_transport(err, output, errors, timed_out=False)
+        return err
+
     try:
         while True:
             if _cancelled(cancel):
                 raise CommandCancelled("command cancelled")
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise TimeoutError("deadline exceeded")
+                raise timeout_error()
             alive = process.poll() is None
             if not alive and not selector.get_map():
                 break
@@ -142,6 +349,8 @@ def _run_posix(process, timeout, max_output, pgid, check, cancel):
                     cap.add(chunk)
                     if key.data == "out":
                         output.extend(chunk)
+                    elif errors is not None:
+                        errors.extend(chunk)
                 continue
             # Pipes closed while the child is still running.
             try:
@@ -154,12 +363,15 @@ def _run_posix(process, timeout, max_output, pgid, check, cancel):
         if process.poll() is None:
             try:
                 process.wait(timeout=max(0.01, deadline - time.monotonic()))
-            except subprocess.TimeoutExpired as exc:
-                raise TimeoutError("deadline exceeded") from exc
+            except subprocess.TimeoutExpired:
+                err = timeout_error()
+                if transport:
+                    raise err from None
+                raise err
         if _cancelled(cancel):
             raise CommandCancelled("command cancelled")
         if check and process.returncode:
-            raise RuntimeError(f"command failed ({process.returncode})")
+            raise failed_error()
         return output.decode("utf-8", "replace")
     finally:
         _kill_tree(process, pgid)
@@ -176,15 +388,16 @@ def _run_posix(process, timeout, max_output, pgid, check, cancel):
         process.stderr.close()
 
 
-def _run_windows(process, timeout, max_output, pgid, check, cancel):
+def _run_windows(process, timeout, max_output, pgid, check, cancel, transport=False):
     # Windows (unverified on real hardware): reader threads replace selectors.
     deadline = time.monotonic() + timeout
     output = bytearray()
+    errors = bytearray() if transport else None
     cap = _Cap(max_output)
     lock = threading.Lock()
     failure = []
 
-    def reader(stream, keep):
+    def reader(stream, dest):
         try:
             while True:
                 chunk = stream.read(_CHUNK)
@@ -192,14 +405,14 @@ def _run_windows(process, timeout, max_output, pgid, check, cancel):
                     return
                 with lock:
                     cap.add(chunk)
-                    if keep:
-                        output.extend(chunk)
+                    if dest is not None:
+                        dest.extend(chunk)
         except (ValueError, OutputLimitExceeded) as exc:
             failure.append(exc)
 
     threads = [
-        threading.Thread(target=reader, args=(process.stdout, True), daemon=True),
-        threading.Thread(target=reader, args=(process.stderr, False), daemon=True),
+        threading.Thread(target=reader, args=(process.stdout, output), daemon=True),
+        threading.Thread(target=reader, args=(process.stderr, errors), daemon=True),
     ]
     for thread in threads:
         thread.start()
@@ -208,7 +421,10 @@ def _run_windows(process, timeout, max_output, pgid, check, cancel):
             if _cancelled(cancel):
                 raise CommandCancelled("command cancelled")
             if time.monotonic() >= deadline:
-                raise TimeoutError("deadline exceeded")
+                err = TimeoutError("deadline exceeded")
+                if transport:
+                    _attach_transport(err, output, errors, timed_out=True)
+                raise err
             if failure:
                 raise failure[0]
             if process.poll() is not None and not any(
@@ -223,7 +439,10 @@ def _run_windows(process, timeout, max_output, pgid, check, cancel):
         if _cancelled(cancel):
             raise CommandCancelled("command cancelled")
         if check and process.returncode:
-            raise RuntimeError(f"command failed ({process.returncode})")
+            err = RuntimeError(f"command failed ({process.returncode})")
+            if transport:
+                _attach_transport(err, output, errors, timed_out=False)
+            raise err
         return bytes(output).decode("utf-8", "replace")
     finally:
         _kill_tree(process, pgid)
@@ -247,6 +466,7 @@ def run(
     max_output=MAX_OUTPUT,
     check=True,
     cancel=None,
+    transport=False,
 ):
     if not argv or not all(isinstance(item, str) and item for item in argv):
         raise ValueError("command must be a nonempty argv list")
@@ -273,9 +493,13 @@ def run(
         atexit.register(cleanup)
         try:
             if POSIX:
-                result = _run_posix(process, timeout, max_output, pgid, check, cancel)
+                result = _run_posix(
+                    process, timeout, max_output, pgid, check, cancel, transport
+                )
             else:
-                result = _run_windows(process, timeout, max_output, pgid, check, cancel)
+                result = _run_windows(
+                    process, timeout, max_output, pgid, check, cancel, transport
+                )
             if _cancelled(cancel):
                 raise CommandCancelled("command cancelled")
             return result
@@ -284,7 +508,16 @@ def run(
         except OutputLimitExceeded:
             raise
         except (TimeoutError, subprocess.TimeoutExpired) as exc:
-            raise CommandTimedOut(f"command timed out after {timeout}s") from exc
+            message = f"command timed out after {timeout}s"
+            category = getattr(exc, "category", None)
+            retry_after = getattr(exc, "retry_after", None)
+            if transport and category is None:
+                category = "temporary_network"
+            if category:
+                raise CommandTimedOut(
+                    message, category=category, retry_after=retry_after
+                ) from None
+            raise CommandTimedOut(message) from exc
         finally:
             try:
                 atexit.unregister(cleanup)

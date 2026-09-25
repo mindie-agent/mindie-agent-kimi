@@ -48,7 +48,7 @@ Release-channel tracking is a later extension of the same check; only
 ```
 python scripts/updater.py check      # one bounded check (what the scheduler runs)
 python scripts/updater.py status     # offline: current tuple, last result/error
-python scripts/updater.py recover    # explicit recovery: clear failed-revision suppression, re-check
+python scripts/updater.py recover    # quarantined or unknown SHA only; network retries without this
 python scripts/updater.py install-schedule / uninstall-schedule
 ```
 
@@ -60,13 +60,20 @@ unless `--no-schedule`.
 
 ## Failure behaviour
 
-One bounded check, no write retry loop. `update/status.json` records
-current/candidate SHA, last result and error, `feed_sync`, `rollback`,
-and `needs_host_reload`. A failed exact revision is recorded in
-`update/failed.json` and not reinstalled until `recover` or a newer
-revision; read-only main discovery continues. An offline check failure
-leaves the old version fully callable. Success is never inferred from a
-ready HTTP port, pip's exit code, or copied files.
+One bounded check, and no retry loop inside that check. The existing
+scheduler is the only timer. `update/status.json` records current/candidate
+SHA, last result and error, `feed_sync`, `rollback`, and
+`needs_host_reload`. A known temporary network or rate-limit failure keeps
+the previous install, records `next_retry_at`, and is tried again on a later
+scheduled check of the same SHA. Bad content stays quarantined. Certificate
+verification is a local trust failure, not invalid SHA content; the same
+schedule retries it after backoff, and TLS validation stays enabled. An unknown
+or crashed install still rolls back before another mutation and is not
+retried just because a command timed out; `recover` clears that suppression.
+Success clears the active retry and error. Attempt count and the first
+failure time can remain. An offline check leaves the old version callable.
+Success is never inferred from a ready HTTP port, pip's exit code, or copied
+files.
 
 ## Host reload boundary
 
