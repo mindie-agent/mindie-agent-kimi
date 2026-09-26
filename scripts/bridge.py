@@ -102,9 +102,6 @@ def _authorized_lease(session):
     status = view.get("status") if isinstance(view, dict) else None
     if status == "unavailable":
         return None, "admission-unreadable"
-    if status == "paused":
-        # An explicit circuit state, not inactivity and not contribution-off.
-        return None, "admission-paused"
     if status != "active":
         return None, None
     try:

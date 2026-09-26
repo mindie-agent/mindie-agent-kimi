@@ -43,12 +43,14 @@ KNOWLEDGE_TOOLS = [
     dict(
         name="mindie_entry",
         description=(
-            "Native MindIE entry. Mutations require the current /mindie-agent:* "
-            "command; op=status can diagnose an already enabled or paused task. "
+            "Native MindIE entry. Mutations require the current /mindie-agent "
+            "invocation; op=status can diagnose an already bound task. "
             "Requires a fresh request_nonce. Never pass a session id. "
-            "op=init returns first-use choices or status; op=choose stores "
-            "read-only or later; contribution requires sharing-enable with "
-            "repository, account, project root, and public visibility. "
+            "op=init binds this task internally and returns first-use choices "
+            "once or status; op=choose stores read-only or later; contribution "
+            "requires sharing-enable with repository, account, project root, "
+            "and public visibility. A saved choice persists across sessions, "
+            "restarts, upgrades and failures and is never re-asked. "
             "Status includes safe task failure categories and contribution batch IDs for recover inspection; it never retries work."
         ),
         inputSchema=dict(
@@ -252,7 +254,10 @@ def knowledge_call(name, args, session):
 
     engine = load_engine_config()
     if Admission(admission_path(engine)).active_lease(session) is None:
-        raise ValueError("session is not manually activated")
+        raise ValueError(
+            "this task is not bound yet; invoke /mindie-agent once in this "
+            "task — the saved install-level choice is reused, nothing is re-asked"
+        )
     method = name.removeprefix("knowledge_")
 
     try:

@@ -288,11 +288,10 @@ def _knowledge_status_payload(session=None):
         state = admission.get("status", "unavailable")
         payload["this_session"] = dict(
             status=state,
-            activated=state in {"active", "paused"},
+            bound=state == "active",
             enabled=state == "active" and admission.get("enabled") is True,
             failures=admission.get("failures"),
             project_root=admission.get("project_root"),
-            paused=state == "paused",
         )
     stored = payload.get("first_use")
     if stored in {"read-only", "later", "contribute"}:
@@ -305,7 +304,7 @@ def _knowledge_status_payload(session=None):
         payload["setup"] = extra["setup"]
         payload["hint"] = (
             "Sharing is off: no Stop capture or organizer. "
-            "Knowledge retrieval works after /mindie-agent:init."
+            "Knowledge retrieval works after invoking /mindie-agent once in this task."
         )
     update = _updater_view()
     if update:
@@ -354,25 +353,13 @@ def _apply_native_choice(payload, native_choice):
 
 
 def _configured_init_activation(session, cwd, activation_id):
-    """Explicit init activation for a configured task. Never auto-activates."""
+    """Entry binding for a configured task: automatic, idempotent, and never
+    a consent prompt. The persistent install-level choice is untouched."""
     from admission import activate, gate
     from knowledge_service import ensure_service
 
     root = _project_root(session, cwd)
-    try:
-        lease = activate(session, project_root=root, root_session=session)
-    except ValueError as exc:
-        text = str(exc)
-        if "paused" not in text.lower():
-            raise
-        payload = status_payload(session)
-        payload["activation"] = dict(
-            session=session,
-            enabled=False,
-            paused=True,
-            hint=text[:300],
-        )
-        return payload
+    lease = activate(session, project_root=root, root_session=session)
     if gate().claim(session, "plugin_command", activation_id, token=lease["token"]) is not True:
         payload = status_payload(session)
         payload["already"] = True
@@ -383,13 +370,10 @@ def _configured_init_activation(session, cwd, activation_id):
     except Exception as exc:
         service = f"not-started:{type(exc).__name__}"
     payload = status_payload(session)
-    paused = bool(lease.get("paused"))
-    payload["activation"] = dict(
+    payload["binding"] = dict(
         session=lease["session"],
-        enabled=bool(lease.get("enabled")) and not paused,
-        failures=lease.get("failures", 0),
+        enabled=bool(lease.get("enabled")),
         project_root=lease["project_root"],
-        paused=paused,
         service=service,
     )
     return payload
@@ -427,15 +411,15 @@ def op_choose(session, choice):
 
 
 def op_status(session):
-    # A bound task that explicitly enabled MindIE can diagnose a later failure,
-    # including its paused lease, without another user slash command. This read
-    # does not consume an attempt or grant/reactivate authorization.
+    # A bound task that explicitly enabled MindIE can diagnose a later failure
+    # without another user slash command. This read does not consume an
+    # attempt or grant/rebind anything.
     admitted = False
     if _configured():
         from admission import gate
 
         try:
-            admitted = gate().inspect(session).get("status") in {"active", "paused"}
+            admitted = gate().inspect(session).get("status") == "active"
         except (OSError, ValueError, TypeError):
             pass
     if not admitted:

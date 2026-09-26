@@ -80,14 +80,19 @@ def three_choices() -> dict:
             dict(
                 id="read-only",
                 summary="Read-only knowledge; no contribution",
-                next="Reply read-only, or run /mindie-agent:init read-only",
+                next="Reply read-only, or run /mindie-agent read-only",
             ),
             dict(
                 id="later",
                 summary="Configure later (sharing stays off)",
-                next="Reply later, or run /mindie-agent:init later",
+                next="Reply later, or run /mindie-agent later",
             ),
         ],
         setup="python3 scripts/setup.py --knowledge-python <venv-python>",
-        note="Enabling contribution requires explicit public repository, account, project root, and visibility. There is no automatic yes.",
+        note=(
+            "One-time setup: the choice persists for this installation and is "
+            "never asked again, including after restarts, upgrades or failures. "
+            "Enabling contribution requires explicit public repository, account, "
+            "project root, and visibility. There is no automatic yes."
+        ),
     )

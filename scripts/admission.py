@@ -1,4 +1,8 @@
-"""Thin wrapper: shared Admission only. No local lease or attempt SQL."""
+"""Thin wrapper: shared Admission only. No local lease or attempt SQL.
+
+The lease is the internal per-task identity binding established by the
+entry; it is never a consent prompt and never failure-paused.
+"""
 
 from __future__ import annotations
 
@@ -14,16 +18,11 @@ def gate(engine=None):
 
 
 def activate(session, *, project_root, root_session=None, engine=None):
-    lease = gate(engine).activate(
+    return gate(engine).activate(
         session,
         project_root=str(Path(project_root).resolve()),
         root_session=root_session,
     )
-    if not lease.get("enabled") or lease.get("failures", 0) >= 3:
-        raise ValueError(
-            "activation is paused; /mindie-agent:deactivate then init to recover"
-        )
-    return lease
 
 
 def deactivate(session, engine=None):

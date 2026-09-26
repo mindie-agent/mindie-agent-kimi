@@ -29,6 +29,7 @@ NONCE_RE = re.compile(NONCE)
 MAX_HOOK_BYTES = 128 * 1024
 MAX_INDEX_BYTES = 8 * 1024 * 1024
 COMMANDS = {
+    "mindie-agent",  # the unified entry skill; aliases init below
     "init",
     "status",
     "deactivate",
@@ -40,6 +41,10 @@ COMMANDS = {
     "reporting-enable",
     "reporting-disable",
 }
+
+# The single user entry is the mindie-agent skill itself; it performs the
+# same internal binding the old init command did.
+ENTRY_ALIASES = {"mindie-agent": "init"}
 
 
 def require_session(value) -> str:
@@ -243,6 +248,7 @@ def require_current_plugin_command(session_id: str, command: str, *, kimi_home=N
     name = origin.get("commandName")
     if name not in COMMANDS:
         raise ValueError("current slash command is not a MindIE entry")
+    name = ENTRY_ALIASES.get(name, name)
     if name != command:
         raise ValueError("current slash command does not match this operation")
     activation_id = origin.get("activationId")

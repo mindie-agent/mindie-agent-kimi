@@ -1,15 +1,15 @@
 # Failure diagnosis and local cancellation
 
 Native status reports existing knowledge configuration, service/storage health,
-this task's admission, a shared maintenance pause, and the latest five captures
-and contribution batches associated with the bound task. An enabled or paused
+this task's binding and diagnostic failure counter, and the latest five captures
+and contribution batches associated with the bound task. A bound
 task can call status after a later failure without another user slash command;
-unadmitted tasks still require the explicit native status command. An absent identity
+unbound tasks still require the explicit native status command. An absent identity
 returns no task records. A transient local or network failure is recovered by the existing worker; status is how that problem is seen. Failed batch IDs can be inspected with the optional recover command;
 unknown publication results must be reconciled before any explicit retry.
 
-Status does not initialize databases, start models/services, activate a task,
-reset a pause, or replay consumed input. SQLite read-only access may create normal
+Status does not initialize databases, start models/services, bind a task,
+reset failure counters, or replay consumed input. SQLite read-only access may create normal
 WAL reader sidecars; it does not change business records. Failure projections omit
 raw provider stderr, transcript text, tokens and other task identities. Existing
 malformed adapter settings produce a diagnostic instead of first-use choices.

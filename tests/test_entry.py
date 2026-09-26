@@ -104,7 +104,7 @@ class EntryTests(unittest.TestCase):
             self.assertEqual(payload["first_use"], "read-only")
             self.assertEqual(payload["choices"], [])
 
-    def test_configured_init_read_only_activates_this_session(self):
+    def test_configured_init_read_only_binds_this_session(self):
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
             self._configured_native_init(tmp, "ses_cfg_ro", "act-cfg-ro", "read-only")
@@ -116,11 +116,10 @@ class EntryTests(unittest.TestCase):
             self.assertEqual(payload["first_use"], "read-only")
             self.assertEqual(payload["choices"], [])
             self.assertTrue(payload.get("repeat"))
-            activation = payload.get("activation") or {}
-            self.assertTrue(activation.get("enabled"))
-            self.assertFalse(activation.get("paused"))
-            self.assertEqual(activation.get("session"), "ses_cfg_ro")
-            self.assertIn("service", activation)
+            binding = payload.get("binding") or {}
+            self.assertTrue(binding.get("enabled"))
+            self.assertEqual(binding.get("session"), "ses_cfg_ro")
+            self.assertIn("service", binding)
             lease = admission.gate().active_lease("ses_cfg_ro")
             self.assertIsNotNone(lease)
             self.assertTrue(lease.get("enabled"))
@@ -128,7 +127,28 @@ class EntryTests(unittest.TestCase):
             self.assertTrue(second.get("already"))
             self.assertEqual(second.get("first_use"), "read-only")
 
-    def test_configured_init_then_ordinary_choose_keeps_activation(self):
+    def test_entry_skill_origin_binds_like_init(self):
+        """The unified /mindie-agent skill origin performs the same binding."""
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            config = make_config(tmp)
+            os.environ["MINDIE_KIMI_CONFIG"] = str(config)
+            self._home(
+                tmp,
+                "ses_skill",
+                turn_records(plugin_origin("mindie-agent", "act-skill", "read-only"),
+                             "mindie-agent read-only"),
+            )
+            self._stub_service()
+            import admission
+            import entry
+
+            payload = entry.op_init("ses_skill", str(tmp))
+            self.assertEqual(payload["first_use"], "read-only")
+            self.assertTrue((payload.get("binding") or {}).get("enabled"))
+            self.assertIsNotNone(admission.gate().active_lease("ses_skill"))
+
+    def test_configured_init_then_ordinary_choose_keeps_binding(self):
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
             self._configured_native_init(tmp, "ses_primary", "act-primary", "")
@@ -137,7 +157,7 @@ class EntryTests(unittest.TestCase):
             import entry
 
             first = entry.op_init("ses_primary", str(tmp))
-            self.assertTrue((first.get("activation") or {}).get("enabled"))
+            self.assertTrue((first.get("binding") or {}).get("enabled"))
             self.assertIsNotNone(admission.gate().active_lease("ses_primary"))
             write_session(
                 tmp / "kimi-home",
@@ -152,7 +172,7 @@ class EntryTests(unittest.TestCase):
             self.assertIsNotNone(lease)
             self.assertTrue(lease.get("enabled"))
 
-    def test_ordinary_user_choose_does_not_activate_when_configured(self):
+    def test_ordinary_user_choose_does_not_bind_when_configured(self):
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
             config = make_config(tmp)
@@ -164,26 +184,25 @@ class EntryTests(unittest.TestCase):
             payload = entry.op_choose("ses_noact", "read-only")
             self.assertEqual(payload["first_use"], "read-only")
             self.assertIsNone(admission.gate().active_lease("ses_noact"))
-            self.assertFalse((payload.get("this_session") or {}).get("activated", True))
+            self.assertFalse((payload.get("this_session") or {}).get("bound", True))
 
-    def test_configured_init_read_only_surfaces_paused(self):
+    def test_failure_counts_never_pause_the_entry(self):
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
-            self._configured_native_init(tmp, "ses_paused", "act-paused", "read-only")
+            self._configured_native_init(tmp, "ses_failed", "act-failed", "read-only")
             self._stub_service()
             import admission
             import entry
 
-            lease = admission.activate("ses_paused", project_root=str(tmp.resolve()))
+            lease = admission.activate("ses_failed", project_root=str(tmp.resolve()))
             gate = admission.gate()
-            for _ in range(3):
-                gate.finish("ses_paused", lease["token"], False)
-            payload = entry.op_init("ses_paused", str(tmp))
+            for _ in range(5):
+                gate.finish("ses_failed", lease["token"], False)
+            payload = entry.op_init("ses_failed", str(tmp))
             self.assertEqual(payload.get("first_use"), "read-only")
-            activation = payload.get("activation") or {}
-            self.assertTrue(activation.get("paused"))
-            self.assertFalse(activation.get("enabled"))
-            self.assertIsNone(gate.active_lease("ses_paused"))
+            binding = payload.get("binding") or {}
+            self.assertTrue(binding.get("enabled"))
+            self.assertIsNotNone(gate.active_lease("ses_failed"))
 
     def test_sharing_enable_uses_native_args_not_model_args(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -224,7 +243,7 @@ class EntryTests(unittest.TestCase):
             payload = entry.op_status("ses_st")
             self.assertTrue(payload["configured"])
             self.assertIn("this_session", payload)
-            self.assertTrue(payload["this_session"]["activated"])
+            self.assertTrue(payload["this_session"]["bound"])
             self.assertNotIn("active_leases", payload)
             self.assertNotIn("admission_path", payload)
             self.assertNotIn("recovery", payload)
