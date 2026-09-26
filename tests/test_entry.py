@@ -148,6 +148,130 @@ class EntryTests(unittest.TestCase):
             self.assertTrue((payload.get("binding") or {}).get("enabled"))
             self.assertIsNotNone(admission.gate().active_lease("ses_skill"))
 
+    def _skill_origin(self, name="mindie-agent", path=None, source="plugin",
+                      activation="act-skill-real", args="", trigger="user-slash",
+                      in_turn=False):
+        from paths import PLUGIN_ROOT
+
+        origin = dict(
+            kind="skill_activation",
+            activationId=activation,
+            skillName=name,
+            trigger=trigger,
+            skillType="prompt",
+            skillPath=path or str(PLUGIN_ROOT / "skills" / "mindie-agent" / "SKILL.md"),
+            skillSource=source,
+            skillArgs=args,
+        )
+        if in_turn:
+            origin["inTurn"] = True
+        return origin
+
+    def test_real_skill_activation_origin_binds(self):
+        """Kimi 2.x emits kind=skill_activation for /mindie-agent; it binds."""
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            config = make_config(tmp)
+            os.environ["MINDIE_KIMI_CONFIG"] = str(config)
+            origin = self._skill_origin(args="read-only")
+            self._home(tmp, "ses_real", turn_records(origin, "/mindie-agent read-only"))
+            self._stub_service()
+            import admission
+            import entry
+
+            payload = entry.op_init("ses_real", str(tmp))
+            self.assertEqual(payload["first_use"], "read-only")
+            self.assertTrue((payload.get("binding") or {}).get("enabled"))
+            self.assertIsNotNone(admission.gate().active_lease("ses_real"))
+            # The activationId is consumed once.
+            again = entry.op_init("ses_real", str(tmp))
+            self.assertTrue(again.get("already"))
+
+    def test_print_mode_in_turn_activation_binds(self):
+        """`kimi -p "/mindie-agent"`: the host resolves the prompt into an
+        in-turn skill activation (trigger=model-tool); the user entry text
+        makes it the real entry."""
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            config = make_config(tmp)
+            os.environ["MINDIE_KIMI_CONFIG"] = str(config)
+            origin = self._skill_origin(trigger="model-tool", source="extra",
+                                        in_turn=True, args="read-only")
+            records = turn_records(dict(kind="user"), "/mindie-agent read-only") + [
+                dict(type="turn.steer", input=[dict(type="text", text="skill loaded")],
+                     origin=origin, time=3),
+            ]
+            self._home(tmp, "ses_print", records)
+            self._stub_service()
+            import admission
+            import entry
+
+            payload = entry.op_init("ses_print", str(tmp))
+            self.assertEqual(payload["first_use"], "read-only")
+            self.assertTrue((payload.get("binding") or {}).get("enabled"))
+            self.assertIsNotNone(admission.gate().active_lease("ses_print"))
+
+    def test_model_initiated_skill_use_is_not_the_entry(self):
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            config = make_config(tmp)
+            os.environ["MINDIE_KIMI_CONFIG"] = str(config)
+            origin = self._skill_origin(trigger="model-tool", source="extra",
+                                        in_turn=True)
+            records = turn_records(dict(kind="user"), "please fix the NPU bug") + [
+                dict(type="turn.steer", input=[dict(type="text", text="skill loaded")],
+                     origin=origin, time=3),
+            ]
+            self._home(tmp, "ses_self", records)
+            import entry
+
+            with self.assertRaises(ValueError):
+                entry.op_init("ses_self", str(tmp))
+
+    def test_same_named_foreign_skill_is_rejected(self):
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            config = make_config(tmp)
+            os.environ["MINDIE_KIMI_CONFIG"] = str(config)
+            fake = tmp / "user-skills" / "mindie-agent" / "SKILL.md"
+            fake.parent.mkdir(parents=True)
+            fake.write_text("not the plugin skill")
+            origin = self._skill_origin(path=str(fake))
+            self._home(tmp, "ses_fake", turn_records(origin, "/mindie-agent"))
+            import entry
+
+            with self.assertRaises(ValueError):
+                entry.op_init("ses_fake", str(tmp))
+
+    def test_other_skill_activation_is_rejected(self):
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            config = make_config(tmp)
+            os.environ["MINDIE_KIMI_CONFIG"] = str(config)
+            origin = self._skill_origin(name="other-skill")
+            self._home(tmp, "ses_other", turn_records(origin, "/other-skill"))
+            import entry
+
+            with self.assertRaises(ValueError):
+                entry.op_init("ses_other", str(tmp))
+
+    def test_injected_origin_is_not_an_entry(self):
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            config = make_config(tmp)
+            os.environ["MINDIE_KIMI_CONFIG"] = str(config)
+            injected = dict(self._skill_origin(), kind="injection")
+            records = turn_records(dict(kind="user"), "hello") + [
+                dict(type="context.append_message",
+                     message=dict(role="user", content=[dict(type="text", text="x")],
+                                  origin=injected), time=3),
+            ]
+            self._home(tmp, "ses_inj", records)
+            import entry
+
+            with self.assertRaises(ValueError):
+                entry.op_init("ses_inj", str(tmp))
+
     def test_configured_init_then_ordinary_choose_keeps_binding(self):
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)

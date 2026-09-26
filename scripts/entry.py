@@ -13,7 +13,12 @@ import stat
 from pathlib import Path
 
 from entry_state import consume_activation_id, first_use, set_first_use, three_choices
-from identity import current_turn_origin, require_current_plugin_command, session_cwd
+from identity import (
+    current_turn_origin,
+    require_current_entry,
+    require_current_plugin_command,
+    session_cwd,
+)
 from paths import PLUGIN_ID, config_path, engine_config_path, load_adapter_config
 
 
@@ -267,10 +272,11 @@ def _knowledge_status_payload(session=None):
             payload["repeat"] = True
             payload["choices"] = []
         return payload
+    import consent as consent_mod
     from sharing import public_status
 
     try:
-        sharing_view, choice = public_status(), first_use()
+        sharing_view, saved = public_status(), consent_mod.load()
     except (OSError, ValueError, TypeError, KeyError) as exc:
         return dict(
             configured=None,
@@ -280,7 +286,9 @@ def _knowledge_status_payload(session=None):
             diagnostics=_diagnostics(session),
             hint="Inspect the existing adapter and community configuration. Native tools and independent SSH remain available; no setup or retry was started.",
         )
-    payload = dict(configured=True, sharing=sharing_view, first_use=choice)
+    choice = saved["choice"] if saved["state"] == "ok" else None
+    payload = dict(configured=True, sharing=sharing_view, first_use=choice,
+                   consent_state=saved["state"])
     diagnostics = _diagnostics(session)
     payload["diagnostics"] = diagnostics
     if session:
@@ -293,11 +301,38 @@ def _knowledge_status_payload(session=None):
             failures=admission.get("failures"),
             project_root=admission.get("project_root"),
         )
-    stored = payload.get("first_use")
-    if stored in {"read-only", "later", "contribute"}:
+    if choice:
+        # The one-time setup is done; it is never presented again.
+        payload["repeat"] = True
+        payload["choices"] = []
+    elif saved["state"] in {"corrupt", "unreadable"}:
+        # Damaged saved state is a fault, never a fresh install: read-only
+        # help keeps working, writes stop, no re-onboarding.
+        payload["repeat"] = True
+        payload["choices"] = []
+        payload["consent_error"] = dict(state=saved["state"], error=saved["error"])
+        payload["hint"] = (
+            "The saved setup state is damaged. This is NOT a fresh install: "
+            "read-only knowledge keeps working and nothing is collected. "
+            "Repair the file or change settings explicitly via /mindie-agent."
+        )
+    elif sharing_view.get("state") == "corrupt" or sharing_view.get("error"):
+        # A damaged settings file is a fault, never a fresh install.
+        payload["repeat"] = True
+        payload["choices"] = []
+        payload["hint"] = (
+            "The saved community settings are damaged. Read-only knowledge "
+            "keeps working and nothing is collected; repair the file or "
+            "change settings explicitly via /mindie-agent."
+        )
+    elif saved["state"] == "missing" and consent_mod.marker_exists():
+        # A legacy marker (any state) proves a prior setup: status, never a
+        # fresh onboarding — a damaged marker must not re-ask the choice.
         payload["repeat"] = True
         payload["choices"] = []
     elif not payload["sharing"].get("enabled"):
+        # Genuinely unchosen: cold install or installer default-off. The
+        # one-time setup is presented exactly until a choice is recorded.
         extra = three_choices()
         payload["choices"] = extra["choices"]
         payload["note"] = extra["note"]
@@ -313,12 +348,19 @@ def _knowledge_status_payload(session=None):
 
 
 def status_payload(session=None):
-    """Read-only. Reporting is independent of knowledge setup and activation."""
+    """Read-only. Reporting is independent of knowledge setup and binding."""
+    import consent as consent_mod
     import diagnostic_support
 
     payload = dict(_knowledge_status_payload(session))
     payload["reporting"] = diagnostic_support.reporting_status()
-    if payload["reporting"].get("status") == "not_configured":
+    saved = consent_mod.load()
+    # Reporting is offered once, inside the first setup, never repeatedly.
+    if (
+        payload["reporting"].get("status") == "not_configured"
+        and saved["state"] == "missing"
+        and not consent_mod.install_traces()
+    ):
         payload["reporting_choice"] = diagnostic_support.reporting_hint()
     return payload
 
@@ -380,7 +422,7 @@ def _configured_init_activation(session, cwd, activation_id):
 
 
 def op_init(session, cwd):
-    found = require_current_plugin_command(session, "init")
+    found = require_current_entry(session, "init")
     native_choice = _init_choice_from_native(found.get("arguments"))
     if not _configured():
         if not consume_activation_id(found["activation_id"]):
@@ -456,9 +498,12 @@ def op_sharing_disable(session):
     consume_slash(session, "sharing-disable")
     if not _configured():
         return dict(configured=False, enabled=False)
+    import consent as consent_mod
     import sharing as sharing_mod
 
-    return sharing_mod.write_disabled()
+    result = sharing_mod.write_disabled()
+    consent_mod.record_choice("disabled")
+    return result
 
 
 def op_sharing_status(session):
@@ -516,6 +561,7 @@ def op_reporting(session, command):
     """Native command only. Does not ensure the reporter or change knowledge."""
     found, first = consume_slash(session, command)
     del found
+    import consent as consent_mod
     import diagnostic_support
 
     if command == "reporting-status":
@@ -525,7 +571,10 @@ def op_reporting(session, command):
     if not _configured():
         raise ValueError("MindIE is not configured; run scripts/setup.py first")
     python = load_adapter_config()["python"]
-    return diagnostic_support.configure_reporting(command == "reporting-enable", python)
+    result = diagnostic_support.configure_reporting(command == "reporting-enable", python)
+    if result.get("enabled") is (command == "reporting-enable"):
+        consent_mod.record_reporting("enabled" if command == "reporting-enable" else "disabled")
+    return result
 
 
 def dispatch(session, cwd, op, arguments="", choice=None):

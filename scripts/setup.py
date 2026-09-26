@@ -316,7 +316,7 @@ def main():
     if not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", args.domain):
         parser.error("invalid domain name")
     engine_config = config.with_name(config.stem + ".engine.json")
-    community_config = config.with_name(config.stem + ".community.json")
+    community_config = config.with_name("mindie-community.json")
     if config.exists() or engine_config.exists():
         if community is None:
             parser.error(

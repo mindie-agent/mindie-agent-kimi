@@ -21,6 +21,7 @@ from paths import (
     NONCE,
     PLUGIN_ID,
     kimi_home_from_env,
+    plugin_root_from_env,
     state_dir,
 )
 
@@ -260,6 +261,133 @@ def require_current_plugin_command(session_id: str, command: str, *, kimi_home=N
         arguments=args if isinstance(args, str) else "",
         activation_id=activation_id,
     )
+
+
+def _turn_origins(records):
+    """(record, origin) pairs that can open or steer a turn, in order."""
+    for record in records:
+        rtype = record.get("type")
+        if rtype == "turn.prompt":
+            origin = record.get("origin")
+        elif rtype == "turn.steer":
+            origin = record.get("origin")
+        elif rtype == "context.append_message":
+            message = record.get("message")
+            if not isinstance(message, dict) or message.get("role") != "user":
+                continue
+            origin = message.get("origin")
+            if isinstance(origin, dict) and origin.get("kind") == "injection":
+                continue
+        else:
+            continue
+        if isinstance(origin, dict):
+            yield record, origin
+
+
+def _record_text(record):
+    """First text of a turn-opening record (prompt input or user message)."""
+    if record.get("type") == "context.append_message":
+        message = record.get("message") or {}
+        for item in message.get("content") or []:
+            if isinstance(item, dict) and isinstance(item.get("text"), str):
+                return item["text"]
+        return ""
+    for item in record.get("input") or []:
+        if isinstance(item, dict) and isinstance(item.get("text"), str):
+            return item["text"]
+    return ""
+
+
+def _current_skill_activation(origin, command):
+    """A real host skill activation for the mindie-agent skill.
+
+    Accepted only with the full identity boundary: the skill is named
+    mindie-agent and resolves to THIS plugin installation's own SKILL.md
+    (a same-named user/external skill never matches), a fresh activationId
+    is present, and the host trigger is a user entry form. skillSource is
+    host-channel metadata (plugin/extra/builtin vary by install channel) and
+    is deliberately not a boundary — the resolved path is.
+    """
+    if origin.get("skillName") != PLUGIN_ID:
+        raise ValueError("current skill activation is not the MindIE entry")
+    skill_path = origin.get("skillPath")
+    if not isinstance(skill_path, str) or not skill_path:
+        raise ValueError("skill activation lacks the native skill path")
+    expected = (
+        plugin_root_from_env() / "skills" / PLUGIN_ID / "SKILL.md"
+    ).resolve()
+    try:
+        actual = Path(skill_path).resolve()
+    except (OSError, ValueError):
+        raise ValueError("skill activation path is not usable") from None
+    if actual != expected:
+        raise ValueError("skill activation is not this plugin's mindie-agent skill")
+    trigger = origin.get("trigger")
+    if trigger is not None and trigger not in {"user-slash", "model-tool"}:
+        raise ValueError("skill activation trigger is not a user entry")
+    activation_id = origin.get("activationId")
+    if not isinstance(activation_id, str) or not activation_id:
+        raise ValueError("native skill activation lacks activationId")
+    args = origin.get("skillArgs")
+    return dict(
+        command=command,
+        arguments=args if isinstance(args, str) else "",
+        activation_id=activation_id,
+    )
+
+
+def require_current_entry(session_id: str, command: str = "init", *, kimi_home=None) -> dict:
+    """Trusted recognition of the current unified-entry invocation.
+
+    Dispatches on the ACTUAL host records: a native plugin_command opener
+    (slash command, with the init alias), a native skill_activation opener
+    (the TUI `/mindie-agent` slash), or an in-turn skill_activation after
+    the host resolved the user's `/mindie-agent` prompt (print/model-tool
+    flow) — the latter requires the turn-opening user text to actually
+    invoke the entry, so a model-initiated skill use is never admitted.
+    Plain mentions, injected content, same-named foreign skills and
+    inherited history never match.
+    """
+    records = _tail_records(session_id, kimi_home=kimi_home)
+    openings = list(_turn_origins(records))
+    if not openings:
+        raise ValueError("current native turn origin is unavailable")
+    record, origin = openings[-1]
+    kind = origin.get("kind")
+    if kind == "plugin_command":
+        if origin.get("pluginId") != PLUGIN_ID:
+            raise ValueError("current turn is not this plugin's slash command")
+        name = origin.get("commandName")
+        if name not in COMMANDS:
+            raise ValueError("current slash command is not a MindIE entry")
+        name = ENTRY_ALIASES.get(name, name)
+        if name != command:
+            raise ValueError("current slash command does not match this operation")
+        activation_id = origin.get("activationId")
+        if not isinstance(activation_id, str) or not activation_id:
+            raise ValueError("native plugin command lacks activationId")
+        args = origin.get("commandArgs")
+        return dict(
+            command=command,
+            arguments=args if isinstance(args, str) else "",
+            activation_id=activation_id,
+        )
+    if kind == "skill_activation":
+        if command != "init":
+            raise ValueError("skill activation only performs the entry operation")
+        entry = _current_skill_activation(origin, command)
+        if origin.get("trigger") == "model-tool" or origin.get("inTurn") is True:
+            # An in-turn activation must follow the user's own entry text;
+            # a model invoking the skill by itself is not the user entry.
+            opener_text = ""
+            for rec, org in reversed(openings):
+                if org.get("kind") == "user":
+                    opener_text = _record_text(rec)
+                    break
+            if not opener_text.lstrip().startswith("/" + PLUGIN_ID):
+                raise ValueError("model-initiated skill use is not the user entry")
+        return entry
+    raise ValueError("current turn is not the native MindIE entry")
 
 
 def bind_db_path(config=None) -> Path:

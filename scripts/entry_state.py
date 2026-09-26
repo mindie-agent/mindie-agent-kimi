@@ -1,4 +1,9 @@
-"""Stdlib first-use and slash activationId consumption. No knowledge import."""
+"""Stdlib first-use and slash activationId consumption. No knowledge import.
+
+The persistent choice lives in the profile-shared consent document
+(``consent``); the legacy marker below only deduplicates native slash
+activationIds and is a one-time migration source, never a consent source.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +11,7 @@ import json
 import os
 from pathlib import Path
 
+import consent
 from paths import first_use_path, state_dir
 
 CHOICES = ("contribute", "read-only", "later")
@@ -31,18 +37,16 @@ def _store(path: Path, data: dict) -> None:
 
 
 def first_use():
-    data = _load(first_use_path())
-    choice = data.get("choice")
-    return choice if choice in CHOICES else None
+    saved = consent.load()
+    if saved["state"] == "ok" and saved["choice"] in consent.CHOICES:
+        return saved["choice"]
+    return None
 
 
 def set_first_use(choice: str) -> str:
     if choice not in CHOICES:
         raise ValueError("choice must be contribute, read-only, or later")
-    data = _load(first_use_path())
-    data["choice"] = choice
-    _store(first_use_path(), data)
-    return choice
+    return consent.record_choice(choice)
 
 
 def consume_activation_id(activation_id: str) -> bool:
