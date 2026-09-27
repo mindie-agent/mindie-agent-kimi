@@ -40,10 +40,13 @@ for name in {modules!r}:
 if not missing:
     from mindie_knowledge.loop.engine import Engine
     from mindie_knowledge.loop import cli
+    from mindie_knowledge.loop import settings as _settings
     if not callable(getattr(Engine, "stop_if_idle", None)):
         missing.append("core engine lacks the stop_if_idle API")
     if not callable(getattr(cli, "load_transcript_adapter", None)):
         missing.append("core cli lacks load_transcript_adapter")
+    if not callable(getattr(_settings, "CommunityWriteContext", None)):
+        missing.append("core settings lack the CommunityWriteContext API")
 if not missing:
     try:
         module = cli.load_transcript_adapter({{"transcript_adapter": {parser!r}}})
@@ -229,26 +232,52 @@ def stage_retained_bootstrap(dest: Path, source: Path) -> Path:
 
 
 def write_community(path, community, consent_config=None):
-    if community is None:
-        write_private(
-            path,
-            dict(
-                schema="mindie-community-config/1",
-                enabled=False,
-                generation=secrets.token_hex(16),
-                enabled_at=None,
-                repository=None,
-                branch="main",
-                project_roots=[],
-                idle_seconds=300,
-                consent_config=consent_config,
-            ),
-        )
-        return "off"
-    if consent_config is not None:
-        community = dict(community, consent_config=consent_config)
-    write_private(path, community, replace=path.exists())
-    return "enabled"
+    """Bootstrap writer for the community settings file.
+
+    Setup's own interpreter may not carry the selected runtime, so this uses
+    the byte-identical consent-store lock protocol directly: the same
+    canonical ``<file>.lock`` key and the same read-merge-replace inside one
+    acquisition as the core write boundary (a concurrent managed update or
+    stamp is not lost). The installer default-off file is never a saved user
+    choice. Corrupt existing bytes are preserved, not overwritten.
+    """
+    import consent as consent_mod
+
+    with consent_mod._shared_file_lock(path):
+        if community is None:
+            write_private(
+                path,
+                dict(
+                    schema="mindie-community-config/1",
+                    enabled=False,
+                    generation=secrets.token_hex(16),
+                    enabled_at=None,
+                    repository=None,
+                    branch="main",
+                    project_roots=[],
+                    idle_seconds=300,
+                    consent_config=consent_config,
+                ),
+            )
+            return "off"
+        try:
+            on_disk = json.loads(Path(path).read_text())
+            if not isinstance(on_disk, dict):
+                raise ValueError("community settings must be one JSON object")
+            base = on_disk
+        except FileNotFoundError:
+            base = {}
+        except (OSError, ValueError):
+            raise SystemExit(
+                f"existing community settings are unreadable or damaged: {path}; "
+                "nothing was written"
+            )
+        data = dict(base)
+        data.update(community)
+        if consent_config is not None:
+            data["consent_config"] = consent_config
+        write_private(path, data, replace=path.exists())
+        return "enabled"
 
 
 def build_bootstrap_runtime(domain_root: Path) -> str:

@@ -203,14 +203,34 @@ def _to_seconds(raw):
     return value / 1000.0 if value >= MS_THRESHOLD else value
 
 
+def _opens_turn(record):
+    """Records that OPEN a turn (as opposed to steering an active one).
+
+    turn.prompt and ordinary/turn-opening user messages open turns;
+    turn.steer records and in-turn model-tool activations only steer the
+    current turn. The bounded backward scan must continue past steering
+    records until the turn-opening (authorizing) record is visible —
+    otherwise a real entry with large same-turn output between the opener
+    and the in-turn activation is falsely rejected as model-initiated.
+    """
+    origin = _opening_origin(record)
+    if origin is None or record.get("type") == "turn.steer":
+        return False
+    return not (
+        origin.get("kind") == "skill_activation"
+        and (origin.get("inTurn") is True or origin.get("trigger") == "model-tool")
+    )
+
+
 def _tail_records(session_id: str, *, kimi_home=None):
     """Records from the END of the wire, read backwards in bounded chunks
-    until a turn-opening record is visible (or the cap is exhausted).
+    until a turn-OPENING record is visible (or the cap is exhausted).
 
     Turn openers are strictly sequential: the last opener in the file is
     always the current turn's, never an older matching command — so a long
-    turn (large tool output after the opener) must keep binding, while a
-    wire with no opener at all stays fail-closed.
+    turn (large tool output after the opener, or between the opener and an
+    in-turn activation) must keep binding, while a wire with no opener at
+    all stays fail-closed.
     """
     wire = locate_main_wire(session_id, kimi_home=kimi_home)
     try:
@@ -233,7 +253,7 @@ def _tail_records(session_id: str, *, kimi_home=None):
             if (
                 window >= size
                 or window >= TAIL_MAX
-                or any(_opening_origin(record) is not None for record in records)
+                or any(_opens_turn(record) for record in records)
             ):
                 return records
             window = min(window * 4, TAIL_MAX, size)

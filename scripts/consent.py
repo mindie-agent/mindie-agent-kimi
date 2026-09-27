@@ -112,10 +112,11 @@ def _store(path: Path, data: dict) -> None:
     _atomic_write_bytes(path, (json.dumps(data, indent=2) + "\n").encode("utf-8"))
 
 
-def _boundary_lock(path: Path):
+def _shared_file_lock(path: Path):
     """The canonical cross-process lock of the shared consent store, reused
-    for the adapter's boundary files (community-settings convergence, slash
-    activation dedupe) — no third lock protocol."""
+    for adapter-owned non-community files (slash activation dedupe) — no
+    third lock protocol. Community settings writes use the core's
+    CommunityWriteContext instead (see adopt_community_settings)."""
     return _store_mod()._UpdateLock(path.with_name(path.name + ".lock"))
 
 
@@ -281,21 +282,28 @@ def _divergence(shared: Path, legacy: Path):
     return differ or None
 
 
-def _ensure_consent_key(path: Path) -> bool:
-    """Add the consent_config extension (absolute path of the same profile
-    consent authority) to a parseable settings file that lacks it. A damaged
-    file keeps its honest state. Caller holds the lock."""
-    state, data = _read_json(path)
-    if state != "ok" or data.get("consent_config") == str(consent_path()):
-        return False
-    data["consent_config"] = str(consent_path())
-    _store(path, data)
-    return True
+def _stamp_consent_key(ctx, shared: Path, result: dict) -> None:
+    """Wire the consent_config extension (absolute path of the same profile
+    consent authority) onto a valid shared document via the held write
+    context — a stamp never touches generation/enabled_at, so accepted work
+    is never revoked. A damaged document keeps its honest state."""
+    if not shared.exists():
+        return
+    current = ctx.read(shared)
+    if current.error is not None or not current.schema_ok:
+        return
+    if current.raw.get("consent_config") == str(consent_path()):
+        return
+    try:
+        ctx.update_extensions(shared, consent_config=str(consent_path()))
+    except ValueError as exc:
+        result["notes"].append(f"consent_config stamp failed: {str(exc)[:120]}")
 
 
 def _repoint_config_paths(shared: Path, adapter_path: Path, adapter: dict) -> None:
     """Point adapter and engine config community_config keys at the shared
-    authority. Data-only mutation at an explicit boundary."""
+    authority. Data-only mutation at an explicit boundary, inside the held
+    write context."""
     from paths import engine_config_path
 
     if adapter.get("community_config") != str(shared):
@@ -313,7 +321,11 @@ def _repoint_config_paths(shared: Path, adapter_path: Path, adapter: dict) -> No
 
 def adopt_community_settings() -> dict:
     """One-time community-settings path convergence at an explicit
-    install/upgrade/entry boundary.
+    install/upgrade/entry boundary, inside the ONE shared write context
+    anchored at the canonical profile path (core API.md §9) — even while
+    the declared authority is still the legacy file, so a concurrent user
+    disable and this adoption serialize against each other and the current
+    document is re-read inside the lock before any write.
 
     Afterwards the adapter config, engine config and workers all point at
     the profile-shared authority. A legacy adapter-specific file is adopted
@@ -322,6 +334,7 @@ def adopt_community_settings() -> dict:
     are diagnosed, never merged into a wider public scope and never
     silently adopted. A damaged shared file stays an honest fault.
     """
+    from mindie_knowledge.loop.settings import CommunityWriteContext
     from paths import load_adapter_config
 
     shared = shared_community_path()
@@ -333,18 +346,18 @@ def adopt_community_settings() -> dict:
         result.update(action="error")
         result["notes"].append(f"adapter config unavailable: {type(exc).__name__}")
         return result
-    legacy_value = adapter.get("community_config")
-    legacy = None
-    already = legacy_value == str(shared)
-    if isinstance(legacy_value, str) and os.path.isabs(legacy_value):
-        candidate = Path(legacy_value)
-        if candidate != shared:
-            legacy = candidate
-    elif legacy_value is not None:
-        result["notes"].append(
-            "adapter community_config was not an absolute path; repointed to the shared authority"
-        )
-    with _boundary_lock(shared):
+    with CommunityWriteContext(str(shared)) as ctx:
+        legacy_value = adapter.get("community_config")
+        legacy = None
+        already = legacy_value == str(shared)
+        if isinstance(legacy_value, str) and os.path.isabs(legacy_value):
+            candidate = Path(legacy_value)
+            if candidate != shared:
+                legacy = candidate
+        elif legacy_value is not None:
+            result["notes"].append(
+                "adapter community_config was not an absolute path; repointed to the shared authority"
+            )
         if legacy is not None and legacy.is_file():
             if not shared.exists():
                 try:
@@ -354,7 +367,6 @@ def adopt_community_settings() -> dict:
                     result["notes"].append(f"legacy adoption failed: {type(exc).__name__}")
                     return result
                 result["action"] = "adopted"
-                _ensure_consent_key(shared)
             else:
                 conflict = _divergence(shared, legacy)
                 if conflict:
@@ -365,17 +377,15 @@ def adopt_community_settings() -> dict:
                     )
                 else:
                     result["action"] = "converged"
-                _ensure_consent_key(shared)
         elif shared.exists():
-            state, _data = _read_json(shared)
-            if state != "ok":
+            current = ctx.read(shared)
+            if current.error is not None or not current.schema_ok:
                 result.update(action="fault")
-                result["notes"].append(f"shared community settings are {state}")
-            else:
-                _ensure_consent_key(shared)
-                if not already:
-                    result["action"] = "converged"
+                result["notes"].append(f"shared community settings are {current.state}")
+            elif not already:
+                result["action"] = "converged"
         else:
             result["action"] = "already" if already else "repointed"
+        _stamp_consent_key(ctx, shared, result)
         _repoint_config_paths(shared, adapter_path, adapter)
     return result

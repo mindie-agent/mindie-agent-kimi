@@ -36,7 +36,7 @@ def consume_activation_id(activation_id: str) -> bool:
     if not isinstance(activation_id, str) or not activation_id or len(activation_id) > 256:
         raise ValueError("invalid activationId")
     path = state_dir() / "slash-activations.json"
-    with consent._boundary_lock(path):
+    with consent._shared_file_lock(path):
         data = _load(path)
         seen = data.get("consumed")
         if not isinstance(seen, list):

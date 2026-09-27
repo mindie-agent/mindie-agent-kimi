@@ -1,3 +1,5 @@
 # Reviewed core and remote-dev revisions; adapter acceptance is separate.
-mindie-knowledge @ git+https://github.com/mindie-agent/knowledge@b34851a5df99f05787fd3c63ed6f68190a050f14
+# knowledge d0538e5 is a local integration commit: resolvable upstream only
+# after root pushes (not claimed remotely installable today).
+mindie-knowledge @ git+https://github.com/mindie-agent/knowledge@d0538e584c9e606cf9ff1952ba06747cb5c04966
 remote-dev @ git+https://github.com/mindie-agent/remote-dev@28213bf3065e173216794c43ad021ef169e6a8c9
