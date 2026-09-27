@@ -299,16 +299,17 @@ class ConsentTests(unittest.TestCase):
         with self.assertRaises(consent.ConsentDamaged):
             consent.record_reporting("disabled")
         self.assertEqual(self._consent_path().read_text(), "{broken-json")
-        # Only the explicit repair flow rewrites it: the damaged bytes move
-        # aside as evidence and unspecified fields stay absent.
-        consent.repair(choice="read-only")
-        saved = json.loads(self._consent_path().read_text())
-        self.assertEqual(saved["choice"], "read-only")
-        self.assertNotIn("reporting", saved)
-        damaged = self._consent_path().with_name(
+        # Repair is the user's explicit action, never an automatic rewrite:
+        # move the damaged file aside (kept as evidence), then choose again.
+        aside = self._consent_path().with_name(
             self._consent_path().name + ".damaged"
         )
-        self.assertEqual(damaged.read_text(), "{broken-json")
+        os.replace(self._consent_path(), aside)
+        consent.record_choice("read-only")
+        saved = json.loads(self._consent_path().read_text())
+        self.assertEqual(saved["choice"], "read-only")
+        self.assertNotIn("reporting", saved)  # never guessed
+        self.assertEqual(aside.read_text(), "{broken-json")
 
     def test_cross_process_field_updates_keep_both_fields(self):
         """Concurrent record_choice/record_reporting from two processes

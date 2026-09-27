@@ -332,12 +332,10 @@ class EntryTests(unittest.TestCase):
     def test_sharing_enable_uses_native_args_not_model_args(self):
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
-            project = tmp / "proj"
-            project.mkdir()
             config = make_config(tmp)
             os.environ["MINDIE_KIMI_CONFIG"] = str(config)
             args = (
-                f"--repository owner/repo --account acc --project-root {project} "
+                f"--repository owner/repo --account acc --project-root {tmp} "
                 "--visibility public"
             )
             self._home(
@@ -353,6 +351,38 @@ class EntryTests(unittest.TestCase):
             )
             self.assertTrue(result.get("enabled"))
             self.assertEqual(result.get("repository"), "owner/repo")
+            # The scope is the native session cwd (tmp), and the consent
+            # choice was recorded with the enable.
+            import consent
+
+            self.assertEqual(consent.load()["choice"], "contribute")
+            settings = json.loads(consent.shared_community_path().read_text())
+            self.assertEqual(settings["project_roots"], [str(tmp.resolve())])
+
+    def test_sharing_enable_rejects_a_scope_other_than_the_current_project(self):
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            elsewhere = tmp / "elsewhere"
+            elsewhere.mkdir()
+            config = make_config(tmp)
+            os.environ["MINDIE_KIMI_CONFIG"] = str(config)
+            args = (
+                f"--repository owner/repo --account acc --project-root {elsewhere} "
+                "--visibility public"
+            )
+            self._home(
+                tmp,
+                "ses_scope",
+                turn_records(plugin_origin("sharing-enable", "act-scope", args), "enable"),
+            )
+            import consent
+            import entry
+
+            with self.assertRaises(ValueError):
+                entry.op_sharing_enable("ses_scope")
+            self.assertIsNone(consent.load()["choice"])
+            settings = json.loads((tmp / "kimi.community.json").read_text())
+            self.assertFalse(settings["enabled"])
 
     def test_configured_status_is_this_session_only(self):
         with tempfile.TemporaryDirectory() as raw:
