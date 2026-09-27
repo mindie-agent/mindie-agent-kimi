@@ -31,7 +31,7 @@ from identity import (
     session_from_hook,
 )
 from paths import config_path
-from consent import resolve_community_path
+from consent import configured_community_path
 
 MAX_HOOK_BYTES = 128 * 1024
 SAFE_CAUSES = {
@@ -140,7 +140,7 @@ def handle_stop():
         if lease is None:
             _print({})
             return 0
-        if not resolve_community_path().is_file():
+        if not configured_community_path().is_file():
             _print({})
             return 0
         settings = sharing_mod.load()

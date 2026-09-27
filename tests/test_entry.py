@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import tempfile
@@ -371,3 +372,186 @@ class EntryTests(unittest.TestCase):
             self.assertNotIn("active_leases", payload)
             self.assertNotIn("admission_path", payload)
             self.assertNotIn("recovery", payload)
+
+    def test_conversational_contribute_enables_current_project(self):
+        """First contribution without learning a CLI: the user names the
+        public repository and account in an ordinary reply."""
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            config = make_config(tmp)
+            os.environ["MINDIE_KIMI_CONFIG"] = str(config)
+            self._home(
+                tmp, "ses_contrib",
+                turn_records(dict(kind="user"), "contribute to owner/repo as acc-name"),
+            )
+            import consent
+            import entry
+
+            payload = entry.op_choose(
+                "ses_contrib", "contribute", str(tmp),
+                repository="owner/repo", account="acc-name",
+            )
+            self.assertEqual(payload["first_use"], "contribute")
+            self.assertTrue(payload["sharing"]["enabled"])
+            self.assertEqual(payload["sharing"]["repository"], "owner/repo")
+            saved = consent.load()
+            self.assertEqual(saved["choice"], "contribute")
+            # The entry boundary converged settings onto the shared authority.
+            settings = json.loads(consent.shared_community_path().read_text())
+            self.assertTrue(settings["enabled"])
+            self.assertEqual(settings["project_roots"], [str(tmp.resolve())])
+            self.assertEqual(settings["consent_config"], str(consent.consent_path()))
+
+    def test_conversational_contribute_destination_must_be_users_words(self):
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            config = make_config(tmp)
+            os.environ["MINDIE_KIMI_CONFIG"] = str(config)
+            self._home(
+                tmp, "ses_evil",
+                turn_records(dict(kind="user"), "yes, enable contribution please"),
+            )
+            import consent
+            import entry
+
+            with self.assertRaises(ValueError):
+                entry.op_choose(
+                    "ses_evil", "contribute", str(tmp),
+                    repository="evil/repo", account="acc-name",
+                )
+            self.assertIsNone(consent.load()["choice"])
+            settings = json.loads((tmp / "kimi.community.json").read_text())
+            self.assertFalse(settings["enabled"])
+
+    def test_native_contribute_args_enable_sharing(self):
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            config = make_config(tmp)
+            os.environ["MINDIE_KIMI_CONFIG"] = str(config)
+            origin = self._skill_origin(args="contribute owner/repo acc-name")
+            self._home(tmp, "ses_natc", turn_records(origin, "/mindie-agent contribute owner/repo acc-name"))
+            self._stub_service()
+            import consent
+            import entry
+
+            payload = entry.op_init("ses_natc", str(tmp))
+            self.assertEqual(payload["first_use"], "contribute")
+            self.assertTrue(payload["sharing"]["enabled"])
+            self.assertEqual(consent.load()["choice"], "contribute")
+            settings = json.loads(consent.shared_community_path().read_text())
+            self.assertEqual(settings["account"], "acc-name")
+            self.assertEqual(settings["project_roots"], [str(tmp.resolve())])
+
+    def test_user_reply_cannot_change_a_saved_choice(self):
+        """A saved choice is changed only through the entry, never by a
+        model-initiated choose on an ordinary mention turn."""
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            config = make_config(tmp)
+            os.environ["MINDIE_KIMI_CONFIG"] = str(config)
+            import consent
+            import entry
+
+            consent.record_choice("read-only")
+            self._home(tmp, "ses_locked", turn_records(dict(kind="user"), "what is later?"))
+            with self.assertRaises(ValueError):
+                entry.op_choose("ses_locked", "later", str(tmp))
+            self.assertEqual(consent.load()["choice"], "read-only")
+
+    def test_read_only_choice_disables_existing_sharing(self):
+        """Revocation is real: choosing read-only via the entry turns the
+        sharing settings off instead of leaving an enabled file behind."""
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            project = tmp / "proj"
+            project.mkdir()
+            config = make_config(tmp, sharing=True, roots=[project])
+            os.environ["MINDIE_KIMI_CONFIG"] = str(config)
+            self._home(
+                tmp, "ses_revoke",
+                turn_records(plugin_origin("init", "act-ro", "read-only"), "init read-only"),
+            )
+            self._stub_service()
+            import consent
+            import entry
+
+            payload = entry.op_init("ses_revoke", str(project))
+            self.assertEqual(payload["first_use"], "read-only")
+            self.assertFalse(payload["sharing"]["enabled"])
+            self.assertEqual(consent.load()["choice"], "read-only")
+            settings = json.loads(consent.shared_community_path().read_text())
+            self.assertFalse(settings["enabled"])
+
+    def test_reporting_choice_recorded_from_first_setup_conversation(self):
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            config = make_config(tmp)
+            os.environ["MINDIE_KIMI_CONFIG"] = str(config)
+            os.environ["XDG_CONFIG_HOME"] = str(tmp / "xdg")
+            self._home(
+                tmp, "ses_rep",
+                turn_records(dict(kind="user"), "read-only, and no reporting"),
+            )
+            from unittest.mock import patch
+
+            import consent
+            import diagnostic_support
+            import entry
+
+            with patch.object(
+                diagnostic_support, "configure_reporting",
+                return_value={"enabled": False},
+            ) as configure:
+                payload = entry.op_choose(
+                    "ses_rep", "read-only", str(tmp), reporting="disabled",
+                )
+            configure.assert_called_once_with(False, sys.executable)
+            self.assertEqual(payload["first_use"], "read-only")
+            saved = consent.load()
+            self.assertEqual(saved["choice"], "read-only")
+            self.assertEqual(saved["reporting"], "disabled")
+
+    def test_in_turn_prefix_trap_is_not_the_entry(self):
+        """Regression: '/mindie-agentuous …' is a plain mention, not an
+        entry invocation of the in-turn model-tool form."""
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            config = make_config(tmp)
+            os.environ["MINDIE_KIMI_CONFIG"] = str(config)
+            origin = self._skill_origin(trigger="model-tool", source="extra",
+                                        in_turn=True)
+            records = turn_records(dict(kind="user"), "/mindie-agentuous please") + [
+                dict(type="turn.steer", input=[dict(type="text", text="skill loaded")],
+                     origin=origin, time=3),
+            ]
+            self._home(tmp, "ses_prefix", records)
+            import entry
+
+            with self.assertRaises(ValueError):
+                entry.op_init("ses_prefix", str(tmp))
+
+    def test_entry_boundary_adopts_legacy_marker_choice_once(self):
+        """The entry invocation performs the one-time legacy import; a
+        second session simply reuses the saved choice."""
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            config = make_config(tmp)
+            os.environ["MINDIE_KIMI_CONFIG"] = str(config)
+            from paths import first_use_path
+
+            first_use_path().parent.mkdir(parents=True, exist_ok=True)
+            first_use_path().write_text(json.dumps({"choice": "read-only"}))
+            self._home(
+                tmp, "ses_legacy",
+                turn_records(plugin_origin("init", "act-legacy", ""), "init"),
+            )
+            self._stub_service()
+            import consent
+            import entry
+
+            payload = entry.op_init("ses_legacy", str(tmp))
+            self.assertEqual(payload["first_use"], "read-only")
+            self.assertEqual(payload["choices"], [])
+            migration = payload.get("migration") or {}
+            self.assertEqual((migration.get("consent") or {}).get("action"), "imported")
+            self.assertEqual(consent.load()["choice"], "read-only")

@@ -52,15 +52,11 @@ and the current turn-opening `plugin_command` origin. No SessionStart model
 launch. Unconfigured status still works offline (sharing off, no service).
 
 Three choices: recommended public contribution, read-only, or later. Reply
-`read-only`/`later`, or run `/mindie-agent:init read-only|later`. Enabling
-contribution requires explicit repository, account, project root, and
-`--visibility public`.
-
-For example:
-
-```text
-/mindie-agent:sharing-enable --repository owner/repo --account USER --project-root /absolute/path --visibility public
-```
+`read-only`/`later`, or run `/mindie-agent read-only|later`. To contribute,
+name the public repository (`owner/repo`) and account in your reply — or run
+`/mindie-agent contribute owner/repo ACCOUNT`. The entry then enables
+sharing for the current project (public visibility). No separate CLI has to
+be learned for the first contribution.
 
 With sharing off there is no Stop transcript collection, capture or organizer
 model call. Public knowledge synchronization and remote-dev remain available.

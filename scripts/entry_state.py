@@ -77,8 +77,9 @@ def three_choices() -> dict:
                 recommended=True,
                 summary="Contribute public experience for the current project",
                 next=(
-                    "/mindie-agent:sharing-enable --repository owner/repo "
-                    "--account name --project-root /absolute/path --visibility public"
+                    "Say so in this conversation with the public repository and "
+                    "account (e.g. 'contribute to owner/repo as name'), or run "
+                    "/mindie-agent contribute owner/repo name"
                 ),
             ),
             dict(
@@ -96,7 +97,8 @@ def three_choices() -> dict:
         note=(
             "One-time setup: the choice persists for this installation and is "
             "never asked again, including after restarts, upgrades or failures. "
-            "Enabling contribution requires explicit public repository, account, "
-            "project root, and visibility. There is no automatic yes."
+            "Enabling contribution requires the explicit public repository and "
+            "account from the user; the current project is the contribution "
+            "scope. There is no automatic yes."
         ),
     )

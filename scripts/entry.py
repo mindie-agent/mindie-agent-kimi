@@ -12,14 +12,15 @@ import shlex
 import stat
 from pathlib import Path
 
-from entry_state import consume_activation_id, first_use, set_first_use, three_choices
+from entry_state import consume_activation_id, three_choices
 from identity import (
     current_turn_origin,
+    current_user_text,
     require_current_entry,
     require_current_plugin_command,
     session_cwd,
 )
-from paths import PLUGIN_ID, config_path, engine_config_path, load_adapter_config
+from paths import config_path, engine_config_path, load_adapter_config
 
 
 def _configured() -> bool:
@@ -374,24 +375,144 @@ def _project_root(session, cwd):
         raise ValueError("native session cwd is required to activate; no caller task id is accepted")
 
 
-def _init_choice_from_native(arguments):
+def _adopt_install_state():
+    """Explicit install/upgrade/entry adoption boundary: converge community
+    settings onto the profile-shared authority, then import a legacy consent
+    choice exactly once (evidence is read from the converged authority).
+    Reads elsewhere never perform these writes. Only meaningful results are
+    reported; conflicts stay diagnosable and unresolved."""
+    import consent as consent_mod
+
+    report = {}
+    try:
+        community = consent_mod.adopt_community_settings()
+        if community.get("action") not in {"already"} or community.get("conflict"):
+            report["community"] = community
+    except Exception as exc:
+        report["community"] = dict(action="error", error=type(exc).__name__)
+    try:
+        choice = consent_mod.adopt_legacy_choice()
+        if choice.get("action") not in {"already", "unchosen"}:
+            report["consent"] = choice
+    except Exception as exc:
+        report["consent"] = dict(action="error", error=type(exc).__name__)
+    return report or None
+
+
+def _parse_native_setup(arguments):
+    """Native entry arguments: empty, ``read-only``/``later``, or
+    ``contribute <owner/repo> <account>``. Values come from the native
+    commandArgs/skillArgs — never from model arguments."""
     text = (arguments or "").strip()
     if not text:
         return None
-    token = text.split()[0]
-    if token in {"read-only", "later"}:
-        return token
+    tokens = text.split()
+    if tokens[0] in {"read-only", "later"}:
+        return dict(choice=tokens[0])
+    if tokens[0] == "contribute":
+        if len(tokens) != 3:
+            raise ValueError(
+                "contribute uses native arguments: /mindie-agent contribute owner/repo account"
+            )
+        return dict(choice="contribute", repository=tokens[1], account=tokens[2])
     return None
 
 
-def _apply_native_choice(payload, native_choice):
-    if native_choice is None:
-        return payload
-    stored = set_first_use(native_choice)
-    payload["first_use"] = stored
-    payload["choices"] = []
-    payload["repeat"] = True
-    return payload
+def _enable_contribution(session, cwd, *, repository, account):
+    """The explicit public opt-in: enable sharing for the current project.
+    The project root is the native session cwd (host-derived). An existing
+    scope for the SAME destination is preserved and the current project is
+    added — never silently widened to another repository."""
+    import sharing as sharing_mod
+    from mindie_knowledge.community.common import check_account
+    from mindie_knowledge.loop.settings import check_repository
+
+    repository = check_repository(repository)
+    try:
+        account = check_account(account)
+    except Exception as exc:
+        raise ValueError(str(exc)[:200]) from None
+    root = _project_root(session, cwd)
+    roots = [root]
+    try:
+        existing = sharing_mod.load()
+        if existing.enabled and existing.repository == repository:
+            for item in existing.project_roots:
+                item = str(item)
+                if item not in roots:
+                    roots.append(item)
+    except Exception:
+        pass
+    return sharing_mod.write_enabled(
+        repository=repository, project_roots=roots, branch="main",
+        visibility="public", account=account)
+
+
+def _record_choice(choice: str) -> bool:
+    """Record a verified choice; an explicit entry/user-verified choice also
+    repairs a damaged document (fresh write, other fields reset). Returns
+    True when a repair happened."""
+    import consent as consent_mod
+
+    try:
+        consent_mod.record_choice(choice)
+        return False
+    except consent_mod.ConsentDamaged:
+        consent_mod.repair(choice=choice)
+        return True
+
+
+def _record_reporting(value: str) -> bool:
+    import consent as consent_mod
+
+    try:
+        consent_mod.record_reporting(value)
+        return False
+    except consent_mod.ConsentDamaged:
+        consent_mod.repair(reporting=value)
+        return True
+
+
+def _apply_choice(session, cwd, choice, *, repository=None, account=None):
+    """Record a verified choice and keep the sharing settings consistent
+    with it: contribution enables capture for the current project; any
+    other choice leaves sharing off, so a revoked contribution stops for
+    real. Returns (sharing_view, repaired)."""
+    import consent as consent_mod  # noqa: F401
+
+    if choice == "contribute" and not _configured():
+        raise ValueError("MindIE is not configured; run scripts/setup.py first")
+    repaired = _record_choice(choice)
+    view = None
+    if _configured():
+        import sharing as sharing_mod
+
+        if choice == "contribute":
+            view = _enable_contribution(session, cwd, repository=repository, account=account)
+        else:
+            view = sharing_mod.write_disabled()
+    return view, repaired
+
+
+def _apply_reporting(value):
+    """Persist the reporting choice and keep the real reporter consistent:
+    enable/disable reconfigure the actual service; ``later`` only persists
+    the preference (the service stays off). It is never re-asked."""
+    import consent as consent_mod
+    import diagnostic_support
+
+    if value not in consent_mod.REPORTING:
+        raise ValueError("reporting must be enabled, disabled or later")
+    if value == "later":
+        _record_reporting("later")
+        return dict(reporting="later")
+    if not _configured():
+        raise ValueError("MindIE is not configured; run scripts/setup.py first")
+    python = load_adapter_config()["python"]
+    result = diagnostic_support.configure_reporting(value == "enabled", python)
+    if result.get("enabled") is (value == "enabled"):
+        _record_reporting(value)
+    return result
 
 
 def _configured_init_activation(session, cwd, activation_id):
@@ -421,34 +542,110 @@ def _configured_init_activation(session, cwd, activation_id):
     return payload
 
 
+def _apply_entry_choice(payload, session, cwd, native):
+    view, repaired = _apply_choice(
+        session, cwd, native["choice"],
+        repository=native.get("repository"), account=native.get("account"),
+    )
+    payload["first_use"] = native["choice"]
+    payload["choices"] = []
+    payload["repeat"] = True
+    if view is not None:
+        payload["sharing"] = view
+    if repaired:
+        payload["consent_repaired"] = True
+    return payload
+
+
 def op_init(session, cwd):
     found = require_current_entry(session, "init")
-    native_choice = _init_choice_from_native(found.get("arguments"))
+    native = _parse_native_setup(found.get("arguments"))
     if not _configured():
         if not consume_activation_id(found["activation_id"]):
             payload = status_payload(session)
             payload["already"] = True
             return payload
-        if native_choice is None:
+        if native is None:
             return status_payload(session)
-        return _apply_native_choice(status_payload(session), native_choice)
+        if native["choice"] == "contribute":
+            raise ValueError("MindIE is not configured; run scripts/setup.py first")
+        payload = status_payload(session)
+        return _apply_entry_choice(payload, session, cwd, native)
+    migration = _adopt_install_state()
     payload = _configured_init_activation(session, cwd, found["activation_id"])
-    return _apply_native_choice(payload, native_choice)
+    if migration:
+        payload["migration"] = migration
+    if native is not None:
+        payload = _apply_entry_choice(payload, session, cwd, native)
+    return payload
 
 
-def op_choose(session, choice):
+def op_choose(session, choice, cwd=None, *, repository=None, account=None,
+              reporting=None):
+    """Store a setup choice from the unified-entry conversation.
+
+    An ordinary user reply (kind=user) may make the FIRST choice or repair
+    a damaged saved document; changing an existing saved choice requires
+    the verified entry itself (the user explicitly changing settings). A
+    conversational contribution destination must appear in the user's own
+    current reply; via the entry it comes from the native arguments only.
+    """
+    import consent as consent_mod
+
     origin = current_turn_origin(session)
-    kind = origin.get("kind")
-    if kind == "plugin_command":
-        if origin.get("pluginId") != PLUGIN_ID or origin.get("commandName") != "init":
-            raise ValueError("choose is not valid on this native command")
-    elif kind != "user":
-        raise ValueError("choose requires an ordinary user reply or /mindie-agent:init")
-    stored = set_first_use(choice)
+    user_text = None
+    found = None
+    if origin.get("kind") == "user":
+        migration = _adopt_install_state() if _configured() else None
+        saved = consent_mod.load()
+        if saved["state"] == "ok" and saved["choice"] is not None:
+            raise ValueError(
+                "a choice is already saved; change settings explicitly via "
+                "the entry, e.g. /mindie-agent read-only"
+            )
+        user_text = current_user_text(session)
+    else:
+        found = require_current_entry(session, "init")
+        migration = _adopt_install_state() if _configured() else None
+    if choice == "contribute":
+        if user_text is not None:
+            if not repository or not account:
+                raise ValueError(
+                    "contribute requires the repository and account the user stated"
+                )
+            if repository not in user_text or account not in user_text:
+                raise ValueError(
+                    "the public contribution destination must appear in the "
+                    "user's current reply"
+                )
+        else:
+            native = _parse_native_setup(found.get("arguments"))
+            if native is None or native.get("choice") != "contribute":
+                raise ValueError(
+                    "contribution via the entry uses native arguments: "
+                    "/mindie-agent contribute owner/repo account"
+                )
+            repository, account = native["repository"], native["account"]
+    view = None
+    repaired = False
+    if choice is not None:
+        view, repaired = _apply_choice(
+            session, cwd, choice, repository=repository, account=account
+        )
+    reporting_view = _apply_reporting(reporting) if reporting is not None else None
     payload = status_payload(session)
-    payload["first_use"] = stored
+    if choice is not None:
+        payload["first_use"] = choice
     payload["choices"] = []
     payload["repeat"] = True
+    if view is not None:
+        payload["sharing"] = view
+    if repaired:
+        payload["consent_repaired"] = True
+    if reporting_view is not None:
+        payload["reporting_result"] = reporting_view
+    if migration:
+        payload["migration"] = migration
     return payload
 
 
@@ -489,8 +686,8 @@ def op_sharing_enable(session, _model_arguments=""):
     import sharing as sharing_mod
 
     parsed = _parse_sharing(found.get("arguments") or "")
+    _record_choice("contribute")
     result = sharing_mod.write_enabled(**parsed)
-    set_first_use("contribute")
     return result
 
 
@@ -498,11 +695,10 @@ def op_sharing_disable(session):
     consume_slash(session, "sharing-disable")
     if not _configured():
         return dict(configured=False, enabled=False)
-    import consent as consent_mod
     import sharing as sharing_mod
 
     result = sharing_mod.write_disabled()
-    consent_mod.record_choice("disabled")
+    _record_choice("disabled")
     return result
 
 
@@ -561,7 +757,6 @@ def op_reporting(session, command):
     """Native command only. Does not ensure the reporter or change knowledge."""
     found, first = consume_slash(session, command)
     del found
-    import consent as consent_mod
     import diagnostic_support
 
     if command == "reporting-status":
@@ -573,19 +768,25 @@ def op_reporting(session, command):
     python = load_adapter_config()["python"]
     result = diagnostic_support.configure_reporting(command == "reporting-enable", python)
     if result.get("enabled") is (command == "reporting-enable"):
-        consent_mod.record_reporting("enabled" if command == "reporting-enable" else "disabled")
+        _record_reporting("enabled" if command == "reporting-enable" else "disabled")
     return result
 
 
-def dispatch(session, cwd, op, arguments="", choice=None):
+def dispatch(session, cwd, op, arguments="", choice=None, *, repository=None,
+             account=None, reporting=None):
     if op == "init":
         return op_init(session, cwd)
     if op == "choose":
-        if choice not in {"read-only", "later"}:
+        if choice is None and reporting is None:
+            raise ValueError("choose requires a choice or a reporting value")
+        if choice is not None and choice not in {"contribute", "read-only", "later", "disabled"}:
             raise ValueError(
-                "choose requires choice=read-only or later; contribution uses sharing-enable"
+                "choose requires choice=contribute, read-only, later or disabled"
             )
-        return op_choose(session, choice)
+        return op_choose(
+            session, choice, cwd, repository=repository, account=account,
+            reporting=reporting,
+        )
     if op == "status":
         return op_status(session)
     if op == "deactivate":

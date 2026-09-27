@@ -240,6 +240,20 @@ def current_turn_origin(session_id: str, *, kimi_home=None) -> dict:
     raise ValueError("current native turn origin is unavailable")
 
 
+def current_user_text(session_id: str, *, kimi_home=None) -> str:
+    """Text of the current turn-opening ordinary user message; ``""`` when
+    the current turn did not open with one. Never inherited, injected or
+    model-authored text."""
+    for record in reversed(_tail_records(session_id, kimi_home=kimi_home)):
+        origin = _opening_origin(record)
+        if origin is None:
+            continue
+        if origin.get("kind") == "user":
+            return _record_text(record)
+        return ""
+    raise ValueError("current native turn origin is unavailable")
+
+
 def require_current_plugin_command(session_id: str, command: str, *, kimi_home=None) -> dict:
     origin = current_turn_origin(session_id, kimi_home=kimi_home)
     if origin.get("kind") != "plugin_command":
@@ -296,6 +310,17 @@ def _record_text(record):
         if isinstance(item, dict) and isinstance(item.get("text"), str):
             return item["text"]
     return ""
+
+
+ENTRY_TEXT_RE = re.compile(r"/" + re.escape(PLUGIN_ID) + r"(?=\s|$)")
+
+
+def _invokes_entry(text) -> bool:
+    """The user text actually invokes the entry: ``/mindie-agent`` as a
+    token, not a bare prefix (``/mindie-agentuous`` is a plain mention)."""
+    if not isinstance(text, str):
+        return False
+    return bool(ENTRY_TEXT_RE.match(text.lstrip()))
 
 
 def _current_skill_activation(origin, command):
@@ -384,7 +409,7 @@ def require_current_entry(session_id: str, command: str = "init", *, kimi_home=N
                 if org.get("kind") == "user":
                     opener_text = _record_text(rec)
                     break
-            if not opener_text.lstrip().startswith("/" + PLUGIN_ID):
+            if not _invokes_entry(opener_text):
                 raise ValueError("model-initiated skill use is not the user entry")
         return entry
     raise ValueError("current turn is not the native MindIE entry")

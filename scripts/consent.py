@@ -1,29 +1,65 @@
-"""Install-level one-time choices: the single persistent consent authority.
+"""Install-level one-time choices: the adapter's path/evidence layer.
 
 One small JSON document (``mindie-consent/1``) per installation profile,
 stored beside the adapter configuration so every adapter sharing this
 profile reads the same saved choice. An independently isolated profile has
 its own file and never inherits another profile's choice.
 
-The adapter first-use marker only deduplicates native slash attempts; the
-user's choice lives here and is imported from legacy markers exactly once.
-A missing, unreadable, corrupt and explicitly disabled state stay strictly
-apart: damaged saved state is a fault (read-only help keeps working, writes
-stop), never a fresh install and never a guessed opt-in or opt-out.
+All storage semantics (side-effect-free read, serialized field updates,
+one-time boundary migration) are delegated to the ONE shared
+implementation: the selected runtime's ``mindie_knowledge.consent_store``
+in normal operation, or the byte-identical bootstrap copy
+``scripts/consent_store_bootstrap.py`` (source: knowledge repo
+``mindie_knowledge/consent_store.py`` @ 9beb317a2e6f0898cd8507f710e4ddb0f93a69f4,
+SHA-256 b6f309777d4ac56a73871c5aa7bb260ab3b7a6b3226ef33dc61eb86b2d200b2d)
+when the runtime cannot be loaded before first setup. Do not hand-edit the
+copy and do not fork the semantics here.
+
+This module keeps only adapter concerns: the profile paths, the legacy
+evidence locations (first-use marker, community settings), the explicit
+repair flow, and the community-settings path convergence at explicit
+install/upgrade/entry boundaries.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import tempfile
 import time
 from pathlib import Path
 
 from paths import community_config_path, config_path, first_use_path
 
-SCHEMA = "mindie-consent/1"
-CHOICES = ("contribute", "read-only", "later", "disabled")
-REPORTING = ("enabled", "disabled", "later")
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
+
+
+def _store_mod():
+    """The ONE shared consent store: the runtime module when the selected
+    runtime provides it, else the byte-identical bootstrap copy."""
+    try:
+        from mindie_knowledge import consent_store as mod
+    except ImportError:
+        import consent_store_bootstrap as mod
+    return mod
+
+
+SCHEMA = _store_mod().SCHEMA
+CHOICES = _store_mod().CHOICES
+REPORTING = _store_mod().REPORTING
+
+
+class ConsentDamaged(RuntimeError):
+    """A saved consent document is corrupt or unreadable: field updates are
+    refused so a damaged file is never silently emptied. Only the explicit,
+    entry-verified repair flow rewrites it."""
+
+    def __init__(self, state, error):
+        super().__init__(error)
+        self.state = state
 
 
 def consent_path() -> Path:
@@ -34,17 +70,6 @@ def consent_path() -> Path:
 def shared_community_path() -> Path:
     """The profile-shared community settings path."""
     return config_path().parent / "mindie-community.json"
-
-
-def _store(path: Path, data: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2) + "\n")
-    os.replace(tmp, path)
-    try:
-        path.chmod(0o600)
-    except OSError:
-        pass
 
 
 def _read_json(path: Path):
@@ -66,6 +91,76 @@ def _read_json(path: Path):
     return "ok", data
 
 
+class _FileLock:
+    """Cross-process exclusive lock over a sibling ``*.lock`` file (used for
+    the community-settings boundary, not the consent store's own lock)."""
+
+    def __init__(self, path: Path, timeout: float = 5.0):
+        self._path = path
+        self._timeout = timeout
+        self._descriptor = None
+
+    def __enter__(self):
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(self._path, os.O_RDWR | os.O_CREAT, 0o600)
+        deadline = time.monotonic() + self._timeout
+        while True:
+            try:
+                if os.name == "nt":
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+                else:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self._descriptor = descriptor
+                return self
+            except OSError:
+                if time.monotonic() >= deadline:
+                    os.close(descriptor)
+                    raise TimeoutError(f"timed out locking {self._path.name}")
+                time.sleep(0.05)
+
+    def __exit__(self, *exc):
+        if self._descriptor is not None:
+            try:
+                if os.name == "nt":
+                    os.lseek(self._descriptor, 0, os.SEEK_SET)
+                    msvcrt.locking(self._descriptor, msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(self._descriptor, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            os.close(self._descriptor)
+            self._descriptor = None
+        return False
+
+
+def _store(path: Path, data: dict) -> None:
+    """Unique temp file + atomic replace (adapter/engine/community config
+    plumbing only — consent documents go through the shared store)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, tmp = tempfile.mkstemp(
+        dir=str(path.parent), prefix=path.name + ".", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(descriptor, "w") as stream:
+            stream.write(json.dumps(data, indent=2) + "\n")
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
+def _lock(path: Path) -> _FileLock:
+    return _FileLock(path.with_name(path.name + ".lock"))
+
+
 def _marker_path():
     try:
         return first_use_path()
@@ -73,115 +168,148 @@ def _marker_path():
         return None
 
 
-def _legacy_marker_choice():
-    path = _marker_path()
-    if path is None:
-        return None
-    state, data = _read_json(path)
-    if state == "ok":
-        choice = data.get("choice")
-        if choice in CHOICES:
-            return choice
-    return None
-
-
-def _legacy_community_choice():
-    """A legacy settings file with enabled=true was an explicit public
-    opt-in; anything else proves no choice (never guessed)."""
-    for candidate in (shared_community_path(), _legacy_community_path()):
-        if candidate is None:
-            continue
-        state, data = _read_json(candidate)
-        if state == "ok" and data.get("enabled") is True:
-            return "contribute"
-    return None
-
-
-def _legacy_community_path():
-    try:
-        return community_config_path()
-    except (OSError, ValueError, FileNotFoundError):
-        return None
-
-
-def _import_legacy_once(path: Path) -> None:
-    choice = _legacy_marker_choice() or _legacy_community_choice()
-    if choice is None:
-        return
-    _store(path, {
-        "schema": SCHEMA,
-        "choice": choice,
-        "choice_at": time.time(),
-        "migrated_from": "legacy",
-    })
-
-
 def load() -> dict:
-    """Read the persistent choice, importing legacy state exactly once.
+    """Read the persistent choice through the shared store. Side-effect
+    free: legacy state is never imported here (that happens at an explicit
+    boundary; see ``adopt_legacy_choice``).
 
     Returns ``state`` of ``ok``/``missing``/``unreadable``/``corrupt`` plus
     the saved ``choice`` and ``reporting`` values when valid. An invalid
     saved choice value is corrupt, not absent.
     """
-    path = consent_path()
-    if not path.exists():
-        try:
-            _import_legacy_once(path)
-        except OSError:
-            pass  # an unwritable profile stays truthful below
-    state, data = _read_json(path)
-    result = dict(state=state, choice=None, reporting=None, path=str(path),
-                  error=None)
-    if state != "ok":
-        if state == "corrupt":
-            result["error"] = "consent file is damaged"
-        elif state == "unreadable":
-            result["error"] = "consent file is unreadable"
-        return result
-    if data.get("schema") != SCHEMA:
-        result.update(state="corrupt", error="unsupported consent schema")
-        return result
-    choice = data.get("choice")
-    if choice is not None and choice not in CHOICES:
-        result.update(state="corrupt", error="unknown consent choice")
-        return result
-    reporting = data.get("reporting")
-    if reporting is not None and reporting not in REPORTING:
-        result.update(state="corrupt", error="unknown reporting choice")
-        return result
-    result.update(choice=choice, reporting=reporting)
-    return result
+    return _store_mod().read(consent_path())
 
 
 def record_choice(choice: str) -> str:
+    """Explicit field update via the shared store (serialized merge; a
+    damaged file is refused, never silently emptied)."""
     if choice not in CHOICES:
         raise ValueError("choice must be contribute, read-only, later or disabled")
-    current = load()
-    data = {}
-    if current["state"] == "ok":
-        data = dict(_read_json(consent_path())[1])
-    data.update(schema=SCHEMA, choice=choice, choice_at=time.time())
-    data.pop("migrated_from", None)
-    _store(consent_path(), data)
+    try:
+        _store_mod().record_choice(consent_path(), choice)
+    except _store_mod().ConsentError as exc:
+        raise ConsentDamaged(exc.state, str(exc)) from None
     return choice
 
 
 def record_reporting(value: str) -> str:
+    """Explicit field update via the shared store; the contribution choice
+    and untouched metadata survive."""
     if value not in REPORTING:
         raise ValueError("reporting must be enabled, disabled or later")
-    current = load()
-    data = {}
-    if current["state"] == "ok":
-        data = dict(_read_json(consent_path())[1])
-    data.update(schema=SCHEMA, reporting=value, reporting_at=time.time())
-    _store(consent_path(), data)
+    try:
+        _store_mod().record_reporting(consent_path(), value)
+    except _store_mod().ConsentError as exc:
+        raise ConsentDamaged(exc.state, str(exc)) from None
     return value
+
+
+def repair(*, choice=None, reporting=None) -> str:
+    """Explicit full repair after a damaged-state fault. Only a verified
+    entry flow calls this, after the fault was surfaced to the user. The
+    damaged document is moved aside as evidence and the explicitly chosen
+    fields are written fresh — unspecified fields stay absent, never
+    guessed. Returns the previous state."""
+    if choice is not None and choice not in CHOICES:
+        raise ValueError("choice must be contribute, read-only, later or disabled")
+    if reporting is not None and reporting not in REPORTING:
+        raise ValueError("reporting must be enabled, disabled or later")
+    path = consent_path()
+    previous = load()["state"]
+    if previous in {"corrupt", "unreadable"} and path.exists():
+        try:
+            os.replace(path, path.with_name(path.name + ".damaged"))
+        except OSError:
+            path.unlink()
+    if choice is not None:
+        record_choice(choice)
+    if reporting is not None:
+        record_reporting(reporting)
+    return previous
 
 
 def marker_exists() -> bool:
     """A legacy first-use marker exists (any state): prior setup evidence."""
     marker = _marker_path()
     return bool(marker is not None and marker.exists())
+
+
+def configured_community_path(config=None) -> Path:
+    """The designated community settings authority. Pure: no adoption, no
+    rewrite, no fallback to another candidate file. An unreadable authority
+    stays an honest fault for its callers."""
+    try:
+        return community_config_path(config)
+    except FileNotFoundError:
+        # Unconfigured installation: the profile-shared default location.
+        return shared_community_path()
+
+
+def legacy_evidence(config=None) -> dict:
+    """Pure read of legacy choice evidence: the first-use marker and the
+    designated community settings file. Each value is a valid choice,
+    ``"contribute"`` (settings explicitly enabled), ``"abstain"`` (valid
+    file, no evidence either way — an installer default-off is not a
+    choice), ``"corrupt"`` (damaged/unreadable) or None (absent)."""
+    out = dict(marker=None, community=None, marker_path=None, community_path=None)
+    marker = _marker_path()
+    if marker is not None:
+        out["marker_path"] = str(marker)
+        state, data = _read_json(marker)
+        if state == "ok":
+            choice = data.get("choice")
+            out["marker"] = choice if choice in CHOICES else "corrupt"
+        elif state in {"corrupt", "unreadable"}:
+            out["marker"] = "corrupt"
+    try:
+        community = configured_community_path(config)
+    except (OSError, ValueError):
+        community = None
+    if community is not None:
+        out["community_path"] = str(community)
+        state, data = _read_json(community)
+        if state == "ok":
+            out["community"] = "contribute" if data.get("enabled") is True else "abstain"
+        elif state in {"corrupt", "unreadable"}:
+            out["community"] = "corrupt"
+    return out
+
+
+def adopt_legacy_choice() -> dict:
+    """One-time consent migration at an explicit install/upgrade/entry
+    boundary, through the shared store's ``migrate``. An existing consent
+    document (any state) always wins. When it has no saved choice,
+    consistent legacy evidence is imported exactly once; conflicting
+    evidence is a diagnosable result, never a guessed choice.
+    """
+    result = dict(action="unchosen", choice=None, conflict=None, sources=[], notes=[])
+    evidence = legacy_evidence()
+    candidates = []
+    if evidence["marker"] == "corrupt":
+        result["notes"].append("first-use marker is damaged; not evidence")
+    elif evidence["marker"]:
+        candidates.append(dict(choice=evidence["marker"], reporting=None,
+                               source="kimi-first-use-marker"))
+    if evidence["community"] == "corrupt":
+        result["notes"].append("community settings are damaged; not evidence")
+    elif evidence["community"] == "contribute":
+        candidates.append(dict(choice="contribute", reporting=None,
+                               source="community-settings"))
+    migrated = _store_mod().migrate(consent_path(), candidates)
+    status = migrated["status"]
+    if status == "kept":
+        result.update(action="already", choice=migrated["choice"])
+    elif status == "migrated":
+        result.update(action="imported", choice=migrated["choice"],
+                      sources=list(migrated["sources"]))
+    elif status == "conflict":
+        result.update(action="conflict", conflict=migrated["detail"])
+    elif status == "error":
+        result.update(action="fault")
+        result["notes"].append(migrated["error"])
+    else:  # absent
+        result["action"] = "unchosen"
+    return result
 
 
 def install_traces() -> bool:
@@ -194,60 +322,141 @@ def install_traces() -> bool:
         return True
     if shared_community_path().exists():
         return True
-    legacy = _legacy_community_path()
+    try:
+        legacy = community_config_path()
+    except (OSError, ValueError, FileNotFoundError):
+        return False
     return bool(legacy is not None and legacy.exists())
 
 
-def resolve_community_path() -> Path:
-    """The profile-shared community settings file, adopting a legacy
-    adapter-specific file once.
-
-    Adoption is an atomic copy (the legacy file is kept as evidence) plus a
-    data-only update of the adapter and engine config keys, so the runtime
-    service and every adapter read the same authority afterwards.
-    """
-    shared = shared_community_path()
-    # A corrupt adapter config surfaces here as an honest fault (never a
-    # silent fresh install); only the import/traces probes are defensive.
-    legacy = community_config_path()
-    if (
-        legacy is not None
-        and legacy != shared
-        and legacy.exists()
-        and not shared.exists()
-    ):
-        try:
-            shared.parent.mkdir(parents=True, exist_ok=True)
-            tmp = shared.with_suffix(shared.suffix + ".tmp")
-            tmp.write_bytes(legacy.read_bytes())
-            os.replace(tmp, shared)
-            try:
-                shared.chmod(0o600)
-            except OSError:
-                pass
-            _rewrite_config_paths(shared)
-        except OSError:
-            return legacy
-    if shared.exists():
-        return shared
-    return legacy if legacy is not None else shared
+def _divergence(shared: Path, legacy: Path):
+    """Fields where a legacy community file disagrees with the shared
+    authority (None when they converge). Read-only comparison."""
+    s_state, s_data = _read_json(shared)
+    l_state, l_data = _read_json(legacy)
+    if s_state != "ok" or l_state != "ok":
+        if s_state != "ok":
+            return {"shared": s_state}
+        return {"legacy": l_state}
+    differ = {}
+    for key in ("enabled", "repository", "branch", "project_roots"):
+        if s_data.get(key) != l_data.get(key):
+            differ[key] = "differs"
+    return differ or None
 
 
-def _rewrite_config_paths(shared: Path) -> None:
+def _ensure_consent_key(path: Path) -> bool:
+    """Add the consent_config extension (absolute path of the same profile
+    consent authority) to a parseable settings file that lacks it. A damaged
+    file keeps its honest state. Caller holds the lock."""
+    state, data = _read_json(path)
+    if state != "ok" or data.get("consent_config") == str(consent_path()):
+        return False
+    data["consent_config"] = str(consent_path())
+    _store(path, data)
+    return True
+
+
+def _repoint_config_paths(shared: Path, adapter_path: Path, adapter: dict) -> None:
     """Point adapter and engine config community_config keys at the shared
-    file. Data-only mutation; failures leave the legacy copy working."""
-    from paths import engine_config_path, load_adapter_config
+    authority. Data-only mutation at an explicit boundary."""
+    from paths import engine_config_path
 
+    if adapter.get("community_config") != str(shared):
+        adapter["community_config"] = str(shared)
+        _store(adapter_path, adapter)
     try:
-        adapter_path = config_path()
-        adapter = load_adapter_config()
-        if adapter.get("community_config") != str(shared):
-            adapter["community_config"] = str(shared)
-            _store(adapter_path, adapter)
         engine_path = engine_config_path(adapter)
-        engine = json.loads(engine_path.read_text())
-        if isinstance(engine, dict) and engine.get("community_config") != str(shared):
+        state, engine = _read_json(engine_path)
+        if state == "ok" and engine.get("community_config") != str(shared):
             engine["community_config"] = str(shared)
             _store(engine_path, engine)
     except (OSError, ValueError, FileNotFoundError):
         pass
+
+
+def adopt_community_settings() -> dict:
+    """One-time community-settings path convergence at an explicit
+    install/upgrade/entry boundary.
+
+    Afterwards the adapter config, engine config and workers all point at
+    the profile-shared authority. A legacy adapter-specific file is adopted
+    once (atomic copy; the legacy file is kept as evidence). When the shared
+    file already exists it stays the authority: conflicting legacy values
+    are diagnosed, never merged into a wider public scope and never
+    silently adopted. A damaged shared file stays an honest fault.
+    """
+    from paths import load_adapter_config
+
+    shared = shared_community_path()
+    result = dict(path=str(shared), action="already", conflict=None, notes=[])
+    try:
+        adapter_path = config_path()
+        adapter = load_adapter_config()
+    except (OSError, ValueError, FileNotFoundError) as exc:
+        result.update(action="error")
+        result["notes"].append(f"adapter config unavailable: {type(exc).__name__}")
+        return result
+    legacy_value = adapter.get("community_config")
+    legacy = None
+    already = legacy_value == str(shared)
+    if isinstance(legacy_value, str) and os.path.isabs(legacy_value):
+        candidate = Path(legacy_value)
+        if candidate != shared:
+            legacy = candidate
+    elif legacy_value is not None:
+        result["notes"].append(
+            "adapter community_config was not an absolute path; repointed to the shared authority"
+        )
+    with _lock(shared):
+        if legacy is not None and legacy.is_file():
+            if not shared.exists():
+                try:
+                    shared.parent.mkdir(parents=True, exist_ok=True)
+                    descriptor, tmp = tempfile.mkstemp(
+                        dir=str(shared.parent), prefix=shared.name + ".", suffix=".tmp"
+                    )
+                    try:
+                        with os.fdopen(descriptor, "wb") as stream:
+                            stream.write(legacy.read_bytes())
+                        os.replace(tmp, shared)
+                    except BaseException:
+                        try:
+                            os.unlink(tmp)
+                        except OSError:
+                            pass
+                        raise
+                    try:
+                        shared.chmod(0o600)
+                    except OSError:
+                        pass
+                except OSError as exc:
+                    result.update(action="error")
+                    result["notes"].append(f"legacy adoption failed: {type(exc).__name__}")
+                    return result
+                result["action"] = "adopted"
+                _ensure_consent_key(shared)
+            else:
+                conflict = _divergence(shared, legacy)
+                if conflict:
+                    result.update(action="conflict", conflict=conflict)
+                    result["notes"].append(
+                        "legacy community file disagrees with the shared authority; "
+                        "the shared file was kept and the legacy file left as evidence"
+                    )
+                else:
+                    result["action"] = "converged"
+                _ensure_consent_key(shared)
+        elif shared.exists():
+            state, _data = _read_json(shared)
+            if state != "ok":
+                result.update(action="fault")
+                result["notes"].append(f"shared community settings are {state}")
+            else:
+                _ensure_consent_key(shared)
+                if not already:
+                    result["action"] = "converged"
+        else:
+            result["action"] = "already" if already else "repointed"
+        _repoint_config_paths(shared, adapter_path, adapter)
+    return result

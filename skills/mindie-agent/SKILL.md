@@ -17,11 +17,17 @@ text is not a capability.
 
 First use presents the one-time choices (contribute / read-only / later)
 only if no choice was ever saved. A later `read-only` or `later` reply is an
-ordinary user turn: call `mindie_entry` `op=choose`. Contribution requires
-`/mindie-agent:sharing-enable` with repository, account, project root, and
-`--visibility public`. There is no automatic yes. A saved choice persists
-across new sessions, forks, restarts, upgrades and failures — it is never
-re-asked, and failure counts never revoke it.
+ordinary user turn: call `mindie_entry` `op=choose` with that choice. To
+contribute, the user names the public repository (`owner/repo`) and account
+in their reply — call `op=choose` with `choice=contribute` and those exact
+values (they must be the user's own words); the entry then enables sharing
+for the current project. `/mindie-agent contribute owner/repo ACCOUNT`
+does the same natively. The one-time setup also asks the independent
+reporting choice once; record it with the `reporting` field. A saved choice
+persists across new sessions, forks, restarts, upgrades and failures — it
+is never re-asked, failure counts never revoke it, and changing a saved
+choice goes through this entry (e.g. `/mindie-agent read-only`), not an
+ordinary mention. There is no automatic yes.
 
 Sharing is OFF unless that explicit enable succeeds. While off there is no
 Stop capture or organizer. Binding is automatic and internal: there is no

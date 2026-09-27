@@ -12,7 +12,9 @@ persisted, display it and finish; an additional `op=choose` call is unnecessary.
 
 Show the tool result to the user. If it includes three choices, present them
 as the one-time setup reply:
-1. Recommended: contribute public experience (`/mindie-agent:sharing-enable --repository owner/repo --account name --project-root /absolute/path --visibility public`).
+1. Recommended: contribute public experience for the current project — the
+   user names the public repository (`owner/repo`) and account in their
+   reply, or runs `/mindie-agent contribute owner/repo ACCOUNT`.
 2. Read-only knowledge; no contribution.
 3. Configure later (sharing stays off).
 

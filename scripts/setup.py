@@ -228,7 +228,7 @@ def stage_retained_bootstrap(dest: Path, source: Path) -> Path:
     return dest
 
 
-def write_community(path, community):
+def write_community(path, community, consent_config=None):
     if community is None:
         write_private(
             path,
@@ -241,9 +241,12 @@ def write_community(path, community):
                 branch="main",
                 project_roots=[],
                 idle_seconds=300,
+                consent_config=consent_config,
             ),
         )
         return "off"
+    if consent_config is not None:
+        community = dict(community, consent_config=consent_config)
     write_private(path, community, replace=path.exists())
     return "enabled"
 
@@ -322,7 +325,10 @@ def main():
             parser.error(
                 "configuration already exists; pass --community-* to configure sharing"
             )
-        sharing = write_community(community_config, community)
+        sharing = write_community(
+            community_config, community,
+            consent_config=str(config.with_name("mindie-consent.json")),
+        )
         print(json.dumps(dict(config=str(config), sharing=sharing, updated="community"), indent=2))
         return
     admission = domain_root / "admission.sqlite3"
@@ -365,7 +371,10 @@ def main():
     if args.update_remote:
         adapter_value["update_remote"] = args.update_remote
     write_private(config, adapter_value)
-    sharing = write_community(community_config, community)
+    sharing = write_community(
+        community_config, community,
+        consent_config=str(config.with_name("mindie-consent.json")),
+    )
     import genstate
     import updater
 
