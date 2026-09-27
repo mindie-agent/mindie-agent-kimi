@@ -42,11 +42,11 @@ class ConsentTests(unittest.TestCase):
         return consent.consent_path()
 
     def test_cold_install_offers_choices_once_then_never_again(self):
-        import entry_state
+        import consent
 
         payload = self._payload()
         self.assertEqual(len(payload["choices"]), 3)
-        entry_state.set_first_use("later")
+        consent.record_choice("later")
         payload = self._payload()
         self.assertEqual(payload["first_use"], "later")
         self.assertEqual(payload["choices"], [])
@@ -198,9 +198,9 @@ class ConsentTests(unittest.TestCase):
         self.assertIsNone(payload["first_use"])
         self.assertNotIn("consent_error", payload)
         # Once the user answers, the choice persists and is never re-asked.
-        import entry_state
+        import consent
 
-        entry_state.set_first_use("read-only")
+        consent.record_choice("read-only")
         again = self._payload()
         self.assertEqual(again["first_use"], "read-only")
         self.assertEqual(again["choices"], [])
@@ -210,9 +210,9 @@ class ConsentTests(unittest.TestCase):
         in the SAME profile directory reads the same saved choice (this is
         how the cc/codex adapters, with their own config env vars, share the
         profile). An isolated profile directory does not inherit it."""
-        import entry_state
+        import consent
 
-        entry_state.set_first_use("later")
+        consent.record_choice("later")
         code = (
             "import sys,json;sys.path.insert(0,sys.argv[1]);"
             "import consent;print(json.dumps(consent.load()))"
@@ -232,9 +232,9 @@ class ConsentTests(unittest.TestCase):
         self.assertEqual(saved["choice"], "later")
 
     def test_isolated_profile_does_not_inherit_choice(self):
-        import entry_state
+        import consent
 
-        entry_state.set_first_use("later")
+        consent.record_choice("later")
         other = self.tmp / "other-profile"
         other.mkdir()
         (other / "kimi.json").write_text(json.dumps({}))
@@ -271,9 +271,9 @@ class ConsentTests(unittest.TestCase):
         first = entry.status_payload(None)
         # Cold install: reporting may be offered once alongside the choices.
         self.assertIn("choices", first)
-        import entry_state
+        import consent
 
-        entry_state.set_first_use("later")
+        consent.record_choice("later")
         later = entry.status_payload(None)
         self.assertNotIn("reporting_choice", later)
 
