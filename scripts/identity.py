@@ -289,25 +289,31 @@ def _turn_openings(session_id, *, kimi_home=None):
     return pairs
 
 
-def current_turn_origin(session_id: str, *, kimi_home=None) -> dict:
-    """CURRENT turn-opening origin only. Never the last matching MindIE command."""
+def current_entry_scan(session_id: str, *, kimi_home=None):
+    """One bounded scan of the current turn for entry decisions:
+    ``(openings, origin, user_text)`` — the fork-filtered opening pairs,
+    the latest opening's origin, and its text when it is an ordinary user
+    message (``""`` otherwise)."""
     pairs = _turn_openings(session_id, kimi_home=kimi_home)
     if not pairs:
         raise ValueError("current native turn origin is unavailable")
-    return pairs[-1][1]
+    record, origin = pairs[-1]
+    text = _record_text(record) if origin.get("kind") == "user" else ""
+    return pairs, origin, text
+
+
+def current_turn_origin(session_id: str, *, kimi_home=None) -> dict:
+    """CURRENT turn-opening origin only. Never the last matching MindIE command."""
+    _pairs, origin, _text = current_entry_scan(session_id, kimi_home=kimi_home)
+    return origin
 
 
 def current_user_text(session_id: str, *, kimi_home=None) -> str:
     """Text of the current turn-opening ordinary user message; ``""`` when
     the current turn did not open with one. Never inherited, injected or
     model-authored text."""
-    pairs = _turn_openings(session_id, kimi_home=kimi_home)
-    if not pairs:
-        raise ValueError("current native turn origin is unavailable")
-    record, origin = pairs[-1]
-    if origin.get("kind") != "user":
-        return ""
-    return _record_text(record)
+    _pairs, _origin, text = current_entry_scan(session_id, kimi_home=kimi_home)
+    return text
 
 
 def require_current_plugin_command(session_id: str, command: str, *, kimi_home=None) -> dict:
@@ -396,21 +402,8 @@ def _current_skill_activation(origin, command):
     )
 
 
-def require_current_entry(session_id: str, command: str = "init", *, kimi_home=None) -> dict:
-    """Trusted recognition of the current unified-entry invocation.
-
-    Dispatches on the ACTUAL host records: a native plugin_command opener
-    (slash command, with the init alias), a native skill_activation opener
-    (the TUI `/mindie-agent` slash), or an in-turn skill_activation after
-    the host resolved the user's `/mindie-agent` prompt (print/model-tool
-    flow) — the latter requires the turn-opening user text to actually
-    invoke the entry, so a model-initiated skill use is never admitted.
-    Plain mentions, injected content, same-named foreign skills and
-    inherited fork history never match.
-    """
-    openings = _turn_openings(session_id, kimi_home=kimi_home)
-    if not openings:
-        raise ValueError("current native turn origin is unavailable")
+def _entry_from_openings(openings, command: str) -> dict:
+    """Validate the latest fork-filtered opening as the current entry."""
     record, origin = openings[-1]
     kind = origin.get("kind")
     if kind == "plugin_command":
@@ -447,6 +440,24 @@ def require_current_entry(session_id: str, command: str = "init", *, kimi_home=N
                 raise ValueError("model-initiated skill use is not the user entry")
         return entry
     raise ValueError("current turn is not the native MindIE entry")
+
+
+def require_current_entry(session_id: str, command: str = "init", *, kimi_home=None) -> dict:
+    """Trusted recognition of the current unified-entry invocation.
+
+    Dispatches on the ACTUAL host records: a native plugin_command opener
+    (slash command, with the init alias), a native skill_activation opener
+    (the TUI `/mindie-agent` slash), or an in-turn skill_activation after
+    the host resolved the user's `/mindie-agent` prompt (print/model-tool
+    flow) — the latter requires the turn-opening user text to actually
+    invoke the entry, so a model-initiated skill use is never admitted.
+    Plain mentions, injected content, same-named foreign skills and
+    inherited fork history never match.
+    """
+    openings = _turn_openings(session_id, kimi_home=kimi_home)
+    if not openings:
+        raise ValueError("current native turn origin is unavailable")
+    return _entry_from_openings(openings, command)
 
 
 def bind_db_path(config=None) -> Path:

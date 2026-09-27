@@ -14,8 +14,8 @@ from pathlib import Path
 
 from entry_state import consume_activation_id, three_choices
 from identity import (
-    current_turn_origin,
-    current_user_text,
+    _entry_from_openings,
+    current_entry_scan,
     require_current_entry,
     require_current_plugin_command,
     session_cwd,
@@ -599,8 +599,7 @@ def op_choose(session, choice, cwd=None, *, repository=None, account=None,
     import consent as consent_mod
 
     migration = _adopt_install_state() if _configured() else None
-    origin = current_turn_origin(session)
-    user_text = None
+    openings, origin, user_text = current_entry_scan(session)
     found = None
     if origin.get("kind") == "user":
         saved = consent_mod.load()
@@ -609,9 +608,9 @@ def op_choose(session, choice, cwd=None, *, repository=None, account=None,
                 "a choice is already saved; change settings explicitly via "
                 "the entry, e.g. /mindie-agent read-only"
             )
-        user_text = current_user_text(session)
     else:
-        found = require_current_entry(session, "init")
+        user_text = None
+        found = _entry_from_openings(openings, "init")
     if choice == "contribute":
         if user_text is not None:
             if not repository or not account:

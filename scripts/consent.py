@@ -26,15 +26,9 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-import time
 from pathlib import Path
 
 from paths import community_config_path, config_path, first_use_path
-
-if os.name == "nt":
-    import msvcrt
-else:
-    import fcntl
 
 
 def _store_mod():
@@ -91,50 +85,7 @@ def _read_json(path: Path):
     return "ok", data
 
 
-class _FileLock:
-    """Cross-process exclusive lock over a sibling ``*.lock`` file (used for
-    the community-settings boundary, not the consent store's own lock)."""
-
-    def __init__(self, path: Path, timeout: float = 5.0):
-        self._path = path
-        self._timeout = timeout
-        self._descriptor = None
-
-    def __enter__(self):
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        descriptor = os.open(self._path, os.O_RDWR | os.O_CREAT, 0o600)
-        deadline = time.monotonic() + self._timeout
-        while True:
-            try:
-                if os.name == "nt":
-                    os.lseek(descriptor, 0, os.SEEK_SET)
-                    msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
-                else:
-                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                self._descriptor = descriptor
-                return self
-            except OSError:
-                if time.monotonic() >= deadline:
-                    os.close(descriptor)
-                    raise TimeoutError(f"timed out locking {self._path.name}")
-                time.sleep(0.05)
-
-    def __exit__(self, *exc):
-        if self._descriptor is not None:
-            try:
-                if os.name == "nt":
-                    os.lseek(self._descriptor, 0, os.SEEK_SET)
-                    msvcrt.locking(self._descriptor, msvcrt.LK_UNLCK, 1)
-                else:
-                    fcntl.flock(self._descriptor, fcntl.LOCK_UN)
-            except OSError:
-                pass
-            os.close(self._descriptor)
-            self._descriptor = None
-        return False
-
-
-def _store(path: Path, data: dict) -> None:
+def _atomic_write_bytes(path: Path, raw: bytes) -> None:
     """Unique temp file + atomic replace (adapter/engine/community config
     plumbing only — consent documents go through the shared store)."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -142,8 +93,8 @@ def _store(path: Path, data: dict) -> None:
         dir=str(path.parent), prefix=path.name + ".", suffix=".tmp"
     )
     try:
-        with os.fdopen(descriptor, "w") as stream:
-            stream.write(json.dumps(data, indent=2) + "\n")
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(raw)
         os.replace(tmp, path)
     except BaseException:
         try:
@@ -157,8 +108,15 @@ def _store(path: Path, data: dict) -> None:
         pass
 
 
-def _lock(path: Path) -> _FileLock:
-    return _FileLock(path.with_name(path.name + ".lock"))
+def _store(path: Path, data: dict) -> None:
+    _atomic_write_bytes(path, (json.dumps(data, indent=2) + "\n").encode("utf-8"))
+
+
+def _boundary_lock(path: Path):
+    """The canonical cross-process lock of the shared consent store, reused
+    for the adapter's boundary files (community-settings convergence, slash
+    activation dedupe) — no third lock protocol."""
+    return _store_mod()._UpdateLock(path.with_name(path.name + ".lock"))
 
 
 def _marker_path():
@@ -386,28 +344,11 @@ def adopt_community_settings() -> dict:
         result["notes"].append(
             "adapter community_config was not an absolute path; repointed to the shared authority"
         )
-    with _lock(shared):
+    with _boundary_lock(shared):
         if legacy is not None and legacy.is_file():
             if not shared.exists():
                 try:
-                    shared.parent.mkdir(parents=True, exist_ok=True)
-                    descriptor, tmp = tempfile.mkstemp(
-                        dir=str(shared.parent), prefix=shared.name + ".", suffix=".tmp"
-                    )
-                    try:
-                        with os.fdopen(descriptor, "wb") as stream:
-                            stream.write(legacy.read_bytes())
-                        os.replace(tmp, shared)
-                    except BaseException:
-                        try:
-                            os.unlink(tmp)
-                        except OSError:
-                            pass
-                        raise
-                    try:
-                        shared.chmod(0o600)
-                    except OSError:
-                        pass
+                    _atomic_write_bytes(shared, legacy.read_bytes())
                 except OSError as exc:
                     result.update(action="error")
                     result["notes"].append(f"legacy adoption failed: {type(exc).__name__}")

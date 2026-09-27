@@ -3,18 +3,17 @@
 The persistent choice lives in the profile-shared consent document
 (``consent``); the legacy marker below only deduplicates native slash
 activationIds and is a one-time migration source, never a consent source.
+The dedupe file is written under the same canonical cross-process lock and
+atomic replace the shared store provides (no third update protocol).
 """
 
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import consent
 from paths import first_use_path, state_dir
-
-CHOICES = ("contribute", "read-only", "later")
 
 
 def _load(path: Path) -> dict:
@@ -25,17 +24,6 @@ def _load(path: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _store(path: Path, data: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2) + "\n")
-    os.replace(tmp, path)
-    try:
-        path.chmod(0o600)
-    except OSError:
-        pass
-
-
 def first_use():
     saved = consent.load()
     if saved["state"] == "ok" and saved["choice"] in consent.CHOICES:
@@ -43,26 +31,21 @@ def first_use():
     return None
 
 
-def set_first_use(choice: str) -> str:
-    if choice not in CHOICES:
-        raise ValueError("choice must be contribute, read-only, or later")
-    return consent.record_choice(choice)
-
-
 def consume_activation_id(activation_id: str) -> bool:
     """True once per native activationId (unconfigured path)."""
     if not isinstance(activation_id, str) or not activation_id or len(activation_id) > 256:
         raise ValueError("invalid activationId")
     path = state_dir() / "slash-activations.json"
-    data = _load(path)
-    seen = data.get("consumed")
-    if not isinstance(seen, list):
-        seen = []
-    if activation_id in seen:
-        return False
-    seen.append(activation_id)
-    data["consumed"] = seen[-256:]
-    _store(path, data)
+    with consent._boundary_lock(path):
+        data = _load(path)
+        seen = data.get("consumed")
+        if not isinstance(seen, list):
+            seen = []
+        if activation_id in seen:
+            return False
+        seen.append(activation_id)
+        data["consumed"] = seen[-256:]
+        consent._store(path, data)
     return True
 
 
