@@ -190,31 +190,63 @@ def _from_index(index: Path, session_id: str, home: Path) -> Path | None:
     return matched
 
 
+TAIL_CHUNK = 256 * 1024
+TAIL_MAX = 8 * 1024 * 1024
+MS_THRESHOLD = 1e12
+
+
+def _to_seconds(raw):
+    """Native probe times are Unix milliseconds; plain seconds pass through."""
+    if type(raw) not in (int, float) or raw <= 0:
+        return None
+    value = float(raw)
+    return value / 1000.0 if value >= MS_THRESHOLD else value
+
+
 def _tail_records(session_id: str, *, kimi_home=None):
+    """Records from the END of the wire, read backwards in bounded chunks
+    until a turn-opening record is visible (or the cap is exhausted).
+
+    Turn openers are strictly sequential: the last opener in the file is
+    always the current turn's, never an older matching command — so a long
+    turn (large tool output after the opener) must keep binding, while a
+    wire with no opener at all stays fail-closed.
+    """
     wire = locate_main_wire(session_id, kimi_home=kimi_home)
     try:
         size = wire.stat().st_size
-        with wire.open("rb") as stream:
-            if size > 256 * 1024:
-                stream.seek(size - 256 * 1024)
-                stream.readline()
-            raw = stream.read(256 * 1024)
+        window = TAIL_CHUNK
+        while True:
+            with wire.open("rb") as stream:
+                if size > window:
+                    stream.seek(size - window)
+                    stream.readline()
+                raw = stream.read(window)
+            records = []
+            for line in raw.splitlines():
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(record, dict):
+                    records.append(record)
+            if (
+                window >= size
+                or window >= TAIL_MAX
+                or any(_opening_origin(record) is not None for record in records)
+            ):
+                return records
+            window = min(window * 4, TAIL_MAX, size)
     except OSError:
         return []
-    records = []
-    for line in raw.splitlines():
-        try:
-            record = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(record, dict):
-            records.append(record)
-    return records
 
 
 def _opening_origin(record):
-    """Turn-opening native origin, or None if this record does not open a turn."""
-    if record.get("type") == "turn.prompt":
+    """Turn-opening/steering native origin, or None when this record can
+    neither open nor steer a turn. An origin-less user message still bounds
+    the turn (as an empty origin that matches no entry); injected content
+    never does."""
+    if record.get("type") in {"turn.prompt", "turn.steer"}:
         origin = record.get("origin")
         return origin if isinstance(origin, dict) else {}
     if record.get("type") == "context.append_message":
@@ -230,28 +262,52 @@ def _opening_origin(record):
     return None
 
 
-def current_turn_origin(session_id: str, *, kimi_home=None) -> dict:
-    """CURRENT turn-opening origin only. Never the last matching MindIE command."""
-    for record in reversed(_tail_records(session_id, kimi_home=kimi_home)):
+def _turn_openings(session_id, *, kimi_home=None):
+    """(record, origin) pairs that can open or steer a turn, in order, with
+    inherited fork history excluded: for a forked session only its own
+    records (timestamped at or after state.createdAt) can prove a current
+    entry — a copied parent activation is never this fork's invocation."""
+    records = _tail_records(session_id, kimi_home=kimi_home)
+    boundary = None
+    state = session_state(session_id, kimi_home=kimi_home)
+    if state.get("forkedFrom") or state.get("forked_from"):
+        boundary = _to_seconds(state.get("createdAt") or state.get("created_at"))
+        if boundary is None:
+            raise ValueError(
+                "forked session lacks state.createdAt; inherited material is not trusted"
+            )
+    pairs = []
+    for record in records:
         origin = _opening_origin(record)
         if origin is None:
             continue
-        return origin
-    raise ValueError("current native turn origin is unavailable")
+        if boundary is not None:
+            stamp = _to_seconds(record.get("time") or record.get("created_at"))
+            if stamp is None or stamp < boundary:
+                continue
+        pairs.append((record, origin))
+    return pairs
+
+
+def current_turn_origin(session_id: str, *, kimi_home=None) -> dict:
+    """CURRENT turn-opening origin only. Never the last matching MindIE command."""
+    pairs = _turn_openings(session_id, kimi_home=kimi_home)
+    if not pairs:
+        raise ValueError("current native turn origin is unavailable")
+    return pairs[-1][1]
 
 
 def current_user_text(session_id: str, *, kimi_home=None) -> str:
     """Text of the current turn-opening ordinary user message; ``""`` when
     the current turn did not open with one. Never inherited, injected or
     model-authored text."""
-    for record in reversed(_tail_records(session_id, kimi_home=kimi_home)):
-        origin = _opening_origin(record)
-        if origin is None:
-            continue
-        if origin.get("kind") == "user":
-            return _record_text(record)
+    pairs = _turn_openings(session_id, kimi_home=kimi_home)
+    if not pairs:
+        raise ValueError("current native turn origin is unavailable")
+    record, origin = pairs[-1]
+    if origin.get("kind") != "user":
         return ""
-    raise ValueError("current native turn origin is unavailable")
+    return _record_text(record)
 
 
 def require_current_plugin_command(session_id: str, command: str, *, kimi_home=None) -> dict:
@@ -275,27 +331,6 @@ def require_current_plugin_command(session_id: str, command: str, *, kimi_home=N
         arguments=args if isinstance(args, str) else "",
         activation_id=activation_id,
     )
-
-
-def _turn_origins(records):
-    """(record, origin) pairs that can open or steer a turn, in order."""
-    for record in records:
-        rtype = record.get("type")
-        if rtype == "turn.prompt":
-            origin = record.get("origin")
-        elif rtype == "turn.steer":
-            origin = record.get("origin")
-        elif rtype == "context.append_message":
-            message = record.get("message")
-            if not isinstance(message, dict) or message.get("role") != "user":
-                continue
-            origin = message.get("origin")
-            if isinstance(origin, dict) and origin.get("kind") == "injection":
-                continue
-        else:
-            continue
-        if isinstance(origin, dict):
-            yield record, origin
 
 
 def _record_text(record):
@@ -371,10 +406,9 @@ def require_current_entry(session_id: str, command: str = "init", *, kimi_home=N
     flow) — the latter requires the turn-opening user text to actually
     invoke the entry, so a model-initiated skill use is never admitted.
     Plain mentions, injected content, same-named foreign skills and
-    inherited history never match.
+    inherited fork history never match.
     """
-    records = _tail_records(session_id, kimi_home=kimi_home)
-    openings = list(_turn_origins(records))
+    openings = _turn_openings(session_id, kimi_home=kimi_home)
     if not openings:
         raise ValueError("current native turn origin is unavailable")
     record, origin = openings[-1]

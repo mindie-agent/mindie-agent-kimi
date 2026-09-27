@@ -28,6 +28,9 @@ def _configured() -> bool:
 
 
 def _parse_sharing(text):
+    """Native sharing-enable arguments. The project root may be repeated
+    for backward compatibility but is validated against the native session
+    cwd by the caller — the scope is always the current project."""
     try:
         argv = shlex.split(text or "")
     except ValueError:
@@ -55,10 +58,10 @@ def _parse_sharing(text):
             fork = args.pop(0)
         elif item.startswith("--"):
             raise ValueError("unknown sharing flag: " + item)
-    if not repository or not roots or visibility != "public" or not account:
+    if not repository or visibility != "public" or not account:
         raise ValueError(
             "sharing-enable requires --repository owner/repo, "
-            "--account name, --project-root /absolute/path, and --visibility public"
+            "--account name, and --visibility public"
         )
     return dict(
         repository=repository,
@@ -308,14 +311,17 @@ def _knowledge_status_payload(session=None):
         payload["choices"] = []
     elif saved["state"] in {"corrupt", "unreadable"}:
         # Damaged saved state is a fault, never a fresh install: read-only
-        # help keeps working, writes stop, no re-onboarding.
+        # help keeps working, writes stop, no re-onboarding. Nothing is
+        # rewritten automatically — repair is the user's explicit action.
         payload["repeat"] = True
         payload["choices"] = []
         payload["consent_error"] = dict(state=saved["state"], error=saved["error"])
         payload["hint"] = (
-            "The saved setup state is damaged. This is NOT a fresh install: "
-            "read-only knowledge keeps working and nothing is collected. "
-            "Repair the file or change settings explicitly via /mindie-agent."
+            f"The saved setup state is damaged ({saved['path']}). This is NOT "
+            "a fresh install: read-only knowledge keeps working and nothing "
+            "is collected. Nothing was changed automatically: move that file "
+            "aside (keep it as evidence) or delete it, then make your choice "
+            "again via /mindie-agent."
         )
     elif sharing_view.get("state") == "corrupt" or sharing_view.get("error"):
         # A damaged settings file is a fault, never a fresh install.
@@ -418,16 +424,18 @@ def _parse_native_setup(arguments):
     return None
 
 
-def _enable_contribution(session, cwd, *, repository, account):
+def _enable_contribution(session, cwd, *, repository, account, branch="main", fork=None):
     """The explicit public opt-in: enable sharing for the current project.
-    The project root is the native session cwd (host-derived). An existing
-    scope for the SAME destination is preserved and the current project is
-    added — never silently widened to another repository."""
+    The project root is the native session cwd (host-derived — never a
+    command or model argument). An existing scope for the SAME destination
+    is preserved and the current project is added — never silently widened
+    to another repository."""
     import sharing as sharing_mod
     from mindie_knowledge.community.common import check_account
-    from mindie_knowledge.loop.settings import check_repository
+    from mindie_knowledge.loop.settings import check_branch, check_repository
 
     repository = check_repository(repository)
+    branch = check_branch(branch)
     try:
         account = check_account(account)
     except Exception as exc:
@@ -444,74 +452,73 @@ def _enable_contribution(session, cwd, *, repository, account):
     except Exception:
         pass
     return sharing_mod.write_enabled(
-        repository=repository, project_roots=roots, branch="main",
-        visibility="public", account=account)
+        repository=repository, project_roots=roots, branch=branch,
+        visibility="public", account=account, fork=fork)
 
 
-def _record_choice(choice: str) -> bool:
-    """Record a verified choice; an explicit entry/user-verified choice also
-    repairs a damaged document (fresh write, other fields reset). Returns
-    True when a repair happened."""
-    import consent as consent_mod
-
-    try:
-        consent_mod.record_choice(choice)
-        return False
-    except consent_mod.ConsentDamaged:
-        consent_mod.repair(choice=choice)
-        return True
-
-
-def _record_reporting(value: str) -> bool:
-    import consent as consent_mod
-
-    try:
-        consent_mod.record_reporting(value)
-        return False
-    except consent_mod.ConsentDamaged:
-        consent_mod.repair(reporting=value)
-        return True
-
-
-def _apply_choice(session, cwd, choice, *, repository=None, account=None):
+def _apply_choice(session, cwd, choice, *, repository=None, account=None,
+                  branch="main", fork=None):
     """Record a verified choice and keep the sharing settings consistent
     with it: contribution enables capture for the current project; any
     other choice leaves sharing off, so a revoked contribution stops for
-    real. Returns (sharing_view, repaired)."""
-    import consent as consent_mod  # noqa: F401
+    real. A damaged consent document surfaces as an honest fault — nothing
+    is rewritten automatically. Returns the sharing view (or None)."""
+    import consent as consent_mod
 
     if choice == "contribute" and not _configured():
         raise ValueError("MindIE is not configured; run scripts/setup.py first")
-    repaired = _record_choice(choice)
+    consent_mod.record_choice(choice)
     view = None
     if _configured():
         import sharing as sharing_mod
 
         if choice == "contribute":
-            view = _enable_contribution(session, cwd, repository=repository, account=account)
+            view = _enable_contribution(
+                session, cwd, repository=repository, account=account,
+                branch=branch, fork=fork,
+            )
         else:
             view = sharing_mod.write_disabled()
-    return view, repaired
+    return view
 
 
 def _apply_reporting(value):
     """Persist the reporting choice and keep the real reporter consistent:
-    enable/disable reconfigure the actual service; ``later`` only persists
-    the preference (the service stays off). It is never re-asked."""
+    enable/disable reconfigure the actual service; ``later`` turns an
+    enabled reporter off and only then persists the preference. Enabling is
+    refused when the consent document is damaged (the preference could not
+    be persisted); turning off is always allowed, with the persistence gap
+    surfaced instead of silently rewritten."""
     import consent as consent_mod
     import diagnostic_support
 
     if value not in consent_mod.REPORTING:
         raise ValueError("reporting must be enabled, disabled or later")
-    if value == "later":
-        _record_reporting("later")
-        return dict(reporting="later")
+    damaged = consent_mod.load()["state"] in {"corrupt", "unreadable"}
+    if damaged and value == "enabled":
+        raise ValueError(
+            "the saved setup state is damaged; reporting was not enabled. "
+            "Move the damaged consent file aside and choose again."
+        )
     if not _configured():
+        if value == "later":
+            if not damaged:
+                consent_mod.record_reporting("later")
+            return dict(reporting="later" if not damaged else "not-recorded")
         raise ValueError("MindIE is not configured; run scripts/setup.py first")
     python = load_adapter_config()["python"]
-    result = diagnostic_support.configure_reporting(value == "enabled", python)
-    if result.get("enabled") is (value == "enabled"):
-        _record_reporting(value)
+    # "later" means not-on: an enabled reporter is really turned off.
+    expected = value == "enabled"
+    result = diagnostic_support.configure_reporting(expected, python)
+    if result.get("enabled") is not expected:
+        return result  # unconfirmed service state: nothing is recorded
+    if damaged:
+        return dict(
+            result,
+            preference="not-recorded: the saved setup state is damaged; "
+            "the reporter is off, the preference was not persisted",
+        )
+    consent_mod.record_reporting(value)
     return result
 
 
@@ -543,7 +550,7 @@ def _configured_init_activation(session, cwd, activation_id):
 
 
 def _apply_entry_choice(payload, session, cwd, native):
-    view, repaired = _apply_choice(
+    view = _apply_choice(
         session, cwd, native["choice"],
         repository=native.get("repository"), account=native.get("account"),
     )
@@ -552,8 +559,6 @@ def _apply_entry_choice(payload, session, cwd, native):
     payload["repeat"] = True
     if view is not None:
         payload["sharing"] = view
-    if repaired:
-        payload["consent_repaired"] = True
     return payload
 
 
@@ -584,19 +589,20 @@ def op_choose(session, choice, cwd=None, *, repository=None, account=None,
               reporting=None):
     """Store a setup choice from the unified-entry conversation.
 
-    An ordinary user reply (kind=user) may make the FIRST choice or repair
-    a damaged saved document; changing an existing saved choice requires
-    the verified entry itself (the user explicitly changing settings). A
-    conversational contribution destination must appear in the user's own
-    current reply; via the entry it comes from the native arguments only.
+    An ordinary user reply (kind=user) may make the FIRST choice; changing
+    an existing saved choice requires the verified entry itself (the user
+    explicitly changing settings). A conversational contribution
+    destination must appear in the user's own current reply; via the entry
+    it comes from the native arguments only. A damaged consent document is
+    an honest fault — nothing is rewritten automatically.
     """
     import consent as consent_mod
 
+    migration = _adopt_install_state() if _configured() else None
     origin = current_turn_origin(session)
     user_text = None
     found = None
     if origin.get("kind") == "user":
-        migration = _adopt_install_state() if _configured() else None
         saved = consent_mod.load()
         if saved["state"] == "ok" and saved["choice"] is not None:
             raise ValueError(
@@ -606,7 +612,6 @@ def op_choose(session, choice, cwd=None, *, repository=None, account=None,
         user_text = current_user_text(session)
     else:
         found = require_current_entry(session, "init")
-        migration = _adopt_install_state() if _configured() else None
     if choice == "contribute":
         if user_text is not None:
             if not repository or not account:
@@ -627,9 +632,8 @@ def op_choose(session, choice, cwd=None, *, repository=None, account=None,
                 )
             repository, account = native["repository"], native["account"]
     view = None
-    repaired = False
     if choice is not None:
-        view, repaired = _apply_choice(
+        view = _apply_choice(
             session, cwd, choice, repository=repository, account=account
         )
     reporting_view = _apply_reporting(reporting) if reporting is not None else None
@@ -640,8 +644,6 @@ def op_choose(session, choice, cwd=None, *, repository=None, account=None,
     payload["repeat"] = True
     if view is not None:
         payload["sharing"] = view
-    if repaired:
-        payload["consent_repaired"] = True
     if reporting_view is not None:
         payload["reporting_result"] = reporting_view
     if migration:
@@ -675,7 +677,7 @@ def op_deactivate(session):
     return dict(session=session, deactivated=bool(deactivate(session)))
 
 
-def op_sharing_enable(session, _model_arguments=""):
+def op_sharing_enable(session, _model_arguments="", cwd=None):
     found, first = consume_slash(session, "sharing-enable")
     if not first:
         payload = status_payload(session)
@@ -683,12 +685,20 @@ def op_sharing_enable(session, _model_arguments=""):
         return payload
     if not _configured():
         raise ValueError("MindIE is not configured; run scripts/setup.py first")
-    import sharing as sharing_mod
-
+    _adopt_install_state()
     parsed = _parse_sharing(found.get("arguments") or "")
-    _record_choice("contribute")
-    result = sharing_mod.write_enabled(**parsed)
-    return result
+    root = _project_root(session, cwd)
+    for item in parsed["project_roots"]:
+        if item != root:
+            raise ValueError(
+                "the contribution scope is always the current project "
+                "(native session cwd); --project-root is not accepted"
+            )
+    return _apply_choice(
+        session, cwd, "contribute",
+        repository=parsed["repository"], account=parsed["account"],
+        branch=parsed["branch"], fork=parsed["fork"],
+    )
 
 
 def op_sharing_disable(session):
@@ -697,8 +707,11 @@ def op_sharing_disable(session):
         return dict(configured=False, enabled=False)
     import sharing as sharing_mod
 
+    _adopt_install_state()
     result = sharing_mod.write_disabled()
-    _record_choice("disabled")
+    import consent as consent_mod
+
+    consent_mod.record_choice("disabled")
     return result
 
 
@@ -765,11 +778,7 @@ def op_reporting(session, command):
         return dict(diagnostic_support.reporting_status(), already=True)
     if not _configured():
         raise ValueError("MindIE is not configured; run scripts/setup.py first")
-    python = load_adapter_config()["python"]
-    result = diagnostic_support.configure_reporting(command == "reporting-enable", python)
-    if result.get("enabled") is (command == "reporting-enable"):
-        _record_reporting("enabled" if command == "reporting-enable" else "disabled")
-    return result
+    return _apply_reporting("enabled" if command == "reporting-enable" else "disabled")
 
 
 def dispatch(session, cwd, op, arguments="", choice=None, *, repository=None,
@@ -792,7 +801,7 @@ def dispatch(session, cwd, op, arguments="", choice=None, *, repository=None,
     if op == "deactivate":
         return op_deactivate(session)
     if op == "sharing-enable":
-        return op_sharing_enable(session, arguments)
+        return op_sharing_enable(session, arguments, cwd)
     if op == "sharing-disable":
         return op_sharing_disable(session)
     if op == "sharing-status":

@@ -194,7 +194,9 @@ def record_choice(choice: str) -> str:
 
 def record_reporting(value: str) -> str:
     """Explicit field update via the shared store; the contribution choice
-    and untouched metadata survive."""
+    and untouched metadata survive. A damaged document is refused — repair
+    is the user's explicit action (move the file aside and choose again),
+    surfaced by the entry as a fault state, never an automatic rewrite."""
     if value not in REPORTING:
         raise ValueError("reporting must be enabled, disabled or later")
     try:
@@ -202,30 +204,6 @@ def record_reporting(value: str) -> str:
     except _store_mod().ConsentError as exc:
         raise ConsentDamaged(exc.state, str(exc)) from None
     return value
-
-
-def repair(*, choice=None, reporting=None) -> str:
-    """Explicit full repair after a damaged-state fault. Only a verified
-    entry flow calls this, after the fault was surfaced to the user. The
-    damaged document is moved aside as evidence and the explicitly chosen
-    fields are written fresh — unspecified fields stay absent, never
-    guessed. Returns the previous state."""
-    if choice is not None and choice not in CHOICES:
-        raise ValueError("choice must be contribute, read-only, later or disabled")
-    if reporting is not None and reporting not in REPORTING:
-        raise ValueError("reporting must be enabled, disabled or later")
-    path = consent_path()
-    previous = load()["state"]
-    if previous in {"corrupt", "unreadable"} and path.exists():
-        try:
-            os.replace(path, path.with_name(path.name + ".damaged"))
-        except OSError:
-            path.unlink()
-    if choice is not None:
-        record_choice(choice)
-    if reporting is not None:
-        record_reporting(reporting)
-    return previous
 
 
 def marker_exists() -> bool:
