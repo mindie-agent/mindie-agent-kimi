@@ -339,14 +339,17 @@ def adopt_community_settings() -> dict:
 
     shared = shared_community_path()
     result = dict(path=str(shared), action="already", conflict=None, notes=[])
-    try:
-        adapter_path = config_path()
-        adapter = load_adapter_config()
-    except (OSError, ValueError, FileNotFoundError) as exc:
-        result.update(action="error")
-        result["notes"].append(f"adapter config unavailable: {type(exc).__name__}")
-        return result
     with CommunityWriteContext(str(shared)) as ctx:
+        # Resolve and reload the CURRENT adapter config inside the lock: a
+        # pre-lock snapshot must never be written back — another holder of
+        # this boundary may have repointed or added fields concurrently.
+        try:
+            adapter_path = config_path()
+            adapter = load_adapter_config()
+        except (OSError, ValueError, FileNotFoundError) as exc:
+            result.update(action="error")
+            result["notes"].append(f"adapter config unavailable: {type(exc).__name__}")
+            return result
         legacy_value = adapter.get("community_config")
         legacy = None
         already = legacy_value == str(shared)
