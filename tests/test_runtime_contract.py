@@ -32,6 +32,11 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertTrue(result.startswith("MISSING:"), result)
         self.assertIn("Admission lacks inspect", result)
 
+    def test_missing_lifetime_observation_is_rejected(self):
+        result = self.probe("from mindie_knowledge.loop import locks\ndel locks.lock_held\n")
+        self.assertTrue(result.startswith("MISSING:"), result)
+        self.assertIn("locks lacks lock_held", result)
+
 
 if __name__ == "__main__":
     unittest.main()

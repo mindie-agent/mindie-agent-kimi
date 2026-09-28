@@ -41,11 +41,14 @@ if not missing:
     from mindie_knowledge.loop.engine import Engine
     from mindie_knowledge.loop.activation import Admission
     from mindie_knowledge.loop import cli
+    from mindie_knowledge.loop import locks
     from mindie_knowledge.loop import settings as _settings
     if not callable(getattr(Engine, "stop_if_idle", None)):
         missing.append("core engine lacks the stop_if_idle API")
     if not callable(getattr(cli, "load_transcript_adapter", None)):
         missing.append("core cli lacks load_transcript_adapter")
+    if not callable(getattr(locks, "lock_held", None)):
+        missing.append("core locks lacks lock_held")
     if not callable(getattr(_settings, "CommunityWriteContext", None)):
         missing.append("core settings lack the CommunityWriteContext API")
     for method in ("activate", "deactivate", "active_lease", "claim", "inspect", "check"):
