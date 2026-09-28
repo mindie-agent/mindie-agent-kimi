@@ -160,7 +160,9 @@ def canonical(value):
 
 
 def send(message):
-    print(canonical(message), flush=True)
+    # MCP is UTF-8 JSON Lines even when Windows redirects a cp1252 console.
+    sys.stdout.buffer.write((canonical(message) + "\n").encode("utf-8"))
+    sys.stdout.buffer.flush()
 
 
 def failure(exc):
