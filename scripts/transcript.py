@@ -231,7 +231,7 @@ def _fork_boundary(path) -> float | None:
     """Inherited material ends at the fork session's createdAt (seconds)."""
     try:
         state_path = Path(path).resolve().parents[2] / "state.json"
-        data = json.loads(state_path.read_text())
+        data = json.loads(state_path.read_text(encoding='utf-8'))
     except (OSError, ValueError, IndexError):
         return None
     if not isinstance(data, dict):

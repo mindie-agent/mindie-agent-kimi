@@ -208,7 +208,7 @@ def build_runtime(generation: Path, deadline: float) -> Path:
     if sys.version_info < MIN_PYTHON:
         raise CheckFailed(f"Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]}+ is required")
     requirements = generation / "runtime-requirements.txt"
-    text = requirements.read_text()
+    text = requirements.read_text(encoding='utf-8')
     if re.search(r"@main\b", text):
         raise CheckFailed("runtime-requirements.txt must pin full commit SHAs, not @main")
     venv = generation / ".venv"
@@ -317,7 +317,7 @@ def build_host_package(generation: Path, adapter: dict, sha: str,
     if package.exists():
         shutil.rmtree(package)
     package.mkdir(parents=True)
-    manifest = json.loads((generation / "kimi.plugin.json").read_text())
+    manifest = json.loads((generation / "kimi.plugin.json").read_text(encoding='utf-8'))
     base = str(manifest.get("version") or "0.1.0").split("+")[0]
     manifest["version"] = f"{base}+mindie.{sha[:12]}"
     base_python = sys.executable
@@ -511,7 +511,7 @@ def native_install(adapter: dict, package: Path, deadline: float,
     if not isinstance(home, str) or not home:
         raise CheckFailed("adapter configuration lacks kimi_home for native install")
     package = package.resolve()
-    manifest = json.loads((package / "kimi.plugin.json").read_text())
+    manifest = json.loads((package / "kimi.plugin.json").read_text(encoding='utf-8'))
     try:
         output = bounded_run(
             [sys.executable, str(HERE / "install_kimi_plugin.py"),
@@ -1123,7 +1123,7 @@ def recover() -> int:
 def install_schedule(config_file=None) -> int:
     if config_file is not None:
         config_file = Path(config_file).expanduser().absolute()
-        adapter = json.loads(config_file.read_text())
+        adapter = json.loads(config_file.read_text(encoding='utf-8'))
         if not isinstance(adapter, dict):
             raise SystemExit("adapter configuration must be one JSON object")
     else:

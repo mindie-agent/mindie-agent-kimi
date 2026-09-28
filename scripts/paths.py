@@ -25,7 +25,7 @@ def load_adapter_config() -> dict:
     path = config_path()
     if not path.is_file():
         raise FileNotFoundError("MindIE Kimi adapter configuration is missing")
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding='utf-8'))
     if not isinstance(data, dict):
         raise ValueError("adapter configuration must be one JSON object")
     return data
@@ -41,7 +41,7 @@ def engine_config_path(config=None) -> Path:
 
 def load_engine_config(config=None) -> dict:
     path = engine_config_path(config)
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding='utf-8'))
     if not isinstance(data, dict) or not {"root", "domain"} <= set(data):
         raise ValueError("engine configuration requires root and domain")
     if "session_activation" in data:

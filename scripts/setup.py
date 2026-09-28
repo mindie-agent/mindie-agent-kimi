@@ -127,7 +127,7 @@ def write_private(path, value, *, replace=False):
     path.parent.mkdir(parents=True, exist_ok=True)
     flags = os.O_WRONLY | os.O_CREAT | (os.O_TRUNC if replace else os.O_EXCL)
     descriptor = os.open(path, flags, 0o600)
-    with os.fdopen(descriptor, "w") as stream:
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
         json.dump(value, stream, ensure_ascii=False, indent=2)
         stream.write("\n")
 
@@ -268,7 +268,7 @@ def write_community(path, community, consent_config=None):
             )
             return "off"
         try:
-            on_disk = json.loads(Path(path).read_text())
+            on_disk = json.loads(Path(path).read_text(encoding='utf-8'))
             if not isinstance(on_disk, dict):
                 raise ValueError("community settings must be one JSON object")
             base = on_disk

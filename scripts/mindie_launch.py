@@ -119,7 +119,7 @@ def _config_path() -> Path:
 
 def _load_config():
     try:
-        data = json.loads(_config_path().read_text())
+        data = json.loads(_config_path().read_text(encoding='utf-8'))
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None
@@ -135,7 +135,7 @@ def _state_dir(config=None) -> Path:
         engine = config.get("engine_config")
         if isinstance(engine, str):
             try:
-                root = json.loads(Path(engine).read_text()).get("root")
+                root = json.loads(Path(engine).read_text(encoding='utf-8')).get("root")
                 if isinstance(root, str):
                     return Path(root) / "kimi-adapter"
             except (OSError, ValueError):
@@ -157,7 +157,7 @@ def _sharing_enabled() -> bool:
     if not path.is_file():
         return False
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding='utf-8'))
     except (OSError, ValueError):
         _record_hook("sharing-probe", "configuration")
         return False
@@ -171,7 +171,7 @@ def _sharing_enabled() -> bool:
     if not community_path.is_file():
         return False
     try:
-        raw = json.loads(community_path.read_text())
+        raw = json.loads(community_path.read_text(encoding='utf-8'))
     except (OSError, ValueError):
         _record_hook("sharing-probe", "configuration")
         return False
@@ -264,7 +264,7 @@ def _release(descriptor) -> None:
 
 def _current(state: Path) -> dict:
     try:
-        data = json.loads((state / "update" / "current.json").read_text())
+        data = json.loads((state / "update" / "current.json").read_text(encoding='utf-8'))
     except (OSError, ValueError):
         data = None
     if isinstance(data, dict):

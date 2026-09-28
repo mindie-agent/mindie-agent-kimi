@@ -150,7 +150,7 @@ def session_state(session_id: str, *, kimi_home=None) -> dict:
     if not path.is_file():
         return {}
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding='utf-8'))
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}

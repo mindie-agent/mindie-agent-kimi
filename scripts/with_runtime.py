@@ -35,7 +35,7 @@ def main(argv=None):
     python = sys.executable
     if path.is_file():
         try:
-            configured = json.loads(path.read_text()).get("python")
+            configured = json.loads(path.read_text(encoding='utf-8')).get("python")
         except (OSError, ValueError, TypeError):
             configured = None
         if isinstance(configured, str) and configured:

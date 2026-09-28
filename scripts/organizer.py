@@ -151,7 +151,7 @@ def prepare_isolated_home(base: Path) -> Path:
     config_path = source / "config.toml"
     if not config_path.is_file():
         raise RuntimeError("native Kimi config.toml is missing; organizer cannot resolve a model")
-    parsed = tomllib.loads(config_path.read_text())
+    parsed = tomllib.loads(config_path.read_text(encoding='utf-8'))
     providers = parsed.get("providers") if isinstance(parsed.get("providers"), dict) else {}
     models = parsed.get("models") if isinstance(parsed.get("models"), dict) else {}
     provider = providers.get(PROVIDER)

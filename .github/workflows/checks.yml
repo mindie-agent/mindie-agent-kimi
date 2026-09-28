@@ -29,12 +29,16 @@ jobs:
           python-version: "3.13"
       - name: Install pinned runtime
         run: pip install -r runtime-requirements.txt
+      - name: Compile all committed Python
+        run: python -m compileall -q scripts tests
       - name: Pin preflight
         env:
           MINDIE_PEER_CC_REPO: ${{ github.workspace }}/peer-cc
         run: python tests/preflight.py
       - name: Installed runtime probe
         run: python -m unittest discover -s tests -p test_runtime_contract.py
+      - name: Unicode installation contract
+        run: python -m unittest discover -s tests -p test_unicode_install.py
       - name: Install Node for native launch
         if: runner.os != 'macOS'
         uses: actions/setup-node@v4
