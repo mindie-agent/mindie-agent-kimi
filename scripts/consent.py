@@ -10,8 +10,8 @@ one-time boundary migration) are delegated to the ONE shared
 implementation: the selected runtime's ``mindie_knowledge.consent_store``
 in normal operation, or the byte-identical bootstrap copy
 ``scripts/consent_store_bootstrap.py`` (source: knowledge repo
-``mindie_knowledge/consent_store.py`` @ 0df968a03008a170bb52d4acade7c7226eb0d39b,
-SHA-256 c5caf974705ff08615fc33e49a0ec28dd5b070b55ff70d1beaff5c4fb0d8a65e)
+``mindie_knowledge/consent_store.py`` @ 94ba6c01728d1e805801c879d9fabb131973f633,
+SHA-256 0a979620b415e1faf9f7366d23580d498ddee9089f34fc35e03614bff1166b94)
 when the runtime cannot be loaded before first setup. Do not hand-edit the
 copy and do not fork the semantics here.
 

@@ -209,8 +209,7 @@ def _try_lock_shared(descriptor) -> None:
 
         # Real Windows byte lock (not verified on real hardware). LK_NBLCK is
         # exclusive; that is fail-closed relative to POSIX LOCK_SH.
-        if os.fstat(descriptor).st_size == 0:
-            os.write(descriptor, b"\0")
+        # Byte-range locks may extend beyond EOF; never write before owning it.
         os.lseek(descriptor, 0, os.SEEK_SET)
         msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
         return
@@ -610,7 +609,22 @@ def _read_mcp_line(stdin, limit: int):
 
 def _mcp(surface: str) -> int:
     output_fd = sys.stdout.fileno()
-    if os.name == "posix":
+    if os.name == "nt":
+        # Match POSIX nonblocking output on Python 3.11 as well (Python's
+        # os.set_blocking gained Windows pipe support only in 3.12).
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.SetNamedPipeHandleState.argtypes = [
+            wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD),
+            ctypes.c_void_p, ctypes.c_void_p,
+        ]
+        mode = wintypes.DWORD(1)  # PIPE_NOWAIT, byte stream
+        if not kernel.SetNamedPipeHandleState(
+                msvcrt.get_osfhandle(output_fd), ctypes.byref(mode), None, None):
+            raise ctypes.WinError(ctypes.get_last_error())
+    else:
         os.set_blocking(output_fd, False)
     stdin = sys.stdin.buffer
     output_lock = threading.Lock()
@@ -637,7 +651,10 @@ def _mcp(surface: str) -> int:
                     transport_closed.wait(0.02)
                     continue
                 if not count:
-                    raise BrokenPipeError("response transport closed")
+                    # A full Windows byte pipe can accept zero bytes.
+                    # A closed peer raises OSError; preserve unsent bytes.
+                    transport_closed.wait(0.02)
+                    continue
                 data = data[count:]
         finally:
             output_lock.release()
@@ -822,6 +839,14 @@ def _updater(rest) -> int:
         print("committed generation lacks updater.py", file=sys.stderr)
         return 2
     try:
+        if os.name == "nt":
+            # Windows execve is a CRT spawn emulation. Its environment path
+            # can crash before the updater starts; CreateProcess also keeps
+            # argv quoting intact. The updater owns its operation deadlines.
+            import subprocess
+            return subprocess.call(
+                [current["python"], str(script), *rest], env=_child_env(current),
+            )
         os.execve(
             current["python"],
             [current["python"], str(script), *rest],

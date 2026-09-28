@@ -11,6 +11,53 @@ SCRIPTS = ROOT / "scripts"
 FIXTURES = ROOT / "tests" / "fixtures"
 
 
+def deny_read(path):
+    if os.name != "nt":
+        path.chmod(0)
+        return
+    import csv
+    sid = list(csv.reader(subprocess.check_output(
+        ["whoami", "/user", "/fo", "csv", "/nh"], text=True).splitlines()))[0][1]
+    if not sid.startswith("S-1-"):
+        raise AssertionError("current user SID unavailable")
+    subprocess.run(["icacls", str(path), "/deny", f"*{sid}:(RD)"],
+                   check=True, capture_output=True)
+
+
+def allow_read(path):
+    if os.name != "nt":
+        path.chmod(0o600)
+        return
+    import csv
+    sid = list(csv.reader(subprocess.check_output(
+        ["whoami", "/user", "/fo", "csv", "/nh"], text=True).splitlines()))[0][1]
+    subprocess.run(["icacls", str(path), "/remove:d", "*" + sid],
+                   check=True, capture_output=True)
+
+
+def windows_process_alive(pid):
+    """Observe without sending a signal; os.kill(pid, 0) kills on Windows."""
+    import ctypes
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel.OpenProcess(0x100000, False, pid)
+    if not handle:
+        if ctypes.get_last_error() == 87:
+            return False
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        state = kernel.WaitForSingleObject(handle, 0)
+        if state not in (0, 258):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return state == 258
+    finally:
+        kernel.CloseHandle(handle)
+
+
 def close_diagnostic_writers(root):
     """Release only this fixture's cached log writers before deleting its root.
 

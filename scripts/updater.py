@@ -360,6 +360,25 @@ def build_host_package(generation: Path, adapter: dict, sha: str,
     return package
 
 
+def _remove_owned_tree(path):
+    """Remove an owned generation, including Windows read-only Git objects.
+
+    Other failures remain visible; an incomplete generation must not be
+    silently retained and mistaken for a successfully cleaned candidate.
+    """
+    import stat
+
+    def retry_readonly(function, filename, exc_info):
+        error = exc_info[1]
+        mode = Path(filename).lstat().st_mode
+        if not isinstance(error, PermissionError) or not stat.S_ISREG(mode) or mode & stat.S_IWRITE:
+            raise error
+        os.chmod(filename, mode | stat.S_IWRITE)
+        function(filename)
+
+    shutil.rmtree(path, onerror=retry_readonly)
+
+
 def stage_generation(sha: str, remote: str, adapter: dict, deadline: float,
                      build=build_runtime) -> tuple[Path, Path, Path]:
     """Returns (generation, venv python, generation adapter config)."""
@@ -369,9 +388,9 @@ def stage_generation(sha: str, remote: str, adapter: dict, deadline: float,
         gen_adapter = target / "config" / "kimi.adapter.json"
         if python.exists() and gen_adapter.is_file():
             return target, python, gen_adapter
-        shutil.rmtree(target)
+        _remove_owned_tree(target)
     elif target.exists():
-        shutil.rmtree(target)
+        _remove_owned_tree(target)
     staging = generations_dir(adapter) / f".staging-{sha}-{os.getpid()}"
     staging.mkdir(parents=True, exist_ok=False)
     try:
@@ -384,7 +403,7 @@ def stage_generation(sha: str, remote: str, adapter: dict, deadline: float,
              deadline=deadline, cwd=staging)
         os.replace(staging, target)
     except Exception:
-        shutil.rmtree(staging, ignore_errors=True)
+        _remove_owned_tree(staging)
         raise
     try:
         python = build(target, deadline)
@@ -394,7 +413,7 @@ def stage_generation(sha: str, remote: str, adapter: dict, deadline: float,
         (target / COMPLETE).write_text(f"{sha}\n")
         return target, python, gen_adapter
     except Exception:
-        shutil.rmtree(target, ignore_errors=True)
+        _remove_owned_tree(target)
         raise
 
 

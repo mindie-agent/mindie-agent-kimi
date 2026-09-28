@@ -137,7 +137,7 @@ class TranscriptTests(unittest.TestCase):
             )
             first = transcript.read_material(str(wire), 0, session_id="ses_part")
             cursor = first["end"]
-            with wire.open("a") as stream:
+            with wire.open("a", encoding="utf-8", newline="\n") as stream:
                 stream.write('{"type":"context.append_message","message":{"role":"user"')
             pending = transcript.read_material(str(wire), cursor, session_id="ses_part")
             self.assertEqual(pending["status"], "ok")
@@ -162,7 +162,7 @@ class TranscriptTests(unittest.TestCase):
                     origin=dict(kind="user"),
                 ),
             )
-            with wire.open("a") as stream:
+            with wire.open("a", encoding="utf-8", newline="\n") as stream:
                 stream.write(json.dumps(complete) + "\n")
                 stream.write('{"type":"context.append_message","message":{"role":"assistant"')
             page = transcript.read_material(str(wire), cursor, session_id="ses_tail")

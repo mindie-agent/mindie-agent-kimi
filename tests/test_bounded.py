@@ -16,6 +16,9 @@ import bounded  # noqa: E402
 
 
 def _alive(pid: int) -> bool:
+    if os.name == "nt":
+        from support import windows_process_alive
+        return windows_process_alive(pid)
     try:
         os.kill(pid, 0)
     except OSError:

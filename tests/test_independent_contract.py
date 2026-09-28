@@ -24,7 +24,7 @@ from contract_support import pad_records as _pad_records
 from contract_support import skill_origin as _skill_origin
 from contract_support import user_record as _user_record
 from support import (
-    SCRIPTS,
+    SCRIPTS, close_diagnostic_writers, deny_read, allow_read,
     make_config,
     plugin_origin,
     run_bridge,
@@ -95,26 +95,6 @@ def _peer_cc_scripts(dest: Path) -> Path:
     return scripts
 
 
-def _pids_with_file_open(path: Path) -> set[str]:
-    """PIDs that currently have ``path`` open.
-
-    ``lsof -n -P`` skips DNS and service lookups. Without those flags one
-    call can stall past the 5s profile-lock wait on both Linux and macOS,
-    so the waiter exits before this test sees it. Exit status 1 means the
-    file is not open; that is not a skip. A missing ``lsof`` is an error.
-    """
-    try:
-        listed = subprocess.run(
-            ["lsof", "-n", "-P", "-w", "-t", "--", os.fspath(path)],
-            capture_output=True, text=True, timeout=2, check=False,
-        )
-    except FileNotFoundError as exc:
-        raise AssertionError(
-            "lsof is required to observe the profile lock and is not installed"
-        ) from exc
-    except subprocess.TimeoutExpired:
-        return set()
-    return {token for token in listed.stdout.split() if token.isdigit()}
 
 
 SENTINEL = "PUBLIC_NOTE_grok_kimi_7c1e"
@@ -123,6 +103,7 @@ CHILD_SENTINEL = "CHILD_ONLY_NOTE_grok_kimi_22bb"
 MODEL_MARK = b"\n@@GROK_KIMI_MODEL@@\n"
 ENV_KEYS = (
     "HOME",
+    "USERPROFILE",
     "XDG_CONFIG_HOME",
     "XDG_DATA_HOME",
     "XDG_STATE_HOME",
@@ -189,6 +170,10 @@ def _kill_wakes(root: Path) -> None:
         for key in ("service_pid", "wake_pid"):
             pid = data.get(key)
             if not isinstance(pid, int) or pid <= 1:
+                continue
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                               capture_output=True, timeout=5)
                 continue
             for sig in (signal.SIGTERM, signal.SIGKILL):
                 try:
@@ -371,6 +356,7 @@ class LaneIsolation(unittest.TestCase):
         home = self.tmp / "home"
         home.mkdir()
         os.environ["HOME"] = str(home)
+        os.environ["USERPROFILE"] = str(home)
         os.environ["XDG_CONFIG_HOME"] = str(self.tmp / "xdg")
         os.environ["XDG_DATA_HOME"] = str(self.tmp / "data")
         os.environ["XDG_STATE_HOME"] = str(self.tmp / "xdg-state")
@@ -386,6 +372,7 @@ class LaneIsolation(unittest.TestCase):
             sys.modules.pop(name, None)
 
     def tearDown(self):
+        close_diagnostic_writers(self.tmp / "diag-root")
         for key, value in self._saved.items():
             if value is None:
                 os.environ.pop(key, None)
@@ -503,7 +490,7 @@ class ConsentGateTests(LaneIsolation):
                         path = _write_consent(
                             self.tmp, choice="contribute", reporting="disabled",
                         )
-                        path.chmod(0)
+                        deny_read(path)
                     else:
                         _write_consent(self.tmp, **spec)
                     _attach_consent_pointer(self.tmp)
@@ -513,7 +500,7 @@ class ConsentGateTests(LaneIsolation):
                     captures, calls, text = self._run(session, project, home, log)
                 finally:
                     if path is not None:
-                        path.chmod(0o600)
+                        allow_read(path)
                 if calls or captures or SENTINEL in text:
                     failures.append(dict(
                         case=name,
@@ -559,11 +546,11 @@ class ConsentGateTests(LaneIsolation):
         engine_before = (self.tmp / "kimi.engine.json").read_bytes()
         shared = consent.shared_community_path()
         legacy = consent.configured_community_path()
-        legacy.chmod(0)
+        deny_read(legacy)
         try:
             adopted = consent.adopt_community_settings()
         finally:
-            legacy.chmod(0o644)
+            allow_read(legacy)
         self.assertEqual(adopted["action"], "error", adopted)
         self.assertFalse(shared.exists())
         self.assertEqual((self.tmp / "kimi.json").read_bytes(), before)
@@ -642,7 +629,7 @@ class ConsentGateTests(LaneIsolation):
     def test_unreadable_configured_authority_is_not_replaced(self):
         project, log, home = self._arm("must not fall through")
         configured = self.tmp / "kimi.community.json"
-        configured.chmod(0)
+        deny_read(configured)
         sibling = self.tmp / "mindie-community.json"
         sibling.write_text(json.dumps(dict(
             schema="mindie-community-config/1",
@@ -658,7 +645,7 @@ class ConsentGateTests(LaneIsolation):
         try:
             captures, calls, _text = self._run("ses_gate", project, home, log)
         finally:
-            configured.chmod(0o600)
+            allow_read(configured)
         self.assertEqual(calls, 0, captures)
         self.assertEqual(captures, [])
 
@@ -1434,18 +1421,23 @@ class EntryBoundaryTests(LaneIsolation):
             "sys.path.insert(0, sys.argv[1])\n"
             "os.environ['MINDIE_KIMI_CONFIG'] = sys.argv[2]\n"
             "import consent\n"
+            "import mindie_knowledge.consent_store as store\n"
+            "real_lock = store._lock_file_nb\n"
+            "def observe_lock(fd):\n"
+            "    try: return real_lock(fd)\n"
+            "    except OSError:\n"
+            "        open(sys.argv[3], 'w').close()\n"
+            "        raise\n"
+            "store._lock_file_nb = observe_lock\n"
             "consent.adopt_community_settings()\n"
         )
+        waiting = self.tmp / "real-lock-contended"
         proc = subprocess.Popen(
-            [sys.executable, "-c", script, str(SCRIPTS), str(adapter_path)],
+            [sys.executable, "-c", script, str(SCRIPTS), str(adapter_path), str(waiting)],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
-        # The child opens the lock file as soon as it enters the profile
-        # boundary, then waits up to 5s. Startup (imports) may be slower
-        # than that wait, so this deadline covers startup only. The marker
-        # is written after the child's pid is on the lock file and before
-        # this process releases it.
-        lock_path = shared.with_name(shared.name + ".lock").resolve()
+        # Observe a real kernel-lock contention, without replacing its result.
+        # This white-box barrier does not depend on lsof or startup timing.
         blocked = False
         err = ""
         try:
@@ -1453,7 +1445,7 @@ class EntryBoundaryTests(LaneIsolation):
             while time.monotonic() < deadline:
                 if proc.poll() is not None:
                     break
-                if str(proc.pid) in _pids_with_file_open(lock_path):
+                if waiting.exists():
                     blocked = True
                     break
                 time.sleep(0.05)

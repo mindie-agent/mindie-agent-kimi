@@ -9,7 +9,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -25,19 +25,25 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.13"
       - name: Install pinned runtime
         run: pip install -r runtime-requirements.txt
-      - name: Ensure lsof
-        shell: bash
-        run: |
-          if ! command -v lsof >/dev/null 2>&1; then
-            if command -v apt-get >/dev/null 2>&1; then
-              sudo apt-get update
-              sudo apt-get install -y lsof
-            fi
-          fi
-          command -v lsof
+      - name: Pin preflight
+        env:
+          MINDIE_PEER_CC_REPO: ${{ github.workspace }}/peer-cc
+        run: python tests/preflight.py
+      - name: Installed runtime probe
+        run: python -m unittest discover -s tests -p test_runtime_contract.py
+      - name: Install Node for native launch
+        if: runner.os != 'macOS'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Native launch
+        if: runner.os != 'macOS'
+        run: python -m unittest discover -s tests/native -v
+      - name: Real transport cancellation and backpressure
+        run: python -m unittest discover -s tests -p test_front_control.py -v
       - name: Component tests
         env:
           MINDIE_PEER_CC_REPO: ${{ github.workspace }}/peer-cc

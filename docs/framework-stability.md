@@ -31,12 +31,19 @@ SQLite requirement. Install `pip install -e '.[test]'` for core, or
 ```sh
 export MINDIE_PEER_CC_REPO=/path/to/mindie-agent-cc
 # The checkout must contain 3e36a285e2effe47bc442079a4ed7f42ced9caaf.
-# lsof is required by the controlled cross-process lock test.
+# Node.js is required for the real MCP launch tests.
+python tests/preflight.py
+python -m unittest discover -s tests -p test_runtime_contract.py
+python -m unittest discover -s tests/native -v
 python -m unittest discover -s tests
 ```
 
-Tests use committed real parser/peer fixtures or exact Git revisions declared
-in the workflow. They do not discover a user's production installation.
+`preflight.py` checks the peer commit is present (`git cat-file`, not an
+ancestry requirement) and that installed pins match. Exit 2 does not start
+the suite and does not search a sibling checkout. CI runs the installed
+probe, then `tests/native` with Node, then the full suite, in that order
+in one job. The lock barrier observes real OS contention. A registry
+readback alone does not prove that the host can launch the MCP transport.
 Missing dependencies fail explicitly. Keep failure-path, concurrency and
 recovery cases bounded and deterministic; model sessions are reserved for
 checks that actually need a native host.

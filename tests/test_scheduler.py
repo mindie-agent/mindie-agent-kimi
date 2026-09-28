@@ -64,6 +64,7 @@ class SchedulerLauncherTests(unittest.TestCase):
         home.mkdir(exist_ok=True)
         with mock.patch.object(updater, "bounded_run", side_effect=fake_run), \
              mock.patch.object(updater.sys, "platform", "darwin"), \
+             mock.patch.object(updater.os, "getuid", return_value=1000, create=True), \
              mock.patch("pathlib.Path.home", return_value=home):
             code = updater.install_schedule(self.config_path)
         plist = home / "Library" / "LaunchAgents" / "agent.mindie.kimi-update.plist"

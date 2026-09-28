@@ -193,12 +193,16 @@ class SetupInstallTests(unittest.TestCase):
             self.assertEqual(Path(args[0]), launcher_dir / "mindie_launch.py")
             self.assertEqual(args[1:4], ["--config", str(config), "mcp"])
             command = manifest["mcpServers"]["knowledge"]["command"]
-            self.assertTrue(command.startswith("./"), command)
-            self.assertTrue((package / command[2:]).is_file())
+            if os.name == "nt":
+                self.assertEqual(command, Path(sys.executable).name)
+            else:
+                self.assertTrue(command.startswith("./"), command)
+                self.assertTrue((package / command[2:]).is_file())
             hook = next(h for h in manifest["hooks"] if h.get("event") == "Stop")
             self.assertIn("--config", hook["command"])
             self.assertIn(str(config), hook["command"])
 
+    @unittest.skipUnless(os.name == "posix", "POSIX shell host; native Windows tree has separate real coverage")
     def test_install_helper_timeout_leaves_no_web_child(self):
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)

@@ -81,15 +81,9 @@ def make_remote(tmp: Path):
 
 
 def fake_build(generation: Path, deadline: float) -> Path:
-    # Test seam for updater's `build` parameter (no network in tests):
-    # a wrapper that execs the installed acceptance runtime, which already
-    # provides the pinned mindie_knowledge/remote_dev. Production uses the
-    # real updater.build_runtime (fresh venv + pinned pip install).
-    python = generation / ".venv" / "bin" / "python"
-    python.parent.mkdir(parents=True, exist_ok=True)
-    python.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
-    python.chmod(0o755)
-    return python
+    # Only dependency installation is replaced. Probe, idle handshake,
+    # manifest and transaction paths still execute the real pinned runtime.
+    return Path(sys.executable)
 
 
 class UpdaterTests(unittest.TestCase):
@@ -158,7 +152,7 @@ class UpdaterTests(unittest.TestCase):
         generation = Path(current["generation"])
         self.assertTrue((generation / updater.COMPLETE).is_file())
         self.assertEqual(current["python"],
-                         str(generation / ".venv" / "bin" / "python"))
+                         str(Path(sys.executable)))
         gen_adapter = Path(current["adapter_config"])
         self.assertEqual(gen_adapter, generation / "config" / "kimi.adapter.json")
         # Generation adapter keeps stable state paths, new interpreter.
@@ -188,9 +182,13 @@ class UpdaterTests(unittest.TestCase):
         )
         command = manifest["mcpServers"]["knowledge"]["command"]
         self.assertTrue(updater.host_valid_mcp_command(command), command)
-        self.assertTrue(command.startswith("./"))
-        wrapper = self.installs[0][0] / command[2:]
-        self.assertTrue(wrapper.is_file())
+        if os.name == "nt":
+            self.assertEqual(command, Path(sys.executable).name)
+            wrapper = Path(sys.executable)
+        else:
+            self.assertTrue(command.startswith("./"))
+            wrapper = self.installs[0][0] / command[2:]
+            self.assertTrue(wrapper.is_file())
         launched = subprocess.run(
             [str(wrapper), "-c", "import sys; print(sys.executable)"],
             capture_output=True, text=True, timeout=5, check=True,

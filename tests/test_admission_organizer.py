@@ -120,7 +120,8 @@ class AdmissionOrganizerTests(unittest.TestCase):
             config = isolated / "config.toml"
             self.assertTrue(config.is_file())
             mode = config.stat().st_mode
-            self.assertEqual(stat.S_IMODE(mode), 0o600)
+            if os.name == "posix":
+                self.assertEqual(stat.S_IMODE(mode), 0o600)
             text = config.read_text()
             self.assertIn("managed:kimi-code", text)
             self.assertIn("kimi-code/k3", text)
