@@ -39,5 +39,13 @@ the account's weekly quota (HTTP 403); it must be repeated when quota is
 available. Read-only feed synchronization is separate: isolated installs using
 `--no-schedule` need an explicit sync/update check before retrieval acceptance.
 
+The same native lane also checks Windows descendant ownership after the leader
+exits, for normal exit and inherited-pipe timeout. The stdlib front uses a
+suspended start, establishes a Windows Job, and then resumes execution. Late
+Job assignment was reproduced as a race; a Job must exist before execution.
+The initial 0.5-second timeout needed external cleanup after four seconds;
+the repaired probe returned in 0.704 seconds. All three native tests passed
+in 2.084 seconds, including both process terminal states.
+
 Host references: [plugin command rules](https://moonshotai.github.io/kimi-code/en/customization/plugins.html)
 and [MCP child environment](https://moonshotai.github.io/kimi-code/en/customization/mcp).
