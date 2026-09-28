@@ -34,7 +34,7 @@ from support import (
 )
 
 REPO = Path(__file__).resolve().parents[1]
-CC_COMMIT = "2d9b091fd0b3dd5b2f4ce03d4162ce2a27e5c826"
+CC_COMMIT = "3e36a285e2effe47bc442079a4ed7f42ced9caaf"
 
 
 def _peer_cc_scripts(dest: Path) -> Path:
@@ -93,6 +93,30 @@ def _peer_cc_scripts(dest: Path) -> Path:
             f"commit {CC_COMMIT} in {repo} has no scripts/consent.py."
         )
     return scripts
+
+
+def _pids_with_file_open(path: Path) -> set[str]:
+    """PIDs that currently have ``path`` open.
+
+    ``lsof -n -P`` skips DNS and service lookups. Without those flags one
+    call can stall past the 5s profile-lock wait on both Linux and macOS,
+    so the waiter exits before this test sees it. Exit status 1 means the
+    file is not open; that is not a skip. A missing ``lsof`` is an error.
+    """
+    try:
+        listed = subprocess.run(
+            ["lsof", "-n", "-P", "-w", "-t", "--", os.fspath(path)],
+            capture_output=True, text=True, timeout=2, check=False,
+        )
+    except FileNotFoundError as exc:
+        raise AssertionError(
+            "lsof is required to observe the profile lock and is not installed"
+        ) from exc
+    except subprocess.TimeoutExpired:
+        return set()
+    return {token for token in listed.stdout.split() if token.isdigit()}
+
+
 SENTINEL = "PUBLIC_NOTE_grok_kimi_7c1e"
 PARENT_SENTINEL = "PARENT_ONLY_NOTE_grok_kimi_11aa"
 CHILD_SENTINEL = "CHILD_ONLY_NOTE_grok_kimi_22bb"
@@ -1416,25 +1440,28 @@ class EntryBoundaryTests(LaneIsolation):
             [sys.executable, "-c", script, str(SCRIPTS), str(adapter_path)],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
+        # The child opens the lock file as soon as it enters the profile
+        # boundary, then waits up to 5s. Startup (imports) may be slower
+        # than that wait, so this deadline covers startup only. The marker
+        # is written after the child's pid is on the lock file and before
+        # this process releases it.
+        lock_path = shared.with_name(shared.name + ".lock").resolve()
+        blocked = False
+        err = ""
         try:
-            deadline = time.time() + 4
-            blocked = False
-            while time.time() < deadline:
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
                 if proc.poll() is not None:
                     break
-                listed = subprocess.run(
-                    ["lsof", "-t", str(shared.with_name(shared.name + ".lock"))],
-                    capture_output=True, text=True, timeout=5, check=False,
-                )
-                if str(proc.pid) in set(listed.stdout.split()):
+                if str(proc.pid) in _pids_with_file_open(lock_path):
                     blocked = True
                     break
                 time.sleep(0.05)
-            self.assertTrue(blocked, "adopt did not reach the profile lock")
-            current = json.loads(adapter_path.read_text())
-            current["lane_marker"] = "keep-me"
-            current["community_config"] = str(shared.resolve())
-            adapter_path.write_text(json.dumps(current, indent=2) + "\n")
+            if blocked:
+                current = json.loads(adapter_path.read_text())
+                current["lane_marker"] = "keep-me"
+                current["community_config"] = str(shared.resolve())
+                adapter_path.write_text(json.dumps(current, indent=2) + "\n")
         finally:
             lock.__exit__(None, None, None)
             if proc.poll() is None:
@@ -1445,6 +1472,11 @@ class EntryBoundaryTests(LaneIsolation):
                     _out, err = proc.communicate()
             else:
                 _out, err = proc.communicate()
+        self.assertTrue(
+            blocked,
+            "adopt did not reach the profile lock"
+            + (f": {err.strip()[:400]}" if err else ""),
+        )
         self.assertEqual(proc.returncode, 0, err)
         saved = json.loads(adapter_path.read_text())
         self.assertEqual(
