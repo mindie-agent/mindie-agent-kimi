@@ -22,7 +22,7 @@ class McpTests(unittest.TestCase):
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
+            text=True, encoding="utf-8",
             env=env_for(config, extra=extra),
             cwd=str(SCRIPTS.parent),
         )
@@ -245,7 +245,7 @@ class McpTests(unittest.TestCase):
             result = subprocess.run(
                 [sys.executable, str(SCRIPTS / "mcp_server.py"), "knowledge", "--once"],
                 input=json.dumps(req) + "\n",
-                text=True,
+                text=True, encoding="utf-8",
                 capture_output=True,
                 timeout=8,
                 env=env_for(config),
@@ -286,7 +286,7 @@ class McpTests(unittest.TestCase):
                     )
                 )
                 + "\n",
-                text=True,
+                text=True, encoding="utf-8",
                 capture_output=True,
                 timeout=8,
                 env=env,
@@ -306,7 +306,7 @@ class McpTests(unittest.TestCase):
                     )
                 )
                 + "\n",
-                text=True,
+                text=True, encoding="utf-8",
                 capture_output=True,
                 timeout=8,
                 env=env,

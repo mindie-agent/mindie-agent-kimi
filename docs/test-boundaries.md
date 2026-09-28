@@ -34,6 +34,9 @@ this order inside the same job, so an early failure stops expensive work:
 
 No row proves every other row. A positive output case cannot establish timeout
 cleanup, and a live-leader timeout cannot establish ownership after leader exit.
+The full suite preserves the host's default text encoding. UTF-8 source files
+and protocol subprocess output are decoded explicitly; forcing the whole test
+process into UTF-8 mode would hide missing encoding boundaries on Chinese Windows.
 Windows liveness uses a waitable process handle; `os.kill(pid, 0)` is not a safe
 observation on Windows. Permission fixtures deny the numeric current-user SID,
 and test-owned diagnostics writers close before scratch removal.
