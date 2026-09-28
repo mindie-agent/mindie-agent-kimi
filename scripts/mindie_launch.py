@@ -21,7 +21,8 @@ The child gets MINDIE_KIMI_CONFIG=current.adapter_config and no PYTHONPATH.
 
 Windows uses a real msvcrt byte lock; if no real lock can be taken the call
 fails closed — unprotected dispatch is never executed. Windows process-tree
-protection lives in bounded.py (taskkill /T) and is not natively verified.
+protection lives in bounded.py (suspended start and owned Job); native process
+tests cover normal exit and timeout after the leader exits.
 """
 
 from __future__ import annotations
