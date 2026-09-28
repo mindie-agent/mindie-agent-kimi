@@ -13,10 +13,32 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      # Use the reviewed peer commit; publish dependency branches before CI.
+      # The test archives this exact revision and never substitutes main.
+      - name: Checkout fixed Claude peer
+        uses: actions/checkout@v4
+        with:
+          repository: mindie-agent/mindie-agent-cc
+          ref: 3e36a285e2effe47bc442079a4ed7f42ced9caaf
+          path: peer-cc
+          fetch-depth: 1
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       - name: Install pinned runtime
         run: pip install -r runtime-requirements.txt
+      - name: Ensure lsof
+        shell: bash
+        run: |
+          if ! command -v lsof >/dev/null 2>&1; then
+            if command -v apt-get >/dev/null 2>&1; then
+              sudo apt-get update
+              sudo apt-get install -y lsof
+            fi
+          fi
+          command -v lsof
       - name: Component tests
+        env:
+          MINDIE_PEER_CC_REPO: ${{ github.workspace }}/peer-cc
         run: python -m unittest discover -s tests

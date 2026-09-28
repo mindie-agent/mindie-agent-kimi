@@ -372,7 +372,7 @@ class HookTests(unittest.TestCase):
                 pass
         return events
 
-    def test_stop_paused_lease_is_recorded_not_inactive(self):
+    def test_stop_with_failure_counts_still_hands_off(self):
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
             diag = Path(raw).resolve() / "diag"
@@ -384,17 +384,19 @@ class HookTests(unittest.TestCase):
             import admission as admission_mod
             from paths import admission_path
 
-            admission_mod.activate("ses_paused", project_root=str(tmp.resolve()))
+            admission_mod.activate("ses_failed", project_root=str(tmp.resolve()))
             db = sqlite3.connect(admission_path())
-            db.execute("UPDATE leases SET failures=3 WHERE session='ses_paused'")
+            db.execute("UPDATE leases SET failures=3 WHERE session='ses_failed'")
             db.commit()
             db.close()
             captured = []
             self._run_stop_in_process(
                 config,
-                {"hook_event_name": "Stop", "session_id": "ses_paused", "cwd": str(tmp)},
+                {"hook_event_name": "Stop", "session_id": "ses_failed", "cwd": str(tmp)},
                 captured,
             )
-            self.assertEqual(captured, [])
+            # Failure counts never gate the Stop handoff anymore.
+            self.assertEqual(len(captured), 1)
+            self.assertEqual(captured[0][1]["session_id"], "ses_failed")
             events = self._diagnostic_events(diag)
-            self.assertTrue(any("admission-paused" in event for event in events), events)
+            self.assertFalse(any("admission-paused" in event for event in events), events)

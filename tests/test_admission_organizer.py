@@ -59,7 +59,7 @@ class AdmissionOrganizerTests(unittest.TestCase):
             self.assertIs(gate.claim("ses_keep", "stop", "turn-1", token=token), False)
             gate.finish("ses_keep", token, True)
 
-    def test_paused_activate_is_refused(self):
+    def test_failure_counts_never_block_reactivate(self):
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
             config = make_config(tmp)
@@ -71,9 +71,9 @@ class AdmissionOrganizerTests(unittest.TestCase):
             gate = admission_mod.gate()
             for _ in range(3):
                 gate.finish("ses_pause", lease["token"], False)
-            with self.assertRaises(ValueError) as caught:
-                admission_mod.activate("ses_pause", project_root=str(tmp.resolve()))
-            self.assertIn("paused", str(caught.exception).lower())
+            again = admission_mod.activate("ses_pause", project_root=str(tmp.resolve()))
+            self.assertEqual(again["token"], lease["token"])
+            self.assertTrue(again["enabled"])
 
     def test_core_transcript_loader_not_a_local_copy(self):
         with tempfile.TemporaryDirectory() as raw:

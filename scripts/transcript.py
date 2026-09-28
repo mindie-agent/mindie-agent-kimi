@@ -255,11 +255,16 @@ def read_material(
     max_scan_bytes=16777216,
     max_seconds=2.0,
     max_text_bytes=49152,
+    scan_until=None,
 ):
     if type(start) is not int or start < 0:
         raise ValueError("start must be a nonnegative offset")
     if not 1024 <= max_scan_bytes <= 64 * 1024 * 1024 or not 0 < max_seconds <= 30:
         raise ValueError("invalid scan budget")
+    if scan_until is not None and (
+        type(scan_until) is not int or scan_until < start
+    ):
+        raise ValueError("scan_until must be an exact byte boundary at or after start")
     if not 16384 <= max_text_bytes <= MAX_TEXT:
         raise ValueError("invalid text budget")
     boundary = to_seconds(not_before) if not_before is not None else None
@@ -341,6 +346,8 @@ def read_material(
             middle = start > 0 and stream.read(1) != b"\n"
             stream.seek(start)
             end_limit = min(stat.st_size, start + max_scan_bytes)
+            if scan_until is not None:
+                end_limit = min(end_limit, scan_until)
             while stream.tell() < end_limit and time.monotonic() - begun < max_seconds:
                 offset = stream.tell()
                 room = end_limit - offset

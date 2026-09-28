@@ -30,7 +30,8 @@ from identity import (
     publish_nonce_bind,
     session_from_hook,
 )
-from paths import community_config_path, config_path
+from paths import config_path
+from consent import configured_community_path
 
 MAX_HOOK_BYTES = 128 * 1024
 SAFE_CAUSES = {
@@ -102,9 +103,6 @@ def _authorized_lease(session):
     status = view.get("status") if isinstance(view, dict) else None
     if status == "unavailable":
         return None, "admission-unreadable"
-    if status == "paused":
-        # An explicit circuit state, not inactivity and not contribution-off.
-        return None, "admission-paused"
     if status != "active":
         return None, None
     try:
@@ -142,7 +140,7 @@ def handle_stop():
         if lease is None:
             _print({})
             return 0
-        if not community_config_path().is_file():
+        if not configured_community_path().is_file():
             _print({})
             return 0
         settings = sharing_mod.load()

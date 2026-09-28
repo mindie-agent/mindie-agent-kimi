@@ -45,30 +45,33 @@ Configuration defaults to `~/.config/mindie-agent/`; local runtime data defaults
 to `~/.local/share/mindie-agent/kimi`. Setup supports `--community-*` after
 installation; no reinstall or hand-edited JSON is needed to opt in later.
 
+See [framework stability and verification](docs/framework-stability.md) for the
+current behavior, reproducible checks and acceptance boundaries.
+
 ## First use
 
-`/mindie-agent:init` — one `mindie_entry` MCP call bound by PreToolUse nonce
-and the current turn-opening `plugin_command` origin. No SessionStart model
-launch. Unconfigured status still works offline (sharing off, no service).
+Invoke `/mindie-agent` and continue your existing work; `/mindie-agent:init`
+is a compatibility alias. On the first use after installation, choose once
+whether to contribute, use knowledge read-only, or configure later. The saved
+choice applies to this installation across tasks, forks, restarts, updates
+and ordinary failures. Later entries bind the current native task internally
+and do not ask for authorization again. Unconfigured status works offline.
 
 Three choices: recommended public contribution, read-only, or later. Reply
-`read-only`/`later`, or run `/mindie-agent:init read-only|later`. Enabling
-contribution requires explicit repository, account, project root, and
-`--visibility public`.
-
-For example:
-
-```text
-/mindie-agent:sharing-enable --repository owner/repo --account USER --project-root /absolute/path --visibility public
-```
+`read-only`/`later`, or run `/mindie-agent read-only|later`. To contribute,
+name the public repository (`owner/repo`) and account in your reply — or run
+`/mindie-agent contribute owner/repo ACCOUNT`. The entry then enables
+sharing for the current project (public visibility). No separate CLI has to
+be learned for the first contribution.
 
 With sharing off there is no Stop transcript collection, capture or organizer
 model call. Public knowledge synchronization and remote-dev remain available.
 
 ## Tools
 
-Knowledge MCP requires init and a fresh `request_nonce`. Remote-dev is
-independent of knowledge activation and also requires `request_nonce`.
+The native entry handles task identity and tool binding internally. Users do
+not manage nonces or leases. Remote-dev remains available independently of
+knowledge entry and contribution settings.
 
 ## Updates
 

@@ -31,7 +31,7 @@ class StatusDiagnosticTests(unittest.TestCase):
             self.assertNotIn("choices", result)
             self.assertEqual(list(Path(raw).iterdir()), [config])
 
-    def test_paused_and_scoped_without_activation_or_replay(self):
+    def test_failure_counts_are_diagnostic_and_scoped_without_replay(self):
         from mindie_knowledge.loop.activation import Admission
         from mindie_knowledge.loop.store import Store, session_key
         with tempfile.TemporaryDirectory() as raw:
@@ -52,7 +52,8 @@ class StatusDiagnosticTests(unittest.TestCase):
             adapter = root / "adapter.json"
             adapter.write_text(json.dumps(dict(engine_config=str(engine), community_config=str(root / "community.json"), state_dir=str(root / "adapter-state"))))
             result = self._status(adapter, "task-A")
-            self.assertTrue(result["this_session"]["paused"])
+            self.assertTrue(result["this_session"]["bound"])
+            self.assertNotIn("paused", result["this_session"])
             self.assertEqual(result["this_session"]["failures"], 3)
             self.assertEqual([x["id"] for x in result["diagnostics"]["captures"]], [own["id"]])
             self.assertEqual(result["diagnostics"]["captures"][0]["category"], "deadline")
@@ -67,7 +68,7 @@ class StatusDiagnosticTests(unittest.TestCase):
             proc = subprocess.run([sys.executable, "-c", code, str(scripts)], env=env,
                                   capture_output=True, text=True, timeout=5)
             self.assertEqual(proc.returncode, 0, proc.stderr)
-            self.assertTrue(json.loads(proc.stdout)["this_session"]["paused"])
+            self.assertTrue(json.loads(proc.stdout)["this_session"]["bound"])
             self.assertEqual(admission.inspect("task-A")["failures"], 3)
             admission.deactivate("task-A")
             proc = subprocess.run([sys.executable, "-c", code, str(scripts)], env=env,

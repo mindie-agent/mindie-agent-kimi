@@ -43,12 +43,18 @@ KNOWLEDGE_TOOLS = [
     dict(
         name="mindie_entry",
         description=(
-            "Native MindIE entry. Mutations require the current /mindie-agent:* "
-            "command; op=status can diagnose an already enabled or paused task. "
+            "Native MindIE entry. Mutations require the current /mindie-agent "
+            "invocation; op=status can diagnose an already bound task. "
             "Requires a fresh request_nonce. Never pass a session id. "
-            "op=init returns first-use choices or status; op=choose stores "
-            "read-only or later; contribution requires sharing-enable with "
-            "repository, account, project root, and public visibility. "
+            "op=init binds this task internally and returns first-use choices "
+            "once or status; op=choose stores the one-time knowledge choice "
+            "(contribute/read-only/later/disabled) and optionally the "
+            "independent reporting choice. A conversational contribution "
+            "naming the public repository and account enables sharing for the "
+            "current project; via the entry itself the destination comes from "
+            "the native arguments (/mindie-agent contribute owner/repo "
+            "account). A saved choice persists across sessions, "
+            "restarts, upgrades and failures and is never re-asked. "
             "Status includes safe task failure categories and contribution batch IDs for recover inspection; it never retries work."
         ),
         inputSchema=dict(
@@ -71,7 +77,16 @@ KNOWLEDGE_TOOLS = [
                     ],
                 },
                 request_nonce=NONCE_PROP,
-                choice={"type": "string", "enum": ["read-only", "later"]},
+                choice={"type": "string", "enum": ["contribute", "read-only", "later", "disabled"]},
+                repository={
+                    "type": "string",
+                    "description": "Public owner/repo the user stated for contribution.",
+                },
+                account={
+                    "type": "string",
+                    "description": "Public account name the user stated for contribution.",
+                },
+                reporting={"type": "string", "enum": ["enabled", "disabled", "later"]},
                 arguments={"type": "string"},
             ),
             required=["op", "request_nonce"],
@@ -252,7 +267,10 @@ def knowledge_call(name, args, session):
 
     engine = load_engine_config()
     if Admission(admission_path(engine)).active_lease(session) is None:
-        raise ValueError("session is not manually activated")
+        raise ValueError(
+            "this task is not bound yet; invoke /mindie-agent once in this "
+            "task — the saved install-level choice is reused, nothing is re-asked"
+        )
     method = name.removeprefix("knowledge_")
 
     try:
@@ -355,6 +373,9 @@ def handle(surface, message):
                 body.get("op"),
                 body.get("arguments") or "",
                 body.get("choice"),
+                repository=body.get("repository"),
+                account=body.get("account"),
+                reporting=body.get("reporting"),
             )
             result = dict(
                 content=[dict(type="text", text=canonical(payload))],

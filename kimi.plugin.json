@@ -31,7 +31,7 @@
       "timeout": 2
     }
   ],
-  "systemPrompt": "MindIE Agent activates only from the native /mindie-agent:* slash command (plugin_command origin). Call mindie_entry with a fresh request_nonce for that command; never pass a session id. Remote-dev works without knowledge activation. Stop capture must not continue the turn.",
+  "systemPrompt": "MindIE Agent binds a task only from the native /mindie-agent entry (verified skill_activation or plugin_command origin). Call mindie_entry with a fresh request_nonce for that invocation; never pass a session id. The saved install-level choice persists and is never re-asked. Remote-dev works without the entry. Stop capture must not continue the turn.",
   "interface": {
     "displayName": "MindIE Agent",
     "shortDescription": "Domain knowledge, optional public contribution, and general remote-dev for Kimi Code",
