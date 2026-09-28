@@ -11,7 +11,7 @@ implementation: the selected runtime's ``mindie_knowledge.consent_store``
 in normal operation, or the byte-identical bootstrap copy
 ``scripts/consent_store_bootstrap.py`` (source: knowledge repo
 ``mindie_knowledge/consent_store.py`` @ 9beb317a2e6f0898cd8507f710e4ddb0f93a69f4,
-SHA-256 b6f309777d4ac56a73871c5aa7bb260ab3b7a6b3226ef33dc61eb86b2d200b2d)
+SHA-256 a9fb07a4fab173a3d5cfd583579ee4df09fd3d70106d208f8173c873ce6ba919)
 when the runtime cannot be loaded before first setup. Do not hand-edit the
 copy and do not fork the semantics here.
 
