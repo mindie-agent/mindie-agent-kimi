@@ -503,15 +503,21 @@ class UpdaterTests(unittest.TestCase):
         for name, server in manifest["mcpServers"].items():
             command = server["command"]
             self.assertTrue(updater.host_valid_mcp_command(command), command)
-            self.assertTrue(command.startswith("./"), command)
+            if os.name == "nt":
+                self.assertEqual(command, Path(sys.executable).name)
+                self.assertEqual(server["env"]["PATH"].split(os.pathsep)[0],
+                                 str(Path(sys.executable).parent))
+            else:
+                self.assertTrue(command.startswith("./"), command)
             self.assertFalse(os.path.isabs(command))
             self.assertEqual(Path(server["args"][0]), launcher)
             self.assertEqual(
                 server["args"][1:],
                 ["--config", str(self.config_path), "mcp", name],
             )
-            wrapper = pkg / command[2:]
-            self.assertTrue(wrapper.is_file())
+            if os.name != "nt":
+                wrapper = pkg / command[2:]
+                self.assertTrue(wrapper.is_file())
         self.assertFalse(updater.host_valid_mcp_command(sys.executable))
         self.assertFalse(updater.host_valid_mcp_command("/usr/bin/python3"))
         self.assertTrue(updater.host_valid_mcp_command("python3"))

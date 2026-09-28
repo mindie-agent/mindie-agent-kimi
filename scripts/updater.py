@@ -271,20 +271,16 @@ def host_valid_mcp_command(command: str) -> bool:
 
 
 def _write_front_wrapper(package: Path, python: Path) -> str:
-    """Package-relative wrapper that execs the retained front interpreter.
+    """POSIX package-relative wrapper for the retained front interpreter.
 
     Native command lookup cannot use an absolute interpreter path; the
     wrapper stays inside the copied plugin root and starts with './'.
     """
-    if os.name == "nt":
-        name = "mindie-front.cmd"
-        (package / name).write_text(f'@echo off\r\n"{python}" %*\r\n')
-    else:
-        name = "mindie-front"
-        (package / name).write_text(
-            f"#!/bin/sh\nexec {shlex.quote(str(python))} \"$@\"\n"
-        )
-        (package / name).chmod(0o755)
+    name = "mindie-front"
+    (package / name).write_text(
+        f"#!/bin/sh\nexec {shlex.quote(str(python))} \"$@\"\n"
+    )
+    (package / name).chmod(0o755)
     return f"./{name}"
 
 
@@ -325,13 +321,25 @@ def build_host_package(generation: Path, adapter: dict, sha: str,
     base = str(manifest.get("version") or "0.1.0").split("+")[0]
     manifest["version"] = f"{base}+mindie.{sha[:12]}"
     base_python = sys.executable
-    front = _write_front_wrapper(package, Path(base_python))
+    if os.name == "nt":
+        # Kimi's stdio transport uses shell=False. A .cmd wrapper passes the
+        # manifest validator but Node cannot spawn it (EINVAL). Its native
+        # schema supports PATH commands and child env: select the retained
+        # interpreter directory explicitly and pass every argument directly.
+        front = Path(base_python).name
+        front_env = {"PATH": str(Path(base_python).parent) + os.pathsep
+                     + os.environ.get("PATH", "")}
+    else:
+        front = _write_front_wrapper(package, Path(base_python))
+        front_env = None
     bound = ["--config", str(config_file)]
     for surface in ("knowledge", "remote"):
         manifest["mcpServers"][surface] = {
             "command": front,
             "args": [str(launcher), *bound, "mcp", surface],
         }
+        if front_env is not None:
+            manifest["mcpServers"][surface]["env"] = dict(front_env)
     quoted = _quote_front_command(base_python, launcher, config_file)
     for hook in manifest.get("hooks", []):
         op = {"PreToolUse": "pretool", "Stop": "stop"}.get(hook.get("event"))
