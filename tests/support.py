@@ -11,54 +11,20 @@ SCRIPTS = ROOT / "scripts"
 FIXTURES = ROOT / "tests" / "fixtures"
 
 
-def install_inspect_shim():
-    """Test-only seam: the pinned core predates Admission.inspect. Provide
-    the exact contract of the new-core inspect (status
-    active/paused/inactive/missing/unavailable, read-only, no token) so
-    adapter tests exercise the same path the merged core will serve."""
-    from mindie_knowledge.loop.activation import Admission
+def close_diagnostic_writers(root):
+    """Release only this fixture's cached log writers before deleting its root.
 
-    if getattr(Admission, "inspect", None) is not None:
+    Real hooks exit their process. In-process hook fixtures must explicitly
+    end that resource lifetime; Windows cannot unlink an open log file.
+    """
+    if not root:
         return
-    import sqlite3
+    import mindie_diagnostics.logging as diagnostic_logging
 
-    max_failures = getattr(
-        __import__("mindie_knowledge.loop.activation", fromlist=["MAX_FAILURES"]),
-        "MAX_FAILURES",
-        3,
-    )
-
-    def inspect(self, session):
-        result = dict(status="missing", enabled=False)
-        if not isinstance(session, str) or not session.strip() or len(session) > 256:
-            return dict(status="unavailable", enabled=False, error_class="ValueError")
-        db = None
-        try:
-            self.path.stat()
-            db = sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True, timeout=0.1)
-            row = db.execute(
-                "SELECT enabled, failures, project_root FROM leases WHERE session=? LIMIT 1",
-                (session,),
-            ).fetchone()
-            if row is not None:
-                enabled, failures, project_root = row
-                paused = bool(enabled) and failures >= max_failures
-                result = dict(
-                    status="paused" if paused else "active" if enabled else "inactive",
-                    enabled=bool(enabled) and not paused,
-                    failures=failures,
-                    project_root=project_root,
-                )
-        except FileNotFoundError:
-            pass
-        except (OSError, sqlite3.Error, TypeError) as exc:
-            result = dict(status="unavailable", enabled=False, error_class=type(exc).__name__)
-        finally:
-            if db is not None:
-                db.close()
-        return result
-
-    Admission.inspect = inspect
+    selected = Path(root).absolute()
+    for (_component, location), recorder in list(diagnostic_logging._FAILURE_RECORDERS.items()):
+        if Path(location) == selected:
+            recorder.close()
 
 
 def env_for(config=None, extra=None, kimi_home=None):

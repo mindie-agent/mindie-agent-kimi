@@ -1,5 +1,6 @@
 import json
 import os
+import shlex
 import sys
 import tempfile
 import unittest
@@ -335,7 +336,7 @@ class EntryTests(unittest.TestCase):
             config = make_config(tmp)
             os.environ["MINDIE_KIMI_CONFIG"] = str(config)
             args = (
-                f"--repository owner/repo --account acc --project-root {tmp} "
+                f"--repository owner/repo --account acc --project-root {shlex.quote(str(tmp))} "
                 "--visibility public"
             )
             self._home(

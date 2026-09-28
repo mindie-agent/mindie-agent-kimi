@@ -39,6 +39,7 @@ for name in {modules!r}:
         missing.append(f"{{name}} ({{type(exc).__name__}}: {{exc}})")
 if not missing:
     from mindie_knowledge.loop.engine import Engine
+    from mindie_knowledge.loop.activation import Admission
     from mindie_knowledge.loop import cli
     from mindie_knowledge.loop import settings as _settings
     if not callable(getattr(Engine, "stop_if_idle", None)):
@@ -47,6 +48,9 @@ if not missing:
         missing.append("core cli lacks load_transcript_adapter")
     if not callable(getattr(_settings, "CommunityWriteContext", None)):
         missing.append("core settings lack the CommunityWriteContext API")
+    for method in ("activate", "deactivate", "active_lease", "claim", "inspect", "check"):
+        if not callable(getattr(Admission, method, None)):
+            missing.append("core Admission lacks " + method)
 if not missing:
     try:
         module = cli.load_transcript_adapter({{"transcript_adapter": {parser!r}}})

@@ -3,16 +3,17 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
-from support import SCRIPTS, install_inspect_shim, make_config, run_bridge, write_session
+from support import SCRIPTS, close_diagnostic_writers, make_config, run_bridge, write_session
 
 sys.path.insert(0, str(SCRIPTS))
 
 
 class HookTests(unittest.TestCase):
     def setUp(self):
-        install_inspect_shim()
+        self.enterContext(mock.patch.dict(os.environ))
 
     def test_stop_missing_config_writes_nothing(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -196,6 +197,7 @@ class HookTests(unittest.TestCase):
         finally:
             sys.stdin, sys.stdout = old_stdin, old_stdout
             bridge._print = old_print
+            close_diagnostic_writers(os.environ.get("MINDIE_DIAGNOSTICS_ROOT"))
             if old_cli is not None:
                 sys.modules["mindie_knowledge.loop.cli"] = old_cli
             else:
