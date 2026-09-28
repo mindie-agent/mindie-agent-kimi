@@ -10,8 +10,8 @@ one-time boundary migration) are delegated to the ONE shared
 implementation: the selected runtime's ``mindie_knowledge.consent_store``
 in normal operation, or the byte-identical bootstrap copy
 ``scripts/consent_store_bootstrap.py`` (source: knowledge repo
-``mindie_knowledge/consent_store.py`` @ 9beb317a2e6f0898cd8507f710e4ddb0f93a69f4,
-SHA-256 a9fb07a4fab173a3d5cfd583579ee4df09fd3d70106d208f8173c873ce6ba919)
+``mindie_knowledge/consent_store.py`` @ 0df968a03008a170bb52d4acade7c7226eb0d39b,
+SHA-256 c5caf974705ff08615fc33e49a0ec28dd5b070b55ff70d1beaff5c4fb0d8a65e)
 when the runtime cannot be loaded before first setup. Do not hand-edit the
 copy and do not fork the semantics here.
 
@@ -69,7 +69,7 @@ def shared_community_path() -> Path:
 def _read_json(path: Path):
     """(state, data): ok / missing / unreadable / corrupt. Never raises."""
     try:
-        raw = path.read_bytes()
+        raw = _store_mod()._read_bytes(path)
     except FileNotFoundError:
         return "missing", None
     except OSError:
@@ -95,7 +95,7 @@ def _atomic_write_bytes(path: Path, raw: bytes) -> None:
     try:
         with os.fdopen(descriptor, "wb") as stream:
             stream.write(raw)
-        os.replace(tmp, path)
+        _store_mod()._atomic_replace(tmp, path)
     except BaseException:
         try:
             os.unlink(tmp)
@@ -364,7 +364,7 @@ def adopt_community_settings() -> dict:
         if legacy is not None and legacy.is_file():
             if not shared.exists():
                 try:
-                    _atomic_write_bytes(shared, legacy.read_bytes())
+                    _atomic_write_bytes(shared, _store_mod()._read_bytes(legacy))
                 except OSError as exc:
                     result.update(action="error")
                     result["notes"].append(f"legacy adoption failed: {type(exc).__name__}")
