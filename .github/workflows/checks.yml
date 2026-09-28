@@ -13,9 +13,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      # Peer commit 3e36a285e2effe47bc442079a4ed7f42ced9caaf is a local
-      # review candidate. This step fails until that revision is published
-      # on mindie-agent/mindie-agent-cc. There is no stand-in checkout.
+      # Use the reviewed peer commit; publish dependency branches before CI.
+      # The test archives this exact revision and never substitutes main.
       - name: Checkout fixed Claude peer
         uses: actions/checkout@v4
         with:
