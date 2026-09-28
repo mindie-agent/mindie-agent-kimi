@@ -34,7 +34,7 @@ class EntryTests(unittest.TestCase):
         os.environ["KIMI_CODE_HOME"] = str(home)
         return home
 
-    def _configured_native_init(self, tmp, session, activation, args="read-only"):
+    def _configured_native_init(self, tmp, session, activation, args="disabled"):
         """Fixture: configured adapter + current /mindie-agent:init <args> turn."""
         config = make_config(tmp)
         os.environ["MINDIE_KIMI_CONFIG"] = str(config)
@@ -67,7 +67,8 @@ class EntryTests(unittest.TestCase):
 
             first = entry.op_init("ses_init", str(tmp))
             self.assertFalse(first["configured"])
-            self.assertEqual(len(first["choices"]), 3)
+            self.assertEqual(first["choices"], [])
+            self.assertEqual(first["experience"], "needs-configuration")
             self.assertFalse(first["sharing"]["enabled"])
             self.assertNotIn("active_leases", first)
             second = entry.op_init("ses_init", str(tmp))
@@ -78,16 +79,16 @@ class EntryTests(unittest.TestCase):
             tmp = Path(raw)
             os.environ["MINDIE_KIMI_CONFIG"] = str(tmp / "absent.json")
             os.environ["XDG_CONFIG_HOME"] = str(tmp / "xdg")
-            self._home(tmp, "ses_user", turn_records(dict(kind="user"), "read-only"))
+            self._home(tmp, "ses_user", turn_records(dict(kind="user"), "disabled"))
             import entry
 
-            payload = entry.op_choose("ses_user", "read-only")
-            self.assertEqual(payload["first_use"], "read-only")
+            payload = entry.op_choose("ses_user", "disabled")
+            self.assertEqual(payload["first_use"], "disabled")
             self.assertEqual(payload["choices"], [])
             records = turn_records(plugin_origin("init", "act-later"), "init")
             write_session(tmp / "kimi-home", "ses_again", records, cwd=tmp, workdir="wd_b")
             later = entry.dispatch("ses_again", str(tmp), "init")
-            self.assertEqual(later.get("first_use"), "read-only")
+            self.assertEqual(later.get("first_use"), "disabled")
             self.assertEqual(later.get("choices"), [])
 
     def test_native_init_read_only_args(self):
@@ -98,24 +99,24 @@ class EntryTests(unittest.TestCase):
             self._home(
                 tmp,
                 "ses_ro",
-                turn_records(plugin_origin("init", "act-ro", "read-only"), "init read-only"),
+                turn_records(plugin_origin("init", "act-ro", "disabled"), "init disabled"),
             )
             import entry
 
             payload = entry.op_init("ses_ro", str(tmp))
-            self.assertEqual(payload["first_use"], "read-only")
+            self.assertEqual(payload["first_use"], "disabled")
             self.assertEqual(payload["choices"], [])
 
     def test_configured_init_read_only_binds_this_session(self):
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
-            self._configured_native_init(tmp, "ses_cfg_ro", "act-cfg-ro", "read-only")
+            self._configured_native_init(tmp, "ses_cfg_ro", "act-cfg-ro", "disabled")
             self._stub_service()
             import admission
             import entry
 
             payload = entry.op_init("ses_cfg_ro", str(tmp))
-            self.assertEqual(payload["first_use"], "read-only")
+            self.assertEqual(payload["first_use"], "disabled")
             self.assertEqual(payload["choices"], [])
             self.assertTrue(payload.get("repeat"))
             binding = payload.get("binding") or {}
@@ -127,7 +128,7 @@ class EntryTests(unittest.TestCase):
             self.assertTrue(lease.get("enabled"))
             second = entry.op_init("ses_cfg_ro", str(tmp))
             self.assertTrue(second.get("already"))
-            self.assertEqual(second.get("first_use"), "read-only")
+            self.assertEqual(second.get("first_use"), "disabled")
 
     def test_entry_skill_origin_binds_like_init(self):
         """The unified /mindie-agent skill origin performs the same binding."""
@@ -138,7 +139,7 @@ class EntryTests(unittest.TestCase):
             self._home(
                 tmp,
                 "ses_skill",
-                turn_records(plugin_origin("mindie-agent", "act-skill", "read-only"),
+                turn_records(plugin_origin("mindie-agent", "act-skill", "disabled"),
                              "mindie-agent read-only"),
             )
             self._stub_service()
@@ -146,7 +147,7 @@ class EntryTests(unittest.TestCase):
             import entry
 
             payload = entry.op_init("ses_skill", str(tmp))
-            self.assertEqual(payload["first_use"], "read-only")
+            self.assertEqual(payload["first_use"], "disabled")
             self.assertTrue((payload.get("binding") or {}).get("enabled"))
             self.assertIsNotNone(admission.gate().active_lease("ses_skill"))
 
@@ -175,14 +176,14 @@ class EntryTests(unittest.TestCase):
             tmp = Path(raw)
             config = make_config(tmp)
             os.environ["MINDIE_KIMI_CONFIG"] = str(config)
-            origin = self._skill_origin(args="read-only")
+            origin = self._skill_origin(args="disabled")
             self._home(tmp, "ses_real", turn_records(origin, "/mindie-agent read-only"))
             self._stub_service()
             import admission
             import entry
 
             payload = entry.op_init("ses_real", str(tmp))
-            self.assertEqual(payload["first_use"], "read-only")
+            self.assertEqual(payload["first_use"], "disabled")
             self.assertTrue((payload.get("binding") or {}).get("enabled"))
             self.assertIsNotNone(admission.gate().active_lease("ses_real"))
             # The activationId is consumed once.
@@ -198,7 +199,7 @@ class EntryTests(unittest.TestCase):
             config = make_config(tmp)
             os.environ["MINDIE_KIMI_CONFIG"] = str(config)
             origin = self._skill_origin(trigger="model-tool", source="extra",
-                                        in_turn=True, args="read-only")
+                                        in_turn=True, args="disabled")
             records = turn_records(dict(kind="user"), "/mindie-agent read-only") + [
                 dict(type="turn.steer", input=[dict(type="text", text="skill loaded")],
                      origin=origin, time=3),
@@ -209,7 +210,7 @@ class EntryTests(unittest.TestCase):
             import entry
 
             payload = entry.op_init("ses_print", str(tmp))
-            self.assertEqual(payload["first_use"], "read-only")
+            self.assertEqual(payload["first_use"], "disabled")
             self.assertTrue((payload.get("binding") or {}).get("enabled"))
             self.assertIsNotNone(admission.gate().active_lease("ses_print"))
 
@@ -288,11 +289,11 @@ class EntryTests(unittest.TestCase):
             write_session(
                 tmp / "kimi-home",
                 "ses_primary",
-                turn_records(dict(kind="user"), "read-only"),
+                turn_records(dict(kind="user"), "disabled"),
                 cwd=tmp,
             )
-            chosen = entry.op_choose("ses_primary", "read-only")
-            self.assertEqual(chosen["first_use"], "read-only")
+            chosen = entry.op_choose("ses_primary", "disabled")
+            self.assertEqual(chosen["first_use"], "disabled")
             self.assertEqual(chosen["choices"], [])
             lease = admission.gate().active_lease("ses_primary")
             self.assertIsNotNone(lease)
@@ -303,19 +304,19 @@ class EntryTests(unittest.TestCase):
             tmp = Path(raw)
             config = make_config(tmp)
             os.environ["MINDIE_KIMI_CONFIG"] = str(config)
-            self._home(tmp, "ses_noact", turn_records(dict(kind="user"), "read-only"))
+            self._home(tmp, "ses_noact", turn_records(dict(kind="user"), "disabled"))
             import admission
             import entry
 
-            payload = entry.op_choose("ses_noact", "read-only")
-            self.assertEqual(payload["first_use"], "read-only")
+            payload = entry.op_choose("ses_noact", "disabled")
+            self.assertEqual(payload["first_use"], "disabled")
             self.assertIsNone(admission.gate().active_lease("ses_noact"))
             self.assertFalse((payload.get("this_session") or {}).get("bound", True))
 
     def test_failure_counts_never_pause_the_entry(self):
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
-            self._configured_native_init(tmp, "ses_failed", "act-failed", "read-only")
+            self._configured_native_init(tmp, "ses_failed", "act-failed", "disabled")
             self._stub_service()
             import admission
             import entry
@@ -325,7 +326,7 @@ class EntryTests(unittest.TestCase):
             for _ in range(5):
                 gate.finish("ses_failed", lease["token"], False)
             payload = entry.op_init("ses_failed", str(tmp))
-            self.assertEqual(payload.get("first_use"), "read-only")
+            self.assertEqual(payload.get("first_use"), "disabled")
             binding = payload.get("binding") or {}
             self.assertTrue(binding.get("enabled"))
             self.assertIsNotNone(gate.active_lease("ses_failed"))
@@ -483,11 +484,11 @@ class EntryTests(unittest.TestCase):
             import consent
             import entry
 
-            consent.record_choice("read-only")
+            consent.record_choice("disabled")
             self._home(tmp, "ses_locked", turn_records(dict(kind="user"), "what is later?"))
             with self.assertRaises(ValueError):
-                entry.op_choose("ses_locked", "later", str(tmp))
-            self.assertEqual(consent.load()["choice"], "read-only")
+                entry.op_choose("ses_locked", "disabled", str(tmp))
+            self.assertEqual(consent.load()["choice"], "disabled")
 
     def test_read_only_choice_disables_existing_sharing(self):
         """Revocation is real: choosing read-only via the entry turns the
@@ -500,16 +501,16 @@ class EntryTests(unittest.TestCase):
             os.environ["MINDIE_KIMI_CONFIG"] = str(config)
             self._home(
                 tmp, "ses_revoke",
-                turn_records(plugin_origin("init", "act-ro", "read-only"), "init read-only"),
+                turn_records(plugin_origin("init", "act-ro", "disabled"), "init disabled"),
             )
             self._stub_service()
             import consent
             import entry
 
             payload = entry.op_init("ses_revoke", str(project))
-            self.assertEqual(payload["first_use"], "read-only")
+            self.assertEqual(payload["first_use"], "disabled")
             self.assertFalse(payload["sharing"]["enabled"])
-            self.assertEqual(consent.load()["choice"], "read-only")
+            self.assertEqual(consent.load()["choice"], "disabled")
             settings = json.loads(consent.shared_community_path().read_text())
             self.assertFalse(settings["enabled"])
 
@@ -534,12 +535,12 @@ class EntryTests(unittest.TestCase):
                 return_value={"enabled": False},
             ) as configure:
                 payload = entry.op_choose(
-                    "ses_rep", "read-only", str(tmp), reporting="disabled",
+                    "ses_rep", "disabled", str(tmp), reporting="disabled",
                 )
             configure.assert_called_once_with(False, sys.executable)
-            self.assertEqual(payload["first_use"], "read-only")
+            self.assertEqual(payload["first_use"], "disabled")
             saved = consent.load()
-            self.assertEqual(saved["choice"], "read-only")
+            self.assertEqual(saved["choice"], "disabled")
             self.assertEqual(saved["reporting"], "disabled")
 
     def test_in_turn_prefix_trap_is_not_the_entry(self):

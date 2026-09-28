@@ -998,9 +998,11 @@ class EntryBoundaryTests(LaneIsolation):
         if "sharing-enable" in skill:
             problems.append("skill text requires sharing-enable")
         cold = entry.status_payload(None)
-        contribute = next(item for item in cold["choices"] if item["id"] == "contribute")
+        self.assertEqual(cold["experience"], "needs-configuration")
+        self.assertEqual(cold["choices"], [])
+        contribute = cold["required"]
         if "sharing-enable" in json.dumps(contribute):
-            problems.append("choice card next=" + json.dumps(contribute.get("next")))
+            problems.append("configuration requires a separate sharing-enable command")
         try:
             entry.dispatch(
                 "ses_contrib", str(project), "choose", choice="contribute",
@@ -1133,7 +1135,7 @@ class EntryBoundaryTests(LaneIsolation):
 
         entry.dispatch(
             "ses_report", str(project), "choose",
-            choice="read-only", reporting="disabled",
+            choice="disabled", reporting="disabled",
         )
         import consent
 

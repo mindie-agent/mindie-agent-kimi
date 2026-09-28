@@ -45,7 +45,8 @@ class ConsentTests(unittest.TestCase):
         import consent
 
         payload = self._payload()
-        self.assertEqual(len(payload["choices"]), 3)
+        self.assertEqual(payload["choices"], [])
+        self.assertEqual(payload["experience"], "needs-configuration")
         consent.record_choice("later")
         payload = self._payload()
         self.assertEqual(payload["first_use"], "later")
@@ -193,7 +194,8 @@ class ConsentTests(unittest.TestCase):
 
         sharing_mod.write_disabled()
         payload = self._payload()
-        self.assertEqual(len(payload["choices"]), 3)
+        self.assertEqual(payload["choices"], [])
+        self.assertEqual(payload["experience"], "needs-configuration")
         self.assertFalse(payload["sharing"]["enabled"])
         self.assertIsNone(payload["first_use"])
         self.assertNotIn("consent_error", payload)

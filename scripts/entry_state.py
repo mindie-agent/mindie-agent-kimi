@@ -49,39 +49,18 @@ def consume_activation_id(activation_id: str) -> bool:
     return True
 
 
-def three_choices() -> dict:
+def configuration_required() -> dict:
+    """Incomplete configuration is a state, never a product tier."""
     return dict(
         configured=False,
+        experience="needs-configuration",
         sharing=dict(configured=False, enabled=False),
         first_use=first_use(),
-        choices=[
-            dict(
-                id="contribute",
-                recommended=True,
-                summary="Contribute public experience for the current project",
-                next=(
-                    "Say so in this conversation with the public repository and "
-                    "account (e.g. 'contribute to owner/repo as name'), or run "
-                    "/mindie-agent contribute owner/repo name"
-                ),
-            ),
-            dict(
-                id="read-only",
-                summary="Read-only knowledge; no contribution",
-                next="Reply read-only, or run /mindie-agent read-only",
-            ),
-            dict(
-                id="later",
-                summary="Configure later (sharing stays off)",
-                next="Reply later, or run /mindie-agent later",
-            ),
-        ],
+        choices=[],
+        required=["runtime", "public_repository", "account", "project_scope"],
         setup="python3 scripts/setup.py --knowledge-python <venv-python>",
-        note=(
-            "One-time setup: the choice persists for this installation and is "
-            "never asked again, including after restarts, upgrades or failures. "
-            "Enabling contribution requires the explicit public repository and "
-            "account from the user; the current project is the contribution "
-            "scope. There is no automatic yes."
-        ),
+        note=("Supply only missing destination and scope information. Reuse "
+              "previously approved values. Installation or task binding alone "
+              "does not make the experience loop available. Explicitly disabled "
+              "and legacy declined settings remain disabled until changed."),
     )

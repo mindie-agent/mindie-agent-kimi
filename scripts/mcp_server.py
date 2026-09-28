@@ -46,9 +46,9 @@ KNOWLEDGE_TOOLS = [
             "Native MindIE entry. Mutations require the current /mindie-agent "
             "invocation; op=status can diagnose an already bound task. "
             "Requires a fresh request_nonce. Never pass a session id. "
-            "op=init binds this task internally and returns first-use choices "
-            "once or status; op=choose stores the one-time knowledge choice "
-            "(contribute/read-only/later/disabled) and optionally the "
+            "op=init binds this task internally and reports missing configuration "
+            "or status; op=choose configures contribution or explicit disable "
+            "(contribute/disabled) and optionally the "
             "independent reporting choice. A conversational contribution "
             "naming the public repository and account enables sharing for the "
             "current project; via the entry itself the destination comes from "
@@ -77,7 +77,7 @@ KNOWLEDGE_TOOLS = [
                     ],
                 },
                 request_nonce=NONCE_PROP,
-                choice={"type": "string", "enum": ["contribute", "read-only", "later", "disabled"]},
+                choice={"type": "string", "enum": ["contribute", "disabled"]},
                 repository={
                     "type": "string",
                     "description": "Public owner/repo the user stated for contribution.",

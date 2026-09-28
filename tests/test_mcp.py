@@ -235,7 +235,8 @@ class McpTests(unittest.TestCase):
                 self.assertFalse(result["result"]["isError"], result["result"])
                 payload = result["result"]["structuredContent"]
                 self.assertFalse(payload["configured"])
-                self.assertEqual(len(payload["choices"]), 3)
+                self.assertEqual(payload["choices"], [])
+                self.assertEqual(payload["experience"], "needs-configuration")
                 self.assertFalse(payload["sharing"]["enabled"])
             finally:
                 proc.stdin.close()
