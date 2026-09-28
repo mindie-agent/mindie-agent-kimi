@@ -126,7 +126,7 @@ class LauncherTests(unittest.TestCase):
             self.assertEqual(list(xdg.rglob("*")), [])
 
     def _popen_hook(self, args, env):
-        return subprocess.Popen(
+        proc = subprocess.Popen(
             [sys.executable, str(LAUNCH), *args],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -134,6 +134,10 @@ class LauncherTests(unittest.TestCase):
             text=True,
             env=env,
         )
+        for stream in (proc.stdin, proc.stdout, proc.stderr):
+            if stream is not None:
+                self.addCleanup(stream.close)
+        return proc
 
     def test_abnormal_hook_child_fails_open_without_forwarding_its_output(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -309,6 +313,9 @@ class LauncherTests(unittest.TestCase):
                 stdout=subprocess.PIPE,
                 text=True,
             )
+            for stream in (holder.stdin, holder.stdout, holder.stderr):
+                if stream is not None:
+                    self.addCleanup(stream.close)
             try:
                 self.assertEqual(holder.stdout.readline().strip(), "held")
                 started = time.monotonic()
@@ -358,6 +365,9 @@ class LauncherTests(unittest.TestCase):
                 text=True,
                 env=env,
             )
+            for stream in (proc.stdin, proc.stdout, proc.stderr):
+                if stream is not None:
+                    self.addCleanup(stream.close)
             try:
                 proc.stdin.write(
                     json.dumps(
@@ -496,6 +506,9 @@ class LauncherTests(unittest.TestCase):
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, env=env,
             )
+            for stream in (listed.stdin, listed.stdout, listed.stderr):
+                if stream is not None:
+                    self.addCleanup(stream.close)
             response = queue.Queue()
             reader = threading.Thread(target=lambda: response.put(listed.stdout.readline()), daemon=True)
             try:
@@ -527,6 +540,9 @@ class LauncherTests(unittest.TestCase):
                 text=True,
                 env=env,
             )
+            for stream in (proc.stdin, proc.stdout, proc.stderr):
+                if stream is not None:
+                    self.addCleanup(stream.close)
             try:
                 proc.stdin.write(
                     json.dumps(

@@ -17,7 +17,7 @@ class McpTests(unittest.TestCase):
         return json.loads(line)
 
     def start(self, surface, config, extra=None):
-        return subprocess.Popen(
+        proc = subprocess.Popen(
             [sys.executable, str(SCRIPTS / "mcp_server.py"), surface],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -26,6 +26,10 @@ class McpTests(unittest.TestCase):
             env=env_for(config, extra=extra),
             cwd=str(SCRIPTS.parent),
         )
+        for stream in (proc.stdin, proc.stdout, proc.stderr):
+            if stream is not None:
+                self.addCleanup(stream.close)
+        return proc
 
     def test_knowledge_list_requires_nonce_and_rejects_foreign_session(self):
         with tempfile.TemporaryDirectory() as raw:

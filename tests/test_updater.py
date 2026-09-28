@@ -244,6 +244,9 @@ class UpdaterTests(unittest.TestCase):
             stdout=subprocess.PIPE, text=True,
             env=dict(os.environ, MINDIE_KIMI_CONFIG=str(self.config_path)),
         )
+        for stream in (holder.stdin, holder.stdout, holder.stderr):
+            if stream is not None:
+                self.addCleanup(stream.close)
         try:
             self.assertEqual(holder.stdout.readline().strip(), "held")
             self.assertEqual(self.run_check(lock_timeout=0.5), 0)
@@ -265,6 +268,9 @@ class UpdaterTests(unittest.TestCase):
             stdout=subprocess.PIPE, text=True,
             env=dict(os.environ, MINDIE_KIMI_CONFIG=str(self.config_path)),
         )
+        for stream in (holder.stdin, holder.stdout, holder.stderr):
+            if stream is not None:
+                self.addCleanup(stream.close)
         try:
             self.assertEqual(holder.stdout.readline().strip(), "held")
             self.assertEqual(self.run_check(), 0)
