@@ -21,6 +21,22 @@ sys.path.insert(0, str(SCRIPTS))
 
 
 class EntryTests(unittest.TestCase):
+    def test_repeated_enable_preserves_omitted_fork_and_account(self):
+        import sharing
+        import consent
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            config = make_config(root)
+            with patch.dict(os.environ, MINDIE_KIMI_CONFIG=str(config)):
+                sharing.write_enabled(repository='owner/repo', account='owner',
+                                      fork='owner/fork', project_roots=[str(root)])
+                consent.record_choice('contribute')
+                before = sharing.load().raw
+                sharing.write_enabled(repository='owner/repo', project_roots=[str(root)], extend_scope=True)
+                self.assertEqual(sharing.load().raw, before)
+                sharing.write_enabled(repository='owner/other', project_roots=[str(root)])
+                self.assertIsNone(sharing.load().raw.get('fork'))
+
     def test_repeated_enable_cannot_overwrite_concurrent_project_addition(self):
         import entry
         import sharing
