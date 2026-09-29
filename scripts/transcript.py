@@ -191,9 +191,11 @@ def _fork_boundary(path) -> float | None:
         state_path = Path(path).resolve().parents[2] / "state.json"
         data = json.loads(state_path.read_text(encoding='utf-8'))
     except (OSError, ValueError, IndexError):
-        return None
+        # Missing or partially written native state cannot prove that this
+        # is a root session. Keep the cursor until state is readable again.
+        raise OSError("native session state unavailable; inherited material not read") from None
     if not isinstance(data, dict):
-        return None
+        raise OSError("native session state invalid; inherited material not read")
     parent = data.get("forkedFrom") or data.get("forked_from")
     if not parent:
         return None
