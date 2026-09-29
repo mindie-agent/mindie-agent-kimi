@@ -202,7 +202,7 @@ def main():
         while time.monotonic() < deadline and process.poll() is None:
             if token_path.exists():
                 try:
-                    token = token_path.read_text().strip()
+                    token = token_path.read_text(encoding='utf-8').strip()
                     report["before"] = call(port, token, "GET", "/api/v1/plugins")
                     ready = True
                     break
@@ -215,7 +215,7 @@ def main():
                     elapsed_ms=(time.monotonic() - started) * 1000,
                     exit_code=process.poll(), reportable=False)
             raise SystemExit("native Kimi plugin API did not become ready")
-        token = token_path.read_text().strip()
+        token = token_path.read_text(encoding='utf-8').strip()
         if not args.readback:
             report["install"] = call(
                 port, token, "POST", "/api/v1/plugins", {"source": source}
@@ -249,7 +249,7 @@ def main():
     if args.readback:
         print(json.dumps(report, indent=2))
         return
-    manifest = json.loads((args.plugin_root.expanduser().resolve() / "kimi.plugin.json").read_text())
+    manifest = json.loads((args.plugin_root.expanduser().resolve() / "kimi.plugin.json").read_text(encoding='utf-8'))
     try:
         verify_install_report(report, Path(source), manifest)
     except Exception as exc:

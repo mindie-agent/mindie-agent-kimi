@@ -27,8 +27,6 @@ from paths import (
 
 SESSION_RE = re.compile(IDENTITY)
 NONCE_RE = re.compile(NONCE)
-MAX_HOOK_BYTES = 128 * 1024
-MAX_INDEX_BYTES = 8 * 1024 * 1024
 COMMANDS = {
     "mindie-agent",  # the unified entry skill; aliases init below
     "init",
@@ -61,8 +59,6 @@ def require_nonce(value) -> str:
 
 
 def parse_hook(raw: bytes) -> dict:
-    if len(raw) > MAX_HOOK_BYTES:
-        raise ValueError("hook input exceeds limit")
     event = json.loads(raw)
     if not isinstance(event, dict):
         raise ValueError("hook payload must be one JSON object")
@@ -150,7 +146,7 @@ def session_state(session_id: str, *, kimi_home=None) -> dict:
     if not path.is_file():
         return {}
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding='utf-8'))
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
@@ -159,10 +155,8 @@ def session_state(session_id: str, *, kimi_home=None) -> dict:
 def _from_index(index: Path, session_id: str, home: Path) -> Path | None:
     try:
         with index.open("rb") as stream:
-            raw = stream.read(MAX_INDEX_BYTES + 1)
+            raw = stream.read()
     except OSError:
-        return None
-    if len(raw) > MAX_INDEX_BYTES:
         return None
     matched = None
     for line in raw.splitlines():

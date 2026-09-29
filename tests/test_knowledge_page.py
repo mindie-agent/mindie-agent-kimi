@@ -45,7 +45,7 @@ mcp_server.knowledge_call = knowledge_call
 response = mcp_server.handle("knowledge", json.loads(sys.stdin.read()))
 if response is None:
     raise SystemExit("helper returned no response")
-sys.stdout.write(mcp_server.canonical(response) + "\n")
+mcp_server.send(response)
 """
 
 STUB = r"""
@@ -57,7 +57,7 @@ body = {
     "id": message["id"],
     "result": {"content": [{"type": "text", "text": blob}], "isError": False},
 }
-sys.stdout.write(json.dumps(body, ensure_ascii=False))
+sys.stdout.buffer.write(json.dumps(body, ensure_ascii=False).encode("utf-8"))
 """
 
 
@@ -253,6 +253,8 @@ class KnowledgePageTests(unittest.TestCase):
                 "REF": ref,
                 "OFFSET": str(offset),
                 "SESSION": SESSION,
+                # The real MCP writer uses UTF-8 bytes, independent of locale.
+                "PYTHONIOENCODING": "cp1252",
                 "MINDIE_DIAGNOSTICS_CONFIG": os.environ["MINDIE_DIAGNOSTICS_CONFIG"],
                 "MINDIE_DIAGNOSTICS_ROOT": os.environ["MINDIE_DIAGNOSTICS_ROOT"],
             },
@@ -268,6 +270,7 @@ class KnowledgePageTests(unittest.TestCase):
     def test_dispatch_raises_knowledge_bound_only(self):
         import bounded
         import mindie_launch
+        from unittest.mock import patch
 
         generation = self.tmp / "generation"
         scripts = generation / "scripts"
@@ -283,7 +286,8 @@ class KnowledgePageTests(unittest.TestCase):
             "sha": "b" * 40,
         }))
         raw = json.dumps({"jsonrpc": "2.0", "id": "cap-1", "method": "tools/list"}).encode()
-        response = mindie_launch._dispatch("knowledge", raw, "cap-1")
+        with patch.dict(os.environ, {"PYTHONIOENCODING": "cp1252"}):
+            response = mindie_launch._dispatch("knowledge", raw, "cap-1")
         text = response["result"]["content"][0]["text"]
         self.assertGreater(len(text.encode()), 256 * 1024)
         self.assertLess(len(text.encode()), mindie_launch.KNOWLEDGE_MAX_OUTPUT)

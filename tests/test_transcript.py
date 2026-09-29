@@ -17,6 +17,29 @@ def rec(kind, **fields):
 
 
 class TranscriptTests(unittest.TestCase):
+    def test_missing_or_damaged_lineage_waits_then_excludes_parent(self):
+        with tempfile.TemporaryDirectory() as raw:
+            records = [rec('context.append_message', time=when, message=dict(
+                role='user', origin=dict(kind='user'), content=[dict(type='text', text=text)]))
+                for when, text in ((2_000_000_000_000, 'inherited parent'),
+                                   (2_000_000_001_000, 'new child'))]
+            root, wire = write_session(Path(raw), 'ses_child', records,
+                state=dict(forkedFrom='ses_parent', createdAt=2_000_000_000_500))
+            state = root / 'state.json'
+            original = state.read_bytes()
+            for fault in (None, b'{broken', b'[]'):
+                with self.subTest(fault=fault):
+                    if fault is None:
+                        state.unlink()
+                    else:
+                        state.write_bytes(fault)
+                    with self.assertRaisesRegex(OSError, 'inherited material not read'):
+                        transcript.read_material(str(wire), 0, session_id='ses_child')
+                    state.write_bytes(original)
+                    result = transcript.read_material(str(wire), 0, session_id='ses_child')
+                    self.assertNotIn('inherited parent', result['text'])
+                    self.assertIn('new child', result['text'])
+
     def test_native_shaped_fork_uses_state_created_at_not_inherited_metadata(self):
         home = FIXTURES / "native-shaped"
         src = home / "sessions" / "wd_fixture" / "ses_source" / "agents" / "main" / "wire.jsonl"
@@ -32,7 +55,7 @@ class TranscriptTests(unittest.TestCase):
             str(src), 0, session_id="ses_source", not_before=1789911712
         )
         self.assertGreaterEqual(public["records"], 1, public.get("text", "")[:200])
-        self.assertIn("call_id=", public["text"])
+        self.assertNotIn("call_id=", public["text"])
         self.assertIn("fix the hang", public["text"])
 
     def test_public_user_allowlist_skips_injection_and_think(self):
@@ -120,7 +143,7 @@ class TranscriptTests(unittest.TestCase):
             _root, wire = write_session(
                 home, "ses_cont", [known, *filler], state=dict(createdAt=1_000_000_000_000)
             )
-            cursor = len(json.dumps(known)) + 1
+            cursor = len(wire.read_bytes().splitlines(keepends=True)[0])
             page = transcript.read_material(str(wire), cursor, session_id="ses_cont")
             self.assertEqual(page["status"], "ok", page.get("coverage_note"))
             self.assertEqual(page["records"], 0)
@@ -137,7 +160,7 @@ class TranscriptTests(unittest.TestCase):
             )
             first = transcript.read_material(str(wire), 0, session_id="ses_part")
             cursor = first["end"]
-            with wire.open("a") as stream:
+            with wire.open("a", encoding="utf-8", newline="\n") as stream:
                 stream.write('{"type":"context.append_message","message":{"role":"user"')
             pending = transcript.read_material(str(wire), cursor, session_id="ses_part")
             self.assertEqual(pending["status"], "ok")
@@ -162,7 +185,7 @@ class TranscriptTests(unittest.TestCase):
                     origin=dict(kind="user"),
                 ),
             )
-            with wire.open("a") as stream:
+            with wire.open("a", encoding="utf-8", newline="\n") as stream:
                 stream.write(json.dumps(complete) + "\n")
                 stream.write('{"type":"context.append_message","message":{"role":"assistant"')
             page = transcript.read_material(str(wire), cursor, session_id="ses_tail")
@@ -260,16 +283,6 @@ class TranscriptTests(unittest.TestCase):
             ]
             _root, wire = write_session(home, "ses_turns", records)
             result = transcript.read_material(str(wire), 0, session_id="ses_turns")
-            self.assertIn("turn=3", result["text"])
-            self.assertIn("turn=4", result["text"])
-            unlabeled = [
-                line for line in result["text"].splitlines()
-                if "unlabeled message" in line or "c2" in line
-            ]
-            labeled = [
-                line for line in result["text"].splitlines()
-                if line.startswith("[") and "turn=unknown" in line
-            ]
-            self.assertTrue(labeled, result["text"])
-            self.assertNotIn("turn=3\n\n[assistant", result["text"])
-            self.assertEqual(len(unlabeled), 2)
+            self.assertEqual(result['text'], '### assistant\nnext turn text\n\n### assistant\nunlabeled message')
+            self.assertNotIn('Bash', result['text'])
+            self.assertNotIn('turn=', result['text'])

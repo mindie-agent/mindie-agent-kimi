@@ -15,23 +15,20 @@ For this invocation, call `mindie_entry` exactly once with `op=init` and a
 fresh `request_nonce`. Never pass a session id. `${KIMI_SESSION_ID}` in this
 text is not a capability.
 
-First use presents the one-time choices (contribute / read-only / later)
-only if no choice was ever saved. A later `read-only` or `later` reply is an
-ordinary user turn: call `mindie_entry` `op=choose` with that choice. To
-contribute, the user names the public repository (`owner/repo`) and account
-in their reply — call `op=choose` with `choice=contribute` and those exact
-values (they must be the user's own words); the entry then enables sharing
-for the current project. `/mindie-agent contribute owner/repo ACCOUNT`
-does the same natively. The one-time setup also asks the independent
-reporting choice once; record it with the `reporting` field. A saved choice
-persists across new sessions, forks, restarts, upgrades and failures — it
-is never re-asked, failure counts never revoke it, and changing a saved
-choice goes through this entry (e.g. `/mindie-agent read-only`), not an
-ordinary mention. There is no automatic yes.
+If `experience` reports incomplete configuration, reuse already approved
+values and ask only for the missing public repository and account. Call
+`mindie_entry` with `op=choose`, `choice=contribute` and those exact values from
+the user's reply; the native current project is the scope. Alternatively,
+`/mindie-agent contribute owner/repo ACCOUNT` configures it directly.
+Configuration then prepares capture for the existing task automatically.
 
-Sharing is OFF unless that explicit enable succeeds. While off there is no
-Stop capture or organizer. Binding is automatic and internal: there is no
-activate/lease/recover step for the user.
+Explicitly disabled and legacy declined profiles remain disabled until the
+user changes them; do not offer read-only/later product modes. Missing
+configuration, out-of-scope tasks and component faults are not successful
+setup. Preserve native binding across failures; no activate/recover step is
+required. The configured loop processes eligible Stop events automatically.
+Inspect capture and contribution receipts before claiming it has completed.
+Fault reporting remains a separate optional setting; it never gates this loop.
 
 Every knowledge and remote MCP call MUST include a fresh `request_nonce`.
 Remote-dev does not require the entry.

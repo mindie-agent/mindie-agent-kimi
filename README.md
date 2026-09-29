@@ -1,10 +1,20 @@
 # MindIE Agent for Kimi Code
 
+Current capture uses the harness's public transcript projection followed by
+local deterministic redaction. Complete user and visible assistant messages
+are saved without tool payloads or a body-writing model. Setup and updates
+automatically install the scanner and metadata worker. The optional metadata
+worker can return only title and summary; failure leaves a source excerpt.
+Its model policy belongs to the adapter, with minimal/disabled thinking, and
+does not add user configuration. Native model acceptance is separate from
+the component tests of this path.
+
+
 Design inherits all nine [VAWS / MindIE Agent principles](https://github.com/mindie-agent/mindie-agent/blob/main/docs/design-principles.md). Retiring the old runtime does not retire those principles.
 
 Thin native Kimi plugin. Shared knowledge runtime lives in `mindie-knowledge`.
 This repository owns Kimi identity, `wire.jsonl` parsing, MCP dispatch, and
-the K3 organizer runner.
+the optional K3 metadata runner.
 
 ## Install
 
@@ -50,15 +60,11 @@ current behavior, reproducible checks and acceptance boundaries.
 
 ## First use
 
-Invoke `/mindie-agent` and continue your existing work; `/mindie-agent:init`
-is a compatibility alias. On the first use after installation, choose once
-whether to contribute, use knowledge read-only, or configure later. The saved
-choice applies to this installation across tasks, forks, restarts, updates
-and ordinary failures. Later entries bind the current native task internally
-and do not ask for authorization again. Unconfigured status works offline.
-
-Three choices: recommended public contribution, read-only, or later. Reply
-`read-only`/`later`, or run `/mindie-agent read-only|later`. To contribute,
+Invoke `/mindie-agent`. Reuse approved values and supply only missing public
+destination/account/project scope. The configured experience loop processes
+eligible Stop events automatically. Task binding and processing receipts are
+distinct. Explicit disable and legacy declined settings remain disabled until
+changed; read-only/later are no longer product choices. To configure,
 name the public repository (`owner/repo`) and account in your reply — or run
 `/mindie-agent contribute owner/repo ACCOUNT`. The entry then enables
 sharing for the current project (public visibility). No separate CLI has to

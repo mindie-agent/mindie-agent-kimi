@@ -39,14 +39,21 @@ for name in {modules!r}:
         missing.append(f"{{name}} ({{type(exc).__name__}}: {{exc}})")
 if not missing:
     from mindie_knowledge.loop.engine import Engine
+    from mindie_knowledge.loop.activation import Admission
     from mindie_knowledge.loop import cli
+    from mindie_knowledge.loop import locks
     from mindie_knowledge.loop import settings as _settings
     if not callable(getattr(Engine, "stop_if_idle", None)):
         missing.append("core engine lacks the stop_if_idle API")
     if not callable(getattr(cli, "load_transcript_adapter", None)):
         missing.append("core cli lacks load_transcript_adapter")
+    if not callable(getattr(locks, "lock_held", None)):
+        missing.append("core locks lacks lock_held")
     if not callable(getattr(_settings, "CommunityWriteContext", None)):
         missing.append("core settings lack the CommunityWriteContext API")
+    for method in ("activate", "deactivate", "active_lease", "claim", "inspect", "check"):
+        if not callable(getattr(Admission, method, None)):
+            missing.append("core Admission lacks " + method)
 if not missing:
     try:
         module = cli.load_transcript_adapter({{"transcript_adapter": {parser!r}}})
@@ -120,7 +127,7 @@ def write_private(path, value, *, replace=False):
     path.parent.mkdir(parents=True, exist_ok=True)
     flags = os.O_WRONLY | os.O_CREAT | (os.O_TRUNC if replace else os.O_EXCL)
     descriptor = os.open(path, flags, 0o600)
-    with os.fdopen(descriptor, "w") as stream:
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
         json.dump(value, stream, ensure_ascii=False, indent=2)
         stream.write("\n")
 
@@ -231,53 +238,16 @@ def stage_retained_bootstrap(dest: Path, source: Path) -> Path:
     return dest
 
 
-def write_community(path, community, consent_config=None):
-    """Bootstrap writer for the community settings file.
-
-    Setup's own interpreter may not carry the selected runtime, so this uses
-    the byte-identical consent-store lock protocol directly: the same
-    canonical ``<file>.lock`` key and the same read-merge-replace inside one
-    acquisition as the core write boundary (a concurrent managed update or
-    stamp is not lost). The installer default-off file is never a saved user
-    choice. Corrupt existing bytes are preserved, not overwritten.
-    """
-    import consent as consent_mod
-
-    with consent_mod._shared_file_lock(path):
-        if community is None:
-            write_private(
-                path,
-                dict(
-                    schema="mindie-community-config/1",
-                    enabled=False,
-                    generation=secrets.token_hex(16),
-                    enabled_at=None,
-                    repository=None,
-                    branch="main",
-                    project_roots=[],
-                    idle_seconds=300,
-                    consent_config=consent_config,
-                ),
-            )
-            return "off"
-        try:
-            on_disk = json.loads(Path(path).read_text())
-            if not isinstance(on_disk, dict):
-                raise ValueError("community settings must be one JSON object")
-            base = on_disk
-        except FileNotFoundError:
-            base = {}
-        except (OSError, ValueError):
-            raise SystemExit(
-                f"existing community settings are unreadable or damaged: {path}; "
-                "nothing was written"
-            )
-        data = dict(base)
-        data.update(community)
-        if consent_config is not None:
-            data["consent_config"] = consent_config
-        write_private(path, data, replace=path.exists())
-        return "enabled"
+def write_community(path, community, consent_config=None, python=None):
+    from community_config import configure
+    from pathlib import Path
+    request = dict(community) if community is not None else None
+    if request is not None:
+        request['consent_config'] = consent_config or str(Path(path).with_name('mindie-consent.json').resolve())
+    result = configure(path, request, python)
+    if community is None and 'consent_config' not in result:
+        result = configure(path, dict(consent_config=consent_config or str(Path(path).with_name('mindie-consent.json').resolve())), python)
+    return 'enabled' if result['enabled'] else 'off'
 
 
 def build_bootstrap_runtime(domain_root: Path) -> str:
@@ -356,7 +326,7 @@ def main():
             )
         sharing = write_community(
             community_config, community,
-            consent_config=str(config.with_name("mindie-consent.json")),
+            consent_config=str(config.with_name("mindie-consent.json")), python=python,
         )
         print(json.dumps(dict(config=str(config), sharing=sharing, updated="community"), indent=2))
         return
@@ -371,7 +341,7 @@ def main():
         domain=args.domain,
         admission_path=str(admission),
         transcript_adapter=str(transcript),
-        agent_command=[python, str(organizer)],
+        **__import__("capture_config").prepare(python, bootstrap_root / "scripts"),
         community_config=str(community_config),
     )
     if args.domain == "vllm-ascend" and not args.no_public_feed:
@@ -402,7 +372,7 @@ def main():
     write_private(config, adapter_value)
     sharing = write_community(
         community_config, community,
-        consent_config=str(config.with_name("mindie-consent.json")),
+        consent_config=str(config.with_name("mindie-consent.json")), python=python,
     )
     import genstate
     import updater

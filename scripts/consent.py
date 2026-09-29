@@ -10,8 +10,8 @@ one-time boundary migration) are delegated to the ONE shared
 implementation: the selected runtime's ``mindie_knowledge.consent_store``
 in normal operation, or the byte-identical bootstrap copy
 ``scripts/consent_store_bootstrap.py`` (source: knowledge repo
-``mindie_knowledge/consent_store.py`` @ 0df968a03008a170bb52d4acade7c7226eb0d39b,
-SHA-256 c5caf974705ff08615fc33e49a0ec28dd5b070b55ff70d1beaff5c4fb0d8a65e)
+``mindie_knowledge/consent_store.py`` @ 28568061ea9a94e9a1b4b057322b6bc8f66ff27b,
+SHA-256 679c6483a2edbf2d093de2ca38b00bfb73418b1179bcef9cdf6f34b5f9ed6b4c)
 when the runtime cannot be loaded before first setup. Do not hand-edit the
 copy and do not fork the semantics here.
 
@@ -74,8 +74,6 @@ def _read_json(path: Path):
         return "missing", None
     except OSError:
         return "unreadable", None
-    if len(raw) > 64 * 1024:
-        return "corrupt", None
     try:
         data = json.loads(raw)
     except ValueError:

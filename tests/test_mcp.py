@@ -17,15 +17,19 @@ class McpTests(unittest.TestCase):
         return json.loads(line)
 
     def start(self, surface, config, extra=None):
-        return subprocess.Popen(
+        proc = subprocess.Popen(
             [sys.executable, str(SCRIPTS / "mcp_server.py"), surface],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
+            text=True, encoding="utf-8",
             env=env_for(config, extra=extra),
             cwd=str(SCRIPTS.parent),
         )
+        for stream in (proc.stdin, proc.stdout, proc.stderr):
+            if stream is not None:
+                self.addCleanup(stream.close)
+        return proc
 
     def test_knowledge_list_requires_nonce_and_rejects_foreign_session(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -231,7 +235,8 @@ class McpTests(unittest.TestCase):
                 self.assertFalse(result["result"]["isError"], result["result"])
                 payload = result["result"]["structuredContent"]
                 self.assertFalse(payload["configured"])
-                self.assertEqual(len(payload["choices"]), 3)
+                self.assertEqual(payload["choices"], [])
+                self.assertEqual(payload["experience"], "needs-configuration")
                 self.assertFalse(payload["sharing"]["enabled"])
             finally:
                 proc.stdin.close()
@@ -245,7 +250,7 @@ class McpTests(unittest.TestCase):
             result = subprocess.run(
                 [sys.executable, str(SCRIPTS / "mcp_server.py"), "knowledge", "--once"],
                 input=json.dumps(req) + "\n",
-                text=True,
+                text=True, encoding="utf-8",
                 capture_output=True,
                 timeout=8,
                 env=env_for(config),
@@ -286,7 +291,7 @@ class McpTests(unittest.TestCase):
                     )
                 )
                 + "\n",
-                text=True,
+                text=True, encoding="utf-8",
                 capture_output=True,
                 timeout=8,
                 env=env,
@@ -306,7 +311,7 @@ class McpTests(unittest.TestCase):
                     )
                 )
                 + "\n",
-                text=True,
+                text=True, encoding="utf-8",
                 capture_output=True,
                 timeout=8,
                 env=env,

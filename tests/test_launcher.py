@@ -1,6 +1,7 @@
 import json
 import os
-import selectors
+import queue
+import threading
 import subprocess
 import sys
 import tempfile
@@ -14,6 +15,9 @@ LAUNCH = SCRIPTS / "mindie_launch.py"
 
 
 def _alive(pid: int) -> bool:
+    if os.name == "nt":
+        from support import windows_process_alive
+        return windows_process_alive(pid)
     try:
         os.kill(pid, 0)
     except OSError:
@@ -122,7 +126,7 @@ class LauncherTests(unittest.TestCase):
             self.assertEqual(list(xdg.rglob("*")), [])
 
     def _popen_hook(self, args, env):
-        return subprocess.Popen(
+        proc = subprocess.Popen(
             [sys.executable, str(LAUNCH), *args],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -130,6 +134,10 @@ class LauncherTests(unittest.TestCase):
             text=True,
             env=env,
         )
+        for stream in (proc.stdin, proc.stdout, proc.stderr):
+            if stream is not None:
+                self.addCleanup(stream.close)
+        return proc
 
     def test_abnormal_hook_child_fails_open_without_forwarding_its_output(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -305,6 +313,9 @@ class LauncherTests(unittest.TestCase):
                 stdout=subprocess.PIPE,
                 text=True,
             )
+            for stream in (holder.stdin, holder.stdout, holder.stderr):
+                if stream is not None:
+                    self.addCleanup(stream.close)
             try:
                 self.assertEqual(holder.stdout.readline().strip(), "held")
                 started = time.monotonic()
@@ -354,6 +365,9 @@ class LauncherTests(unittest.TestCase):
                 text=True,
                 env=env,
             )
+            for stream in (proc.stdin, proc.stdout, proc.stderr):
+                if stream is not None:
+                    self.addCleanup(stream.close)
             try:
                 proc.stdin.write(
                     json.dumps(
@@ -416,13 +430,18 @@ class LauncherTests(unittest.TestCase):
                 tmp / "gen",
                 **{
                     "updater.py": (
-                        "import fcntl, json, os, sys\n"
+                        "import json, os, sys\n"
                         "from pathlib import Path\n"
                         "cfg = json.loads(Path(os.environ['MINDIE_KIMI_CONFIG']).read_text())\n"
                         "lock = Path(cfg['state_dir']) / 'update' / 'operation.lock'\n"
                         "lock.parent.mkdir(parents=True, exist_ok=True)\n"
                         "fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)\n"
-                        "fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+                        "if os.name == 'nt':\n"
+                        "    import msvcrt\n"
+                        "    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)\n"
+                        "else:\n"
+                        "    import fcntl\n"
+                        "    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
                         "print(json.dumps({\n"
                         "    'op': sys.argv[1],\n"
                         "    'config': os.environ.get('MINDIE_KIMI_CONFIG'),\n"
@@ -487,18 +506,20 @@ class LauncherTests(unittest.TestCase):
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, env=env,
             )
-            selector = selectors.DefaultSelector()
+            for stream in (listed.stdin, listed.stdout, listed.stderr):
+                if stream is not None:
+                    self.addCleanup(stream.close)
+            response = queue.Queue()
+            reader = threading.Thread(target=lambda: response.put(listed.stdout.readline()), daemon=True)
             try:
                 listed.stdin.write(json.dumps(dict(jsonrpc="2.0", id=1, method="tools/list")) + "\n")
                 listed.stdin.flush()
-                selector.register(listed.stdout, selectors.EVENT_READ)
-                self.assertTrue(selector.select(3), "MCP response deadline")
-                payload = json.loads(listed.stdout.readline())
+                reader.start()
+                payload = json.loads(response.get(timeout=3))
                 self.assertEqual(payload["result"]["tools"][0]["name"], "from-custom")
                 listed.stdin.close()
                 self.assertEqual(listed.wait(timeout=3), 0)
             finally:
-                selector.close()
                 if listed.poll() is None:
                     listed.kill()
                     listed.wait(timeout=3)
@@ -519,6 +540,9 @@ class LauncherTests(unittest.TestCase):
                 text=True,
                 env=env,
             )
+            for stream in (proc.stdin, proc.stdout, proc.stderr):
+                if stream is not None:
+                    self.addCleanup(stream.close)
             try:
                 proc.stdin.write(
                     json.dumps(

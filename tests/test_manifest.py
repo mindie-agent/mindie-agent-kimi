@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class ManifestTests(unittest.TestCase):
     def setUp(self):
-        self.manifest = json.loads((ROOT / "kimi.plugin.json").read_text())
+        self.manifest = json.loads((ROOT / "kimi.plugin.json").read_text(encoding="utf-8"))
 
     def test_native_manifest_shape(self):
         self.assertEqual(self.manifest["name"], "mindie-agent")
@@ -32,7 +32,7 @@ class ManifestTests(unittest.TestCase):
             self.assertEqual(server["cwd"], "./")
 
     def test_commands_are_not_textual_markers(self):
-        init = (ROOT / "commands" / "init.md").read_text()
+        init = (ROOT / "commands" / "init.md").read_text(encoding="utf-8")
         self.assertNotIn("MINDIE_AGENT_NATIVE_ENTRY", init)
         self.assertIn("mindie_entry", init)
         self.assertIn("request_nonce", init)

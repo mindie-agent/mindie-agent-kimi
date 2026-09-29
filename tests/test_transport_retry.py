@@ -374,6 +374,7 @@ class RetryTests(unittest.TestCase):
         self.assertEqual(stored["sha"], SHA)
         self.assertEqual(stored["history"][0]["class"], "temporary_network")
 
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "POSIX FIFO mechanism")
     def test_fifo_metadata_is_unavailable_immediately(self):
         path = genstate.failed_path(self.adapter)
         path.parent.mkdir(parents=True, exist_ok=True)

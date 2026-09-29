@@ -22,7 +22,6 @@ if str(HERE) not in sys.path:
 from identity import claim_nonce, finish_nonce, require_nonce
 from paths import load_adapter_config, load_engine_config, state_dir
 
-MAX_LINE = 128 * 1024
 MAX_YIELD_TIME_MS = 30000
 REMOTE_ERROR_CATEGORIES = frozenset({
     "internal", "caller", "validation", "permission", "remote_execution",
@@ -46,9 +45,9 @@ KNOWLEDGE_TOOLS = [
             "Native MindIE entry. Mutations require the current /mindie-agent "
             "invocation; op=status can diagnose an already bound task. "
             "Requires a fresh request_nonce. Never pass a session id. "
-            "op=init binds this task internally and returns first-use choices "
-            "once or status; op=choose stores the one-time knowledge choice "
-            "(contribute/read-only/later/disabled) and optionally the "
+            "op=init binds this task internally and reports missing configuration "
+            "or status; op=choose configures contribution or explicit disable "
+            "(contribute/disabled) and optionally the "
             "independent reporting choice. A conversational contribution "
             "naming the public repository and account enables sharing for the "
             "current project; via the entry itself the destination comes from "
@@ -77,7 +76,7 @@ KNOWLEDGE_TOOLS = [
                     ],
                 },
                 request_nonce=NONCE_PROP,
-                choice={"type": "string", "enum": ["contribute", "read-only", "later", "disabled"]},
+                choice={"type": "string", "enum": ["contribute", "disabled"]},
                 repository={
                     "type": "string",
                     "description": "Public owner/repo the user stated for contribution.",
@@ -160,7 +159,9 @@ def canonical(value):
 
 
 def send(message):
-    print(canonical(message), flush=True)
+    # MCP is UTF-8 JSON Lines even when Windows redirects a cp1252 console.
+    sys.stdout.buffer.write((canonical(message) + "\n").encode("utf-8"))
+    sys.stdout.buffer.flush()
 
 
 def failure(exc):
@@ -417,28 +418,15 @@ def handle(surface, message):
                 pass
 
 
-def _read_line(stdin, limit: int):
-    """Return bytes, None to skip an oversize line, or False on EOF."""
-    line = stdin.readline(limit + 1)
-    if line == b"":
-        return False
-    if len(line) > limit and not line.endswith(b"\n"):
-        while True:
-            chunk = stdin.readline(limit + 1)
-            if not chunk or chunk.endswith(b"\n"):
-                break
-        return None
-    if line.endswith(b"\n"):
-        line = line[:-1]
-    if len(line) > limit:
-        return None
-    return line
+def _read_line(stdin):
+    line = stdin.readline()
+    return line.rstrip(b"\r\n") if line else False
 
 
 def serve(surface):
     stdin = sys.stdin.buffer
     while True:
-        line = _read_line(stdin, MAX_LINE)
+        line = _read_line(stdin)
         if line is False:
             return
         if line is None or not line.strip():
@@ -456,8 +444,8 @@ def serve(surface):
 
 def serve_once(surface):
     """One request, no initialize requirement, no extra stdout."""
-    raw = sys.stdin.buffer.read(MAX_LINE + 1)
-    if not raw or len(raw) > MAX_LINE:
+    raw = sys.stdin.buffer.read()
+    if not raw:
         return
     line, _, _ = raw.partition(b"\n")
     if not line.strip():

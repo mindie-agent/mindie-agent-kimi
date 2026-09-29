@@ -12,7 +12,7 @@ import shlex
 import stat
 from pathlib import Path
 
-from entry_state import consume_activation_id, three_choices
+from entry_state import consume_activation_id, configuration_required
 from identity import (
     _entry_from_openings,
     current_entry_scan,
@@ -111,7 +111,6 @@ def _bounded_text(value, limit):
     return value[:limit]
 
 
-_META_LIMIT = 65536
 
 
 def _read_regular_json(path):
@@ -129,15 +128,14 @@ def _read_regular_json(path):
         return "unavailable", None
     try:
         info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode) or info.st_size > _META_LIMIT:
+        if not stat.S_ISREG(info.st_mode):
             return "unavailable", None
-        blob = os.read(descriptor, _META_LIMIT + 1)
+        with os.fdopen(os.dup(descriptor), "rb") as stream:
+            blob = stream.read()
     except OSError:
         return "unavailable", None
     finally:
         os.close(descriptor)
-    if len(blob) > _META_LIMIT:
-        return "unavailable", None
     try:
         value = json.loads(blob.decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError, ValueError):
@@ -271,7 +269,7 @@ def _updater_view():
 
 def _knowledge_status_payload(session=None):
     if not _configured():
-        payload = three_choices()
+        payload = configuration_required()
         if payload["first_use"] in {"read-only", "later", "contribute"}:
             payload["repeat"] = True
             payload["choices"] = []
@@ -305,49 +303,40 @@ def _knowledge_status_payload(session=None):
             failures=admission.get("failures"),
             project_root=admission.get("project_root"),
         )
-    if choice:
-        # The one-time setup is done; it is never presented again.
-        payload["repeat"] = True
-        payload["choices"] = []
-    elif saved["state"] in {"corrupt", "unreadable"}:
-        # Damaged saved state is a fault, never a fresh install: read-only
-        # help keeps working, writes stop, no re-onboarding. Nothing is
-        # rewritten automatically — repair is the user's explicit action.
-        payload["repeat"] = True
-        payload["choices"] = []
+    payload["choices"] = []
+    payload["repeat"] = bool(choice or saved["state"] in {"corrupt", "unreadable"}
+                             or sharing_view.get("state") in {"corrupt", "unreadable"}
+                             or consent_mod.marker_exists())
+    # Saved preferences and runtime configuration are distinct facts. A prior
+    # marker/choice must not hide an incomplete or failed experience loop.
+    if saved["state"] in {"corrupt", "unreadable"}:
+        payload["experience"] = "unavailable"
         payload["consent_error"] = dict(state=saved["state"], error=saved["error"])
-        payload["hint"] = (
-            f"The saved setup state is damaged ({saved['path']}). This is NOT "
-            "a fresh install: read-only knowledge keeps working and nothing "
-            "is collected. Nothing was changed automatically: move that file "
-            "aside (keep it as evidence) or delete it, then make your choice "
-            "again via /mindie-agent."
-        )
-    elif sharing_view.get("state") == "corrupt" or sharing_view.get("error"):
-        # A damaged settings file is a fault, never a fresh install.
-        payload["repeat"] = True
-        payload["choices"] = []
-        payload["hint"] = (
-            "The saved community settings are damaged. Read-only knowledge "
-            "keeps working and nothing is collected; repair the file or "
-            "change settings explicitly via /mindie-agent."
-        )
-    elif saved["state"] == "missing" and consent_mod.marker_exists():
-        # A legacy marker (any state) proves a prior setup: status, never a
-        # fresh onboarding — a damaged marker must not re-ask the choice.
-        payload["repeat"] = True
-        payload["choices"] = []
-    elif not payload["sharing"].get("enabled"):
-        # Genuinely unchosen: cold install or installer default-off. The
-        # one-time setup is presented exactly until a choice is recorded.
-        extra = three_choices()
-        payload["choices"] = extra["choices"]
-        payload["note"] = extra["note"]
-        payload["setup"] = extra["setup"]
-        payload["hint"] = (
-            "Sharing is off: no Stop capture or organizer. "
-            "Knowledge retrieval works after invoking /mindie-agent once in this task."
-        )
+        payload["hint"] = "Saved setup state is damaged; experience capture is unavailable. Preserve the file for diagnosis."
+    elif sharing_view.get("state") in {"corrupt", "unreadable"}:
+        payload["experience"] = "unavailable"
+        payload["hint"] = "Community configuration is damaged; experience capture is unavailable."
+    elif choice in {"read-only", "later", "disabled"}:
+        payload["experience"] = "disabled"
+        payload["hint"] = "Experience capture is explicitly disabled; the saved setting is preserved."
+    elif not sharing_view.get("enabled") or not choice:
+        payload["experience"] = "needs-configuration"
+        extra = configuration_required()
+        payload.update(required=extra["required"], note=extra["note"])
+        payload["hint"] = "Configure the missing destination and scope through the native mindie-agent entry."
+    else:
+        from sharing import load
+        settings = load()
+        task = payload.get("this_session") or {}
+        if not settings.allows_capture():
+            payload["experience"] = "unavailable"
+        elif not task.get("bound"):
+            payload["experience"] = "task-unbound"
+        elif not settings.in_scope(task.get("project_root")):
+            payload["experience"] = "out-of-scope"
+        else:
+            payload["experience"] = "configured"
+        payload["hint"] = "Configuration and task binding are prerequisites; inspect captures and contributions for actual processing receipts."
     update = _updater_view()
     if update:
         payload["update"] = update
@@ -414,6 +403,8 @@ def _parse_native_setup(arguments):
         return None
     tokens = text.split()
     if tokens[0] in {"read-only", "later"}:
+        raise ValueError("read-only/later product modes were removed; configure the destination and scope, or use disabled")
+    if tokens[0] == "disabled":
         return dict(choice=tokens[0])
     if tokens[0] == "contribute":
         if len(tokens) != 3:
@@ -441,19 +432,9 @@ def _enable_contribution(session, cwd, *, repository, account, branch="main", fo
     except Exception as exc:
         raise ValueError(str(exc)[:200]) from None
     root = _project_root(session, cwd)
-    roots = [root]
-    try:
-        existing = sharing_mod.load()
-        if existing.enabled and existing.repository == repository:
-            for item in existing.project_roots:
-                item = str(item)
-                if item not in roots:
-                    roots.append(item)
-    except Exception:
-        pass
     return sharing_mod.write_enabled(
-        repository=repository, project_roots=roots, branch=branch,
-        visibility="public", account=account, fork=fork)
+        repository=repository, project_roots=[root], branch=branch,
+        visibility="public", account=account, fork=fork, extend_scope=True)
 
 
 def _apply_choice(session, cwd, choice, *, repository=None, account=None,
@@ -465,9 +446,12 @@ def _apply_choice(session, cwd, choice, *, repository=None, account=None,
     is rewritten automatically. Returns the sharing view (or None)."""
     import consent as consent_mod
 
+    if choice not in {"contribute", "disabled"}:
+        raise ValueError("configure contribution or explicitly disable it; read-only/later are legacy data only")
     if choice == "contribute" and not _configured():
         raise ValueError("MindIE is not configured; run scripts/setup.py first")
-    consent_mod.record_choice(choice)
+    if consent_mod.load()["state"] in {"corrupt", "unreadable"}:
+        raise ValueError("saved setup state is damaged; configuration was not changed")
     view = None
     if _configured():
         import sharing as sharing_mod
@@ -479,6 +463,18 @@ def _apply_choice(session, cwd, choice, *, repository=None, account=None,
             )
         else:
             view = sharing_mod.write_disabled()
+    # Only a successful configuration records completion. A failed target
+    # validation must leave the first configuration retryable.
+    consent_mod.record_choice(choice)
+    if choice == "contribute" and view is not None:
+        from knowledge_service import ensure_service
+        from admission import gate
+        if gate().inspect(session).get("status") == "active":
+            try:
+                ensure_service(engine_config_path())
+                view["service"] = "started"
+            except Exception as exc:
+                view["service"] = f"not-started:{type(exc).__name__}"
     return view
 
 
@@ -535,8 +531,12 @@ def _configured_init_activation(session, cwd, activation_id):
         payload["already"] = True
         return payload
     try:
-        ensure_service(engine_config_path())
-        service = "started"
+        from sharing import load
+        if load().allows_capture():
+            ensure_service(engine_config_path())
+            service = "started"
+        else:
+            service = "not-requested:configuration-incomplete-or-disabled"
     except Exception as exc:
         service = f"not-started:{type(exc).__name__}"
     payload = status_payload(session)
@@ -554,11 +554,14 @@ def _apply_entry_choice(payload, session, cwd, native):
         session, cwd, native["choice"],
         repository=native.get("repository"), account=native.get("account"),
     )
+    payload.update(status_payload(session))
     payload["first_use"] = native["choice"]
     payload["choices"] = []
     payload["repeat"] = True
     if view is not None:
         payload["sharing"] = view
+        if str(view.get("service", "")).startswith("not-started:"):
+            payload["experience"] = "unavailable"
     return payload
 
 
@@ -606,7 +609,7 @@ def op_choose(session, choice, cwd=None, *, repository=None, account=None,
         if saved["state"] == "ok" and saved["choice"] is not None:
             raise ValueError(
                 "a choice is already saved; change settings explicitly via "
-                "the entry, e.g. /mindie-agent read-only"
+                "the entry, e.g. /mindie-agent contribute owner/repo account"
             )
     else:
         user_text = None
@@ -643,6 +646,8 @@ def op_choose(session, choice, cwd=None, *, repository=None, account=None,
     payload["repeat"] = True
     if view is not None:
         payload["sharing"] = view
+        if str(view.get("service", "")).startswith("not-started:"):
+            payload["experience"] = "unavailable"
     if reporting_view is not None:
         payload["reporting_result"] = reporting_view
     if migration:
@@ -722,7 +727,7 @@ def op_sharing_status(session):
 
     return dict(
         **public_status(), diagnostics=_diagnostics(session),
-        hint="This task's batch IDs are in diagnostics.contributions; use /mindie-agent:recover --batch ID to inspect an existing contribution.",
+        hint="The worker handles eligible transient recovery automatically. Diagnostics identify faults requiring action; batch commands are optional operator troubleshooting.",
     )
 
 

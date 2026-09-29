@@ -208,7 +208,7 @@ def build_runtime(generation: Path, deadline: float) -> Path:
     if sys.version_info < MIN_PYTHON:
         raise CheckFailed(f"Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]}+ is required")
     requirements = generation / "runtime-requirements.txt"
-    text = requirements.read_text()
+    text = requirements.read_text(encoding='utf-8')
     if re.search(r"@main\b", text):
         raise CheckFailed("runtime-requirements.txt must pin full commit SHAs, not @main")
     venv = generation / ".venv"
@@ -241,13 +241,14 @@ def write_generation_configs(generation: Path, python: Path, adapter: dict) -> P
     state paths stay stable; parser/organizer/interpreter move with the
     generation. Returns the generation adapter config path."""
     engine = load_engine_config(adapter)
+    engine.pop("agent_command", None)
     config_dir = generation / "config"
     gen_engine = config_dir / "kimi.engine.json"
     gen_adapter = config_dir / "kimi.adapter.json"
     atomic_write(gen_engine, dict(
         engine,
         transcript_adapter=str(generation / "scripts" / "transcript.py"),
-        agent_command=[str(python), str(generation / "scripts" / "organizer.py")],
+        **__import__("capture_config").prepare(python, generation / "scripts"),
     ))
     atomic_write(gen_adapter, dict(
         adapter,
@@ -271,20 +272,16 @@ def host_valid_mcp_command(command: str) -> bool:
 
 
 def _write_front_wrapper(package: Path, python: Path) -> str:
-    """Package-relative wrapper that execs the retained front interpreter.
+    """POSIX package-relative wrapper for the retained front interpreter.
 
     Native command lookup cannot use an absolute interpreter path; the
     wrapper stays inside the copied plugin root and starts with './'.
     """
-    if os.name == "nt":
-        name = "mindie-front.cmd"
-        (package / name).write_text(f'@echo off\r\n"{python}" %*\r\n')
-    else:
-        name = "mindie-front"
-        (package / name).write_text(
-            f"#!/bin/sh\nexec {shlex.quote(str(python))} \"$@\"\n"
-        )
-        (package / name).chmod(0o755)
+    name = "mindie-front"
+    (package / name).write_text(
+        f"#!/bin/sh\nexec {shlex.quote(str(python))} \"$@\"\n"
+    )
+    (package / name).chmod(0o755)
     return f"./{name}"
 
 
@@ -321,17 +318,29 @@ def build_host_package(generation: Path, adapter: dict, sha: str,
     if package.exists():
         shutil.rmtree(package)
     package.mkdir(parents=True)
-    manifest = json.loads((generation / "kimi.plugin.json").read_text())
+    manifest = json.loads((generation / "kimi.plugin.json").read_text(encoding='utf-8'))
     base = str(manifest.get("version") or "0.1.0").split("+")[0]
     manifest["version"] = f"{base}+mindie.{sha[:12]}"
     base_python = sys.executable
-    front = _write_front_wrapper(package, Path(base_python))
+    if os.name == "nt":
+        # Kimi's stdio transport uses shell=False. A .cmd wrapper passes the
+        # manifest validator but Node cannot spawn it (EINVAL). Its native
+        # schema supports PATH commands and child env: select the retained
+        # interpreter directory explicitly and pass every argument directly.
+        front = Path(base_python).name
+        front_env = {"PATH": str(Path(base_python).parent) + os.pathsep
+                     + os.environ.get("PATH", "")}
+    else:
+        front = _write_front_wrapper(package, Path(base_python))
+        front_env = None
     bound = ["--config", str(config_file)]
     for surface in ("knowledge", "remote"):
         manifest["mcpServers"][surface] = {
             "command": front,
             "args": [str(launcher), *bound, "mcp", surface],
         }
+        if front_env is not None:
+            manifest["mcpServers"][surface]["env"] = dict(front_env)
     quoted = _quote_front_command(base_python, launcher, config_file)
     for hook in manifest.get("hooks", []):
         op = {"PreToolUse": "pretool", "Stop": "stop"}.get(hook.get("event"))
@@ -352,6 +361,25 @@ def build_host_package(generation: Path, adapter: dict, sha: str,
     return package
 
 
+def _remove_owned_tree(path):
+    """Remove an owned generation, including Windows read-only Git objects.
+
+    Other failures remain visible; an incomplete generation must not be
+    silently retained and mistaken for a successfully cleaned candidate.
+    """
+    import stat
+
+    def retry_readonly(function, filename, exc_info):
+        error = exc_info[1]
+        mode = Path(filename).lstat().st_mode
+        if not isinstance(error, PermissionError) or not stat.S_ISREG(mode) or mode & stat.S_IWRITE:
+            raise error
+        os.chmod(filename, mode | stat.S_IWRITE)
+        function(filename)
+
+    shutil.rmtree(path, onerror=retry_readonly)
+
+
 def stage_generation(sha: str, remote: str, adapter: dict, deadline: float,
                      build=build_runtime) -> tuple[Path, Path, Path]:
     """Returns (generation, venv python, generation adapter config)."""
@@ -361,9 +389,9 @@ def stage_generation(sha: str, remote: str, adapter: dict, deadline: float,
         gen_adapter = target / "config" / "kimi.adapter.json"
         if python.exists() and gen_adapter.is_file():
             return target, python, gen_adapter
-        shutil.rmtree(target)
+        _remove_owned_tree(target)
     elif target.exists():
-        shutil.rmtree(target)
+        _remove_owned_tree(target)
     staging = generations_dir(adapter) / f".staging-{sha}-{os.getpid()}"
     staging.mkdir(parents=True, exist_ok=False)
     try:
@@ -376,7 +404,7 @@ def stage_generation(sha: str, remote: str, adapter: dict, deadline: float,
              deadline=deadline, cwd=staging)
         os.replace(staging, target)
     except Exception:
-        shutil.rmtree(staging, ignore_errors=True)
+        _remove_owned_tree(staging)
         raise
     try:
         python = build(target, deadline)
@@ -386,7 +414,7 @@ def stage_generation(sha: str, remote: str, adapter: dict, deadline: float,
         (target / COMPLETE).write_text(f"{sha}\n")
         return target, python, gen_adapter
     except Exception:
-        shutil.rmtree(target, ignore_errors=True)
+        _remove_owned_tree(target)
         raise
 
 
@@ -484,7 +512,7 @@ def native_install(adapter: dict, package: Path, deadline: float,
     if not isinstance(home, str) or not home:
         raise CheckFailed("adapter configuration lacks kimi_home for native install")
     package = package.resolve()
-    manifest = json.loads((package / "kimi.plugin.json").read_text())
+    manifest = json.loads((package / "kimi.plugin.json").read_text(encoding='utf-8'))
     try:
         output = bounded_run(
             [sys.executable, str(HERE / "install_kimi_plugin.py"),
@@ -1096,7 +1124,7 @@ def recover() -> int:
 def install_schedule(config_file=None) -> int:
     if config_file is not None:
         config_file = Path(config_file).expanduser().absolute()
-        adapter = json.loads(config_file.read_text())
+        adapter = json.loads(config_file.read_text(encoding='utf-8'))
         if not isinstance(adapter, dict):
             raise SystemExit("adapter configuration must be one JSON object")
     else:

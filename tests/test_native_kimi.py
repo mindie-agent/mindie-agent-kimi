@@ -34,10 +34,10 @@ class NativeKimiTests(unittest.TestCase):
                 "native kimi binary is absent (set MINDIE_KIMI_BIN or install on PATH)"
             )
         help_text = subprocess.run(
-            [kimi, "--help"], capture_output=True, text=True, timeout=10
+            [kimi, "--help"], capture_output=True, text=True, encoding="utf-8", timeout=10, check=True
         ).stdout
         self.assertNotIn("plugins install", help_text.lower())
-        manifest = json.loads((ROOT / "kimi.plugin.json").read_text())
+        manifest = json.loads((ROOT / "kimi.plugin.json").read_text(encoding="utf-8"))
         knowledge = manifest["mcpServers"]["knowledge"]
         self.assertEqual(knowledge["command"], "python3")
         self.assertEqual(knowledge["args"][0], "./scripts/with_runtime.py")

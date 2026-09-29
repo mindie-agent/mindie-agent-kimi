@@ -11,54 +11,67 @@ SCRIPTS = ROOT / "scripts"
 FIXTURES = ROOT / "tests" / "fixtures"
 
 
-def install_inspect_shim():
-    """Test-only seam: the pinned core predates Admission.inspect. Provide
-    the exact contract of the new-core inspect (status
-    active/paused/inactive/missing/unavailable, read-only, no token) so
-    adapter tests exercise the same path the merged core will serve."""
-    from mindie_knowledge.loop.activation import Admission
-
-    if getattr(Admission, "inspect", None) is not None:
+def deny_read(path):
+    if os.name != "nt":
+        path.chmod(0)
         return
-    import sqlite3
+    import csv
+    sid = list(csv.reader(subprocess.check_output(
+        ["whoami", "/user", "/fo", "csv", "/nh"], text=True).splitlines()))[0][1]
+    if not sid.startswith("S-1-"):
+        raise AssertionError("current user SID unavailable")
+    subprocess.run(["icacls", str(path), "/deny", f"*{sid}:(RD)"],
+                   check=True, capture_output=True)
 
-    max_failures = getattr(
-        __import__("mindie_knowledge.loop.activation", fromlist=["MAX_FAILURES"]),
-        "MAX_FAILURES",
-        3,
-    )
 
-    def inspect(self, session):
-        result = dict(status="missing", enabled=False)
-        if not isinstance(session, str) or not session.strip() or len(session) > 256:
-            return dict(status="unavailable", enabled=False, error_class="ValueError")
-        db = None
-        try:
-            self.path.stat()
-            db = sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True, timeout=0.1)
-            row = db.execute(
-                "SELECT enabled, failures, project_root FROM leases WHERE session=? LIMIT 1",
-                (session,),
-            ).fetchone()
-            if row is not None:
-                enabled, failures, project_root = row
-                paused = bool(enabled) and failures >= max_failures
-                result = dict(
-                    status="paused" if paused else "active" if enabled else "inactive",
-                    enabled=bool(enabled) and not paused,
-                    failures=failures,
-                    project_root=project_root,
-                )
-        except FileNotFoundError:
-            pass
-        except (OSError, sqlite3.Error, TypeError) as exc:
-            result = dict(status="unavailable", enabled=False, error_class=type(exc).__name__)
-        finally:
-            if db is not None:
-                db.close()
-        return result
+def allow_read(path):
+    if os.name != "nt":
+        path.chmod(0o600)
+        return
+    import csv
+    sid = list(csv.reader(subprocess.check_output(
+        ["whoami", "/user", "/fo", "csv", "/nh"], text=True).splitlines()))[0][1]
+    subprocess.run(["icacls", str(path), "/remove:d", "*" + sid],
+                   check=True, capture_output=True)
 
-    Admission.inspect = inspect
+
+def windows_process_alive(pid):
+    """Observe without sending a signal; os.kill(pid, 0) kills on Windows."""
+    import ctypes
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel.OpenProcess(0x100000, False, pid)
+    if not handle:
+        if ctypes.get_last_error() == 87:
+            return False
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        state = kernel.WaitForSingleObject(handle, 0)
+        if state not in (0, 258):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return state == 258
+    finally:
+        kernel.CloseHandle(handle)
+
+
+def close_diagnostic_writers(root):
+    """Release only this fixture's cached log writers before deleting its root.
+
+    Real hooks exit their process. In-process hook fixtures must explicitly
+    end that resource lifetime; Windows cannot unlink an open log file.
+    """
+    if not root:
+        return
+    import mindie_diagnostics.logging as diagnostic_logging
+
+    selected = Path(root).absolute()
+    for (_component, location), recorder in list(diagnostic_logging._FAILURE_RECORDERS.items()):
+        if Path(location) == selected:
+            recorder.close()
 
 
 def env_for(config=None, extra=None, kimi_home=None):

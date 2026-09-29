@@ -16,6 +16,9 @@ import bounded  # noqa: E402
 
 
 def _alive(pid: int) -> bool:
+    if os.name == "nt":
+        from support import windows_process_alive
+        return windows_process_alive(pid)
     try:
         os.kill(pid, 0)
     except OSError:
@@ -41,6 +44,13 @@ def _wait_dead(pid: int, timeout=2.0) -> bool:
 
 
 class BoundedTests(unittest.TestCase):
+    def test_empty_later_argument_is_passed(self):
+        result = bounded.run(
+            [sys.executable, "-c", "import sys; print(repr(sys.argv[1]))", ""],
+            "", timeout=5,
+        )
+        self.assertEqual(result.strip(), "''")
+
     def test_timeout_kills_process_group(self):
         started = time.monotonic()
         with self.assertRaises(bounded.CommandTimedOut):

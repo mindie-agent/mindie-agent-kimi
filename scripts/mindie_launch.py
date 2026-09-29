@@ -21,7 +21,8 @@ The child gets MINDIE_KIMI_CONFIG=current.adapter_config and no PYTHONPATH.
 
 Windows uses a real msvcrt byte lock; if no real lock can be taken the call
 fails closed — unprotected dispatch is never executed. Windows process-tree
-protection lives in bounded.py (taskkill /T) and is not natively verified.
+protection lives in bounded.py (suspended start and owned Job); native process
+tests cover normal exit and timeout after the leader exits.
 """
 
 from __future__ import annotations
@@ -85,8 +86,6 @@ import bounded
 
 diagnostic_support = _load_diagnostic_support()
 
-MAX_LINE = 128 * 1024
-MAX_HOOK_BYTES = 128 * 1024
 HOOK_TOTAL = 1.5
 HOOK_LOCK_BUDGET = 0.3
 CALL_LOCK_BUDGET = 5.0
@@ -118,7 +117,7 @@ def _config_path() -> Path:
 
 def _load_config():
     try:
-        data = json.loads(_config_path().read_text())
+        data = json.loads(_config_path().read_text(encoding='utf-8'))
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None
@@ -134,7 +133,7 @@ def _state_dir(config=None) -> Path:
         engine = config.get("engine_config")
         if isinstance(engine, str):
             try:
-                root = json.loads(Path(engine).read_text()).get("root")
+                root = json.loads(Path(engine).read_text(encoding='utf-8')).get("root")
                 if isinstance(root, str):
                     return Path(root) / "kimi-adapter"
             except (OSError, ValueError):
@@ -156,7 +155,7 @@ def _sharing_enabled() -> bool:
     if not path.is_file():
         return False
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding='utf-8'))
     except (OSError, ValueError):
         _record_hook("sharing-probe", "configuration")
         return False
@@ -170,7 +169,7 @@ def _sharing_enabled() -> bool:
     if not community_path.is_file():
         return False
     try:
-        raw = json.loads(community_path.read_text())
+        raw = json.loads(community_path.read_text(encoding='utf-8'))
     except (OSError, ValueError):
         _record_hook("sharing-probe", "configuration")
         return False
@@ -208,8 +207,7 @@ def _try_lock_shared(descriptor) -> None:
 
         # Real Windows byte lock (not verified on real hardware). LK_NBLCK is
         # exclusive; that is fail-closed relative to POSIX LOCK_SH.
-        if os.fstat(descriptor).st_size == 0:
-            os.write(descriptor, b"\0")
+        # Byte-range locks may extend beyond EOF; never write before owning it.
         os.lseek(descriptor, 0, os.SEEK_SET)
         msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
         return
@@ -264,7 +262,7 @@ def _release(descriptor) -> None:
 
 def _current(state: Path) -> dict:
     try:
-        data = json.loads((state / "update" / "current.json").read_text())
+        data = json.loads((state / "update" / "current.json").read_text(encoding='utf-8'))
     except (OSError, ValueError):
         data = None
     if isinstance(data, dict):
@@ -291,6 +289,7 @@ def _current(state: Path) -> dict:
 
 def _child_env(current: dict) -> dict:
     env = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
+    env["PYTHONIOENCODING"] = "utf-8"
     env["MINDIE_KIMI_CONFIG"] = current["adapter_config"]
     return env
 
@@ -309,13 +308,13 @@ def _record_hook(stage, category, op="stop"):
         pass
 
 
-def _read_hook_stdin(deadline: float) -> bytes:
-    """Read at most MAX_HOOK_BYTES before deadline. Never block until EOF.
+def _read_hook_stdin(deadline):
+    """Deadline-bounded raw fd read; never buffered I/O (shutdown can hang).
 
-    A writer that sends one byte and keeps the pipe open must not exceed the
-    remaining whole-hook budget. Oversized or timed-out input is empty (fail
-    open). Memory is capped at MAX_HOOK_BYTES+1. Windows uses the same thread
-    reader (code-only; not natively verified).
+    Stops at EOF, the deadline, or the first complete JSON
+    value so a held-open pipe cannot consume the helper's remaining time.
+    Windows native select is sockets-only; a daemon os.read thread is the
+    portable bound (code-only on Windows; not natively verified).
     """
     remaining = deadline - time.monotonic()
     if remaining <= 0:
@@ -328,33 +327,33 @@ def _read_hook_stdin(deadline: float) -> bytes:
         try:
             fd = sys.stdin.fileno()
             while True:
-                with lock:
-                    if len(buf) > MAX_HOOK_BYTES:
-                        return
-                    room = MAX_HOOK_BYTES + 1 - len(buf)
                 try:
-                    chunk = os.read(fd, min(8192, room))
+                    chunk = os.read(fd, 65536)
                 except (OSError, ValueError):
                     return
                 if not chunk:
                     return
                 with lock:
                     buf.extend(chunk)
-                    if len(buf) > MAX_HOOK_BYTES:
-                        return
+                    # Native Stop is one object. Avoid reparsing a growing
+                    # final answer after every chunk (quadratic work).
+                    if not chunk.rstrip().endswith((b'}', b']')):
+                        continue
+                    try:
+                        json.loads(bytes(buf))
+                    except ValueError:
+                        continue
+                    return
         finally:
             finished.set()
 
     thread = threading.Thread(target=reader, daemon=True)
     thread.start()
-    finished.wait(timeout=max(0.0, deadline - time.monotonic()))
+    finished.wait(timeout=max(0.0, remaining))
     if not finished.is_set():
         return b""
     with lock:
-        raw = bytes(buf)
-    if len(raw) > MAX_HOOK_BYTES:
-        return b""
-    return raw
+        return bytes(buf)
 
 
 def _hook(op: str) -> int:
@@ -589,27 +588,29 @@ def _dispatch(surface: str, raw: bytes, ident, cancel=None):
         _release(descriptor)
 
 
-def _read_mcp_line(stdin, limit: int):
-    """Return bytes, None to skip an oversize line, or False on EOF."""
-    line = stdin.readline(limit + 1)
-    if line == b"":
-        return False
-    if len(line) > limit and not line.endswith(b"\n"):
-        while True:
-            chunk = stdin.readline(limit + 1)
-            if not chunk or chunk.endswith(b"\n"):
-                break
-        return None
-    if line.endswith(b"\n"):
-        line = line[:-1]
-    if len(line) > limit:
-        return None
-    return line
+def _read_mcp_line(stdin):
+    line = stdin.readline()
+    return line.rstrip(b"\r\n") if line else False
 
 
 def _mcp(surface: str) -> int:
     output_fd = sys.stdout.fileno()
-    if os.name == "posix":
+    if os.name == "nt":
+        # Match POSIX nonblocking output on Python 3.11 as well (Python's
+        # os.set_blocking gained Windows pipe support only in 3.12).
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.SetNamedPipeHandleState.argtypes = [
+            wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD),
+            ctypes.c_void_p, ctypes.c_void_p,
+        ]
+        mode = wintypes.DWORD(1)  # PIPE_NOWAIT, byte stream
+        if not kernel.SetNamedPipeHandleState(
+                msvcrt.get_osfhandle(output_fd), ctypes.byref(mode), None, None):
+            raise ctypes.WinError(ctypes.get_last_error())
+    else:
         os.set_blocking(output_fd, False)
     stdin = sys.stdin.buffer
     output_lock = threading.Lock()
@@ -636,7 +637,10 @@ def _mcp(surface: str) -> int:
                     transport_closed.wait(0.02)
                     continue
                 if not count:
-                    raise BrokenPipeError("response transport closed")
+                    # A full Windows byte pipe can accept zero bytes.
+                    # A closed peer raises OSError; preserve unsent bytes.
+                    transport_closed.wait(0.02)
+                    continue
                 data = data[count:]
         finally:
             output_lock.release()
@@ -692,7 +696,7 @@ def _mcp(surface: str) -> int:
 
     try:
         while not transport_closed.is_set():
-            raw = _read_mcp_line(stdin, MAX_LINE)
+            raw = _read_mcp_line(stdin)
             if raw is False:
                 break
             if raw is None or not raw.strip():
@@ -821,6 +825,14 @@ def _updater(rest) -> int:
         print("committed generation lacks updater.py", file=sys.stderr)
         return 2
     try:
+        if os.name == "nt":
+            # Windows execve is a CRT spawn emulation. Its environment path
+            # can crash before the updater starts; CreateProcess also keeps
+            # argv quoting intact. The updater owns its operation deadlines.
+            import subprocess
+            return subprocess.call(
+                [current["python"], str(script), *rest], env=_child_env(current),
+            )
         os.execve(
             current["python"],
             [current["python"], str(script), *rest],

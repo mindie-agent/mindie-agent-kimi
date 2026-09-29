@@ -2,7 +2,8 @@
 import json
 import os
 from pathlib import Path
-import selectors
+import queue
+import threading
 import signal
 import subprocess
 import sys
@@ -24,7 +25,6 @@ print(json.dumps({'jsonrpc':'2.0','id':message['id'],'result':{'content':[{'type
 '''
 
 
-@unittest.skipUnless(os.name == "posix", "real POSIX pipe/process ownership")
 class FrontControlTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -46,7 +46,7 @@ class FrontControlTests(unittest.TestCase):
             [sys.executable, str(SCRIPTS / "mindie_launch.py"), "--config",
              str(config), "mcp", "remote"], stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
-            start_new_session=True)
+            start_new_session=os.name == "posix")
 
     def send(self, value):
         self.proc.stdin.write((json.dumps(value) + "\n").encode())
@@ -63,7 +63,11 @@ class FrontControlTests(unittest.TestCase):
 
     def tearDown(self):
         if self.proc.poll() is None:
-            os.killpg(self.proc.pid, signal.SIGKILL)
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(self.proc.pid)],
+                               capture_output=True, timeout=5)
+            else:
+                os.killpg(self.proc.pid, signal.SIGKILL)
             self.proc.wait(timeout=2)
         for stream in (self.proc.stdin, self.proc.stdout, self.proc.stderr):
             stream.close()
@@ -71,6 +75,13 @@ class FrontControlTests(unittest.TestCase):
         if pidfile.exists():
             for pid in json.loads(pidfile.read_text()):
                 if pid is None:
+                    continue
+                if os.name == "nt":
+                    from support import windows_process_alive
+                    if windows_process_alive(pid):
+                        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                                       capture_output=True, timeout=5)
+                        self.fail("owned child remains alive")
                     continue
                 result = subprocess.run(["ps", "-p", str(pid), "-o", "stat="],
                                         capture_output=True, text=True)
@@ -86,15 +97,12 @@ class FrontControlTests(unittest.TestCase):
         self.send({"jsonrpc": "2.0", "method": "notifications/cancelled",
                    "params": {"requestId": 1}})
         self.send({"jsonrpc": "2.0", "id": 2, "method": "ping"})
-        data = b""
-        selector = selectors.DefaultSelector()
-        selector.register(self.proc.stdout, selectors.EVENT_READ)
-        try:
-            while data.count(b"\n") < 2 and time.monotonic() - start < 2:
-                if selector.select(.05):
-                    data += os.read(self.proc.stdout.fileno(), 8192)
-        finally:
-            selector.close()
+        lines = queue.Queue()
+        def receive():
+            for _ in range(2):
+                lines.put(self.proc.stdout.readline())
+        threading.Thread(target=receive, daemon=True).start()
+        data = b"".join(lines.get(timeout=2) for _ in range(2))
         responses = {x["id"]: x for x in map(json.loads, data.splitlines())}
         self.assertEqual(responses[2]["result"], {})
         self.assertTrue(responses[1]["result"]["isError"])
@@ -106,6 +114,16 @@ class FrontControlTests(unittest.TestCase):
 
     def test_eof_cancels_owned_process_tree(self):
         self.start_call()
+        self.proc.stdin.close()
+        self.proc.wait(timeout=3)
+
+    def test_large_response_survives_partial_pipe_writes(self):
+        self.start_call(large=True)
+        response = queue.Queue()
+        threading.Thread(target=lambda: response.put(self.proc.stdout.readline()),
+                         daemon=True).start()
+        value = json.loads(response.get(timeout=3))
+        self.assertEqual(value["result"]["content"][0]["text"], "x" * 220000)
         self.proc.stdin.close()
         self.proc.wait(timeout=3)
 

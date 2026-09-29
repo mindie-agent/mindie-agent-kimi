@@ -128,8 +128,8 @@ class _UpdateLock:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
         try:
-            if os.name == "nt" and os.fstat(fd).st_size == 0:
-                os.write(fd, b" ")  # msvcrt.locking needs byte 0 to exist
+            # Windows permits locking beyond EOF. Writing byte zero before
+            # acquiring the lock races another first-time writer's lock.
             deadline = time.monotonic() + self.wait
             while True:
                 try:
@@ -243,8 +243,6 @@ def _read_raw(path):
         return "missing", None
     except OSError:
         return "unreadable", None
-    if len(raw) > MAX_BYTES:
-        return "corrupt", None
     try:
         data = json.loads(raw)
     except ValueError:
@@ -390,7 +388,8 @@ def _record(path, mutate):
             )
         document = dict(data) if state == "ok" else {}
         mutate(document)
-        _write_document(path, document)
+        if state != "ok" or document != data:
+            _write_document(path, document)
     return read(path)
 
 
@@ -406,6 +405,8 @@ def record_choice(path, choice):
         raise ValueError("choice must be contribute, read-only, later or disabled")
 
     def mutate(document):
+        if document.get("choice") == choice:
+            return
         document.pop("migrated_from", None)
         document.update(schema=SCHEMA, choice=choice, choice_at=time.time())
 

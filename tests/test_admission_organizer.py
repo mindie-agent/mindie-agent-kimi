@@ -120,11 +120,21 @@ class AdmissionOrganizerTests(unittest.TestCase):
             config = isolated / "config.toml"
             self.assertTrue(config.is_file())
             mode = config.stat().st_mode
-            self.assertEqual(stat.S_IMODE(mode), 0o600)
+            if os.name == "posix":
+                self.assertEqual(stat.S_IMODE(mode), 0o600)
             text = config.read_text()
             self.assertIn("managed:kimi-code", text)
             self.assertIn("kimi-code/k3", text)
             self.assertIn("[\"thinking\"]", text)
+            self.assertIn("\"enabled\" = false", text)
+            import tomllib
+            metadata = tomllib.loads(text)
+            model = metadata['models']['kimi-code/k3']
+            self.assertNotIn('thinking', model['capabilities'])
+            self.assertNotIn('always_thinking', model['capabilities'])
+            self.assertNotIn('default_effort', model)
+            self.assertNotIn('support_efforts', model)
+            self.assertEqual(metadata['thinking'], {'enabled': False})
             self.assertNotIn("[[hooks]]", text)
             self.assertFalse((isolated / "mcp.json").exists())
             installed = json.loads((isolated / "plugins" / "installed.json").read_text())

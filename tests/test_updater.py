@@ -81,15 +81,9 @@ def make_remote(tmp: Path):
 
 
 def fake_build(generation: Path, deadline: float) -> Path:
-    # Test seam for updater's `build` parameter (no network in tests):
-    # a wrapper that execs the installed acceptance runtime, which already
-    # provides the pinned mindie_knowledge/remote_dev. Production uses the
-    # real updater.build_runtime (fresh venv + pinned pip install).
-    python = generation / ".venv" / "bin" / "python"
-    python.parent.mkdir(parents=True, exist_ok=True)
-    python.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
-    python.chmod(0o755)
-    return python
+    # Only dependency installation is replaced. Probe, idle handshake,
+    # manifest and transaction paths still execute the real pinned runtime.
+    return Path(sys.executable)
 
 
 class UpdaterTests(unittest.TestCase):
@@ -158,7 +152,7 @@ class UpdaterTests(unittest.TestCase):
         generation = Path(current["generation"])
         self.assertTrue((generation / updater.COMPLETE).is_file())
         self.assertEqual(current["python"],
-                         str(generation / ".venv" / "bin" / "python"))
+                         str(Path(sys.executable)))
         gen_adapter = Path(current["adapter_config"])
         self.assertEqual(gen_adapter, generation / "config" / "kimi.adapter.json")
         # Generation adapter keeps stable state paths, new interpreter.
@@ -188,9 +182,13 @@ class UpdaterTests(unittest.TestCase):
         )
         command = manifest["mcpServers"]["knowledge"]["command"]
         self.assertTrue(updater.host_valid_mcp_command(command), command)
-        self.assertTrue(command.startswith("./"))
-        wrapper = self.installs[0][0] / command[2:]
-        self.assertTrue(wrapper.is_file())
+        if os.name == "nt":
+            self.assertEqual(command, Path(sys.executable).name)
+            wrapper = Path(sys.executable)
+        else:
+            self.assertTrue(command.startswith("./"))
+            wrapper = self.installs[0][0] / command[2:]
+            self.assertTrue(wrapper.is_file())
         launched = subprocess.run(
             [str(wrapper), "-c", "import sys; print(sys.executable)"],
             capture_output=True, text=True, timeout=5, check=True,
@@ -246,6 +244,9 @@ class UpdaterTests(unittest.TestCase):
             stdout=subprocess.PIPE, text=True,
             env=dict(os.environ, MINDIE_KIMI_CONFIG=str(self.config_path)),
         )
+        for stream in (holder.stdin, holder.stdout, holder.stderr):
+            if stream is not None:
+                self.addCleanup(stream.close)
         try:
             self.assertEqual(holder.stdout.readline().strip(), "held")
             self.assertEqual(self.run_check(lock_timeout=0.5), 0)
@@ -267,6 +268,9 @@ class UpdaterTests(unittest.TestCase):
             stdout=subprocess.PIPE, text=True,
             env=dict(os.environ, MINDIE_KIMI_CONFIG=str(self.config_path)),
         )
+        for stream in (holder.stdin, holder.stdout, holder.stderr):
+            if stream is not None:
+                self.addCleanup(stream.close)
         try:
             self.assertEqual(holder.stdout.readline().strip(), "held")
             self.assertEqual(self.run_check(), 0)
@@ -503,15 +507,21 @@ class UpdaterTests(unittest.TestCase):
         for name, server in manifest["mcpServers"].items():
             command = server["command"]
             self.assertTrue(updater.host_valid_mcp_command(command), command)
-            self.assertTrue(command.startswith("./"), command)
+            if os.name == "nt":
+                self.assertEqual(command, Path(sys.executable).name)
+                self.assertEqual(server["env"]["PATH"].split(os.pathsep)[0],
+                                 str(Path(sys.executable).parent))
+            else:
+                self.assertTrue(command.startswith("./"), command)
             self.assertFalse(os.path.isabs(command))
             self.assertEqual(Path(server["args"][0]), launcher)
             self.assertEqual(
                 server["args"][1:],
                 ["--config", str(self.config_path), "mcp", name],
             )
-            wrapper = pkg / command[2:]
-            self.assertTrue(wrapper.is_file())
+            if os.name != "nt":
+                wrapper = pkg / command[2:]
+                self.assertTrue(wrapper.is_file())
         self.assertFalse(updater.host_valid_mcp_command(sys.executable))
         self.assertFalse(updater.host_valid_mcp_command("/usr/bin/python3"))
         self.assertTrue(updater.host_valid_mcp_command("python3"))
