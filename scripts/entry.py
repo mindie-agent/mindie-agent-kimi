@@ -111,7 +111,6 @@ def _bounded_text(value, limit):
     return value[:limit]
 
 
-_META_LIMIT = 65536
 
 
 def _read_regular_json(path):
@@ -129,15 +128,14 @@ def _read_regular_json(path):
         return "unavailable", None
     try:
         info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode) or info.st_size > _META_LIMIT:
+        if not stat.S_ISREG(info.st_mode):
             return "unavailable", None
-        blob = os.read(descriptor, _META_LIMIT + 1)
+        with os.fdopen(os.dup(descriptor), "rb") as stream:
+            blob = stream.read()
     except OSError:
         return "unavailable", None
     finally:
         os.close(descriptor)
-    if len(blob) > _META_LIMIT:
-        return "unavailable", None
     try:
         value = json.loads(blob.decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError, ValueError):

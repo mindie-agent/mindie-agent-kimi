@@ -32,7 +32,7 @@ class TranscriptTests(unittest.TestCase):
             str(src), 0, session_id="ses_source", not_before=1789911712
         )
         self.assertGreaterEqual(public["records"], 1, public.get("text", "")[:200])
-        self.assertIn("call_id=", public["text"])
+        self.assertNotIn("call_id=", public["text"])
         self.assertIn("fix the hang", public["text"])
 
     def test_public_user_allowlist_skips_injection_and_think(self):
@@ -120,7 +120,7 @@ class TranscriptTests(unittest.TestCase):
             _root, wire = write_session(
                 home, "ses_cont", [known, *filler], state=dict(createdAt=1_000_000_000_000)
             )
-            cursor = len(json.dumps(known)) + 1
+            cursor = len(wire.read_bytes().splitlines(keepends=True)[0])
             page = transcript.read_material(str(wire), cursor, session_id="ses_cont")
             self.assertEqual(page["status"], "ok", page.get("coverage_note"))
             self.assertEqual(page["records"], 0)
@@ -260,16 +260,6 @@ class TranscriptTests(unittest.TestCase):
             ]
             _root, wire = write_session(home, "ses_turns", records)
             result = transcript.read_material(str(wire), 0, session_id="ses_turns")
-            self.assertIn("turn=3", result["text"])
-            self.assertIn("turn=4", result["text"])
-            unlabeled = [
-                line for line in result["text"].splitlines()
-                if "unlabeled message" in line or "c2" in line
-            ]
-            labeled = [
-                line for line in result["text"].splitlines()
-                if line.startswith("[") and "turn=unknown" in line
-            ]
-            self.assertTrue(labeled, result["text"])
-            self.assertNotIn("turn=3\n\n[assistant", result["text"])
-            self.assertEqual(len(unlabeled), 2)
+            self.assertEqual(result['text'], '### assistant\nnext turn text\n\n### assistant\nunlabeled message')
+            self.assertNotIn('Bash', result['text'])
+            self.assertNotIn('turn=', result['text'])

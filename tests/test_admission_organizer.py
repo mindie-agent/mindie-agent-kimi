@@ -126,6 +126,7 @@ class AdmissionOrganizerTests(unittest.TestCase):
             self.assertIn("managed:kimi-code", text)
             self.assertIn("kimi-code/k3", text)
             self.assertIn("[\"thinking\"]", text)
+            self.assertIn("\"enabled\" = false", text)
             self.assertNotIn("[[hooks]]", text)
             self.assertFalse((isolated / "mcp.json").exists())
             installed = json.loads((isolated / "plugins" / "installed.json").read_text())

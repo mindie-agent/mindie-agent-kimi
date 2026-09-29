@@ -175,7 +175,9 @@ class SetupInstallTests(unittest.TestCase):
             engine = json.loads(Path(adapter["engine_config"]).read_text())
             self.assertEqual(engine["transcript_adapter"],
                              str(generation / "scripts" / "transcript.py"))
-            self.assertEqual(engine["agent_command"][1],
+            self.assertNotIn("agent_command", engine)
+            self.assertEqual(engine["capture_mode"], "public-transcript")
+            self.assertEqual(engine["summary_command"][1],
                              str(generation / "scripts" / "organizer.py"))
             self.assertEqual(
                 Path(current["python"]).resolve(),

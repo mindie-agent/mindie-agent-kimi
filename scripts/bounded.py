@@ -134,7 +134,7 @@ def _spawn(command, stdin, env, cwd):
     else:
         # Assign ownership before the child can create descendants. Attaching
         # a Job to an already-running process races fast child startup.
-        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | 0x4  # CREATE_SUSPENDED
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW | 0x4  # CREATE_SUSPENDED
     process = subprocess.Popen(**kwargs)
     process._mindie_inherited_group = inherited
     if not POSIX:

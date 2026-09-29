@@ -241,13 +241,14 @@ def write_generation_configs(generation: Path, python: Path, adapter: dict) -> P
     state paths stay stable; parser/organizer/interpreter move with the
     generation. Returns the generation adapter config path."""
     engine = load_engine_config(adapter)
+    engine.pop("agent_command", None)
     config_dir = generation / "config"
     gen_engine = config_dir / "kimi.engine.json"
     gen_adapter = config_dir / "kimi.adapter.json"
     atomic_write(gen_engine, dict(
         engine,
         transcript_adapter=str(generation / "scripts" / "transcript.py"),
-        agent_command=[str(python), str(generation / "scripts" / "organizer.py")],
+        **__import__("capture_config").prepare(python, generation / "scripts"),
     ))
     atomic_write(gen_adapter, dict(
         adapter,

@@ -1,10 +1,20 @@
 # MindIE Agent for Kimi Code
 
+Current capture uses the harness's public transcript projection followed by
+local deterministic redaction. Complete user and visible assistant messages
+are saved without tool payloads or a body-writing model. Setup and updates
+automatically install the scanner and metadata worker. The optional metadata
+worker can return only title and summary; failure leaves a source excerpt.
+Its model policy belongs to the adapter, with minimal/disabled thinking, and
+does not add user configuration. Native model acceptance is separate from
+the component tests of this path.
+
+
 Design inherits all nine [VAWS / MindIE Agent principles](https://github.com/mindie-agent/mindie-agent/blob/main/docs/design-principles.md). Retiring the old runtime does not retire those principles.
 
 Thin native Kimi plugin. Shared knowledge runtime lives in `mindie-knowledge`.
 This repository owns Kimi identity, `wire.jsonl` parsing, MCP dispatch, and
-the K3 organizer runner.
+the optional K3 metadata runner.
 
 ## Install
 

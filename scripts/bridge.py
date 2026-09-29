@@ -33,7 +33,6 @@ from identity import (
 from paths import config_path
 from consent import configured_community_path
 
-MAX_HOOK_BYTES = 128 * 1024
 SAFE_CAUSES = {
     "missing-identity",
     "admission-unreadable",
@@ -53,7 +52,7 @@ def _print(value):
 
 
 def _read_event():
-    raw = sys.stdin.buffer.read(MAX_HOOK_BYTES + 1)
+    raw = sys.stdin.buffer.read()
     return parse_hook(raw)
 
 

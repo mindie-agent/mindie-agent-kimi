@@ -86,8 +86,6 @@ import bounded
 
 diagnostic_support = _load_diagnostic_support()
 
-MAX_LINE = 128 * 1024
-MAX_HOOK_BYTES = 128 * 1024
 HOOK_TOTAL = 1.5
 HOOK_LOCK_BUDGET = 0.3
 CALL_LOCK_BUDGET = 5.0
@@ -291,6 +289,7 @@ def _current(state: Path) -> dict:
 
 def _child_env(current: dict) -> dict:
     env = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
+    env["PYTHONIOENCODING"] = "utf-8"
     env["MINDIE_KIMI_CONFIG"] = current["adapter_config"]
     return env
 
@@ -309,13 +308,13 @@ def _record_hook(stage, category, op="stop"):
         pass
 
 
-def _read_hook_stdin(deadline: float) -> bytes:
-    """Read at most MAX_HOOK_BYTES before deadline. Never block until EOF.
+def _read_hook_stdin(deadline):
+    """Deadline-bounded raw fd read; never buffered I/O (shutdown can hang).
 
-    A writer that sends one byte and keeps the pipe open must not exceed the
-    remaining whole-hook budget. Oversized or timed-out input is empty (fail
-    open). Memory is capped at MAX_HOOK_BYTES+1. Windows uses the same thread
-    reader (code-only; not natively verified).
+    Stops at EOF, the deadline, or the first complete JSON
+    value so a held-open pipe cannot consume the helper's remaining time.
+    Windows native select is sockets-only; a daemon os.read thread is the
+    portable bound (code-only on Windows; not natively verified).
     """
     remaining = deadline - time.monotonic()
     if remaining <= 0:
@@ -328,33 +327,33 @@ def _read_hook_stdin(deadline: float) -> bytes:
         try:
             fd = sys.stdin.fileno()
             while True:
-                with lock:
-                    if len(buf) > MAX_HOOK_BYTES:
-                        return
-                    room = MAX_HOOK_BYTES + 1 - len(buf)
                 try:
-                    chunk = os.read(fd, min(8192, room))
+                    chunk = os.read(fd, 65536)
                 except (OSError, ValueError):
                     return
                 if not chunk:
                     return
                 with lock:
                     buf.extend(chunk)
-                    if len(buf) > MAX_HOOK_BYTES:
-                        return
+                    # Native Stop is one object. Avoid reparsing a growing
+                    # final answer after every chunk (quadratic work).
+                    if not chunk.rstrip().endswith((b'}', b']')):
+                        continue
+                    try:
+                        json.loads(bytes(buf))
+                    except ValueError:
+                        continue
+                    return
         finally:
             finished.set()
 
     thread = threading.Thread(target=reader, daemon=True)
     thread.start()
-    finished.wait(timeout=max(0.0, deadline - time.monotonic()))
+    finished.wait(timeout=max(0.0, remaining))
     if not finished.is_set():
         return b""
     with lock:
-        raw = bytes(buf)
-    if len(raw) > MAX_HOOK_BYTES:
-        return b""
-    return raw
+        return bytes(buf)
 
 
 def _hook(op: str) -> int:
@@ -589,22 +588,9 @@ def _dispatch(surface: str, raw: bytes, ident, cancel=None):
         _release(descriptor)
 
 
-def _read_mcp_line(stdin, limit: int):
-    """Return bytes, None to skip an oversize line, or False on EOF."""
-    line = stdin.readline(limit + 1)
-    if line == b"":
-        return False
-    if len(line) > limit and not line.endswith(b"\n"):
-        while True:
-            chunk = stdin.readline(limit + 1)
-            if not chunk or chunk.endswith(b"\n"):
-                break
-        return None
-    if line.endswith(b"\n"):
-        line = line[:-1]
-    if len(line) > limit:
-        return None
-    return line
+def _read_mcp_line(stdin):
+    line = stdin.readline()
+    return line.rstrip(b"\r\n") if line else False
 
 
 def _mcp(surface: str) -> int:
@@ -710,7 +696,7 @@ def _mcp(surface: str) -> int:
 
     try:
         while not transport_closed.is_set():
-            raw = _read_mcp_line(stdin, MAX_LINE)
+            raw = _read_mcp_line(stdin)
             if raw is False:
                 break
             if raw is None or not raw.strip():
