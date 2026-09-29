@@ -74,8 +74,6 @@ def _read_json(path: Path):
         return "missing", None
     except OSError:
         return "unreadable", None
-    if len(raw) > 64 * 1024:
-        return "corrupt", None
     try:
         data = json.loads(raw)
     except ValueError:
