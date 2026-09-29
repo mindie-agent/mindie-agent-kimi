@@ -608,7 +608,9 @@ def run(
     cancel=None,
     transport=False,
 ):
-    if not argv or not all(isinstance(item, str) and item for item in argv):
+    if (not isinstance(argv, (list, tuple)) or not argv
+            or not isinstance(argv[0], str) or not argv[0]
+            or not all(isinstance(item, str) for item in argv)):
         raise ValueError("command must be a nonempty argv list")
     if timeout is None or timeout <= 0:
         raise ValueError("timeout must be positive")
