@@ -32,7 +32,8 @@ class EntryTests(unittest.TestCase):
                                       fork='owner/fork', project_roots=[str(root)])
                 consent.record_choice('contribute')
                 before = sharing.load().raw
-                sharing.write_enabled(repository='owner/repo', project_roots=[str(root)], extend_scope=True)
+                sharing.write_enabled(repository='owner/repo',
+                    project_roots=[str(root) + '/../' + root.name], extend_scope=True)
                 self.assertEqual(sharing.load().raw, before)
                 sharing.write_enabled(repository='owner/other', project_roots=[str(root)])
                 self.assertIsNone(sharing.load().raw.get('fork'))
