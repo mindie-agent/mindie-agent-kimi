@@ -432,19 +432,9 @@ def _enable_contribution(session, cwd, *, repository, account, branch="main", fo
     except Exception as exc:
         raise ValueError(str(exc)[:200]) from None
     root = _project_root(session, cwd)
-    roots = [root]
-    try:
-        existing = sharing_mod.load()
-        if existing.enabled and existing.repository == repository:
-            for item in existing.project_roots:
-                item = str(item)
-                if item not in roots:
-                    roots.append(item)
-    except Exception:
-        pass
     return sharing_mod.write_enabled(
-        repository=repository, project_roots=roots, branch=branch,
-        visibility="public", account=account, fork=fork)
+        repository=repository, project_roots=[root], branch=branch,
+        visibility="public", account=account, fork=fork, extend_scope=True)
 
 
 def _apply_choice(session, cwd, choice, *, repository=None, account=None,

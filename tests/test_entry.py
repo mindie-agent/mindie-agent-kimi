@@ -3,8 +3,10 @@ import os
 import shlex
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from support import (
     SCRIPTS,
@@ -19,6 +21,48 @@ sys.path.insert(0, str(SCRIPTS))
 
 
 class EntryTests(unittest.TestCase):
+    def test_repeated_enable_cannot_overwrite_concurrent_project_addition(self):
+        import entry
+        import sharing
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            config = make_config(root)
+            left, right = root / 'left', root / 'right'
+            left.mkdir(); right.mkdir()
+            original_context = sharing._write_context
+            left_waiting, right_done = threading.Event(), threading.Event()
+            failures = []
+            def ordered_context():
+                if threading.current_thread().name == 'left':
+                    left_waiting.set()
+                    if not right_done.wait(5):
+                        raise AssertionError('right writer did not finish')
+                elif not left_waiting.wait(5):
+                    raise AssertionError('left writer did not reach the boundary')
+                return original_context()
+            def enable(project):
+                try:
+                    entry._enable_contribution('session', str(project),
+                        repository='owner/repo', account='owner')
+                except BaseException as exc:
+                    failures.append(exc)
+                finally:
+                    if project == right:
+                        right_done.set()
+            with patch.dict(os.environ, MINDIE_KIMI_CONFIG=str(config)):
+                sharing.write_enabled(repository='owner/repo', account='owner', project_roots=[str(left)])
+                with patch.object(sharing, '_write_context', ordered_context), patch.object(
+                        entry, '_project_root', side_effect=lambda session, cwd: cwd):
+                    children = [threading.Thread(target=enable, args=(project,), name=project.name)
+                                for project in (left, right)]
+                    for child in children:
+                        child.start()
+                    for child in children:
+                        child.join(8)
+                    self.assertFalse(any(child.is_alive() for child in children))
+                self.assertEqual(failures, [])
+                self.assertEqual(set(sharing.load().project_roots), {left.resolve(), right.resolve()})
+
     def setUp(self):
         import importlib
 

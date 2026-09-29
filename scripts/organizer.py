@@ -129,13 +129,18 @@ def prepare_isolated_home(base: Path) -> Path:
         raise RuntimeError("native provider managed:kimi-code is missing; organizer cannot resolve a model")
     if not isinstance(model, dict) or not model:
         raise RuntimeError("native model kimi-code/k3 is missing; organizer cannot resolve a model")
+    model = dict(model)
+    model['capabilities'] = [cap for cap in model.get('capabilities', [])
+                             if cap not in {'thinking', 'always_thinking'}]
+    model.pop('support_efforts', None)
+    model.pop('default_effort', None)
     thinking = {"enabled": False}
     conf = 'default_model = "kimi-code/k3"\nbuiltin_product_skills = false\n'
     conf += _toml_table(["providers", PROVIDER], _table_values(provider))
     conf += _toml_table(["models", MODEL], _table_values(model))
     conf += _toml_table(["thinking"], _table_values(thinking))
     target = home / "config.toml"
-    target.write_text(conf)
+    target.write_text(conf, encoding='utf-8')
     target.chmod(0o600)
     (home / "plugins").mkdir()
     (home / "plugins" / "installed.json").write_text('{"version":1,"plugins":[]}\n')

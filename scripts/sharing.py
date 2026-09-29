@@ -66,16 +66,25 @@ def write_enabled(
     account=None,
     fork=None,
     config=None,
+    extend_scope=False,
 ):
     if visibility != "public":
         raise ValueError("community sharing requires public visibility")
     with _write_context() as ctx:
         target = Path(config) if config is not None else configured_community_path()
+        roots = list(project_roots)
+        if extend_scope:
+            current = ctx.read(target)
+            if (current.enabled and current.repository == repository
+                    and current.branch == branch
+                    and current.raw.get('account') == account
+                    and current.raw.get('fork') == fork):
+                roots = list(dict.fromkeys([*roots, *map(str, current.project_roots)]))
         settings = ctx.write(
             target,
             enabled=True,
             repository=repository,
-            project_roots=project_roots,
+            project_roots=roots,
             branch=branch,
             visibility="public",
             account=account,
