@@ -30,6 +30,14 @@ required. The configured loop processes eligible Stop events automatically.
 Inspect capture and contribution receipts before claiming it has completed.
 Fault reporting remains a separate optional setting; it never gates this loop.
 
+[用户须知](references/user-notice.md) explains visible-message sharing,
+redaction limits, model-provider processing and public Git history.
+
+During installation or first-use setup, present the user notice, then follow
+[optional workspace setup](references/workspace-setup.md): recommend the workspace,
+ask whether and where to create it, and after creation ask whether to initialize it.
+Reuse prior answers; offer this during setup rather than ordinary task execution.
+
 Every knowledge and remote MCP call MUST include a fresh `request_nonce`.
 Remote-dev does not require the entry.
 

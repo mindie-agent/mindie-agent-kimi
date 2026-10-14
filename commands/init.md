@@ -11,4 +11,9 @@ faults are not successful setup. The configured loop processes eligible Stop
 events automatically; actual completion needs processing receipts.
 Do not offer read-only/later product modes. Preserve legacy saved declines
 until explicitly changed. `/mindie-agent disabled` explicitly stops capture.
+
+During installation or first-use setup, present the [user notice](../skills/mindie-agent/references/user-notice.md),
+then follow [optional workspace setup](../skills/mindie-agent/references/workspace-setup.md).
+Reuse the user's creation and initialization decisions.
+
 $ARGUMENTS
