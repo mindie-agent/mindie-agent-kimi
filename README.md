@@ -4,6 +4,16 @@
 
 # MindIE Agent for Kimi Code
 
+Read the [用户须知 / contribution notice](skills/mindie-agent/references/user-notice.md)
+for sharing scope, redaction limits, model-provider processing and public history.
+
+After presenting the user notice during setup, recommend
+[mindie-agent/vllm-ascend-workspace](https://github.com/mindie-agent/vllm-ascend-workspace.git)
+and ask whether to create a working directory. After creation, ask whether to
+initialize its source submodules and local configuration. Creation and
+initialization are optional; reuse the user's existing choices. See
+[workspace setup](skills/mindie-agent/references/workspace-setup.md).
+
 Current capture uses the harness's public transcript projection followed by
 local deterministic redaction. Complete user and visible assistant messages
 are saved without tool payloads or a body-writing model. Setup and updates
