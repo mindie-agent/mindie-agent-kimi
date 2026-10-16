@@ -59,13 +59,13 @@ MindIE Agent 采用**「知识与 Skill 手动按需触发 + 远端执行工具�
 > ```
 > **会发生什么**：内置的 `remote-dev` 工具集作为常驻 MCP 服务，会在识别到远端开发意图时**默认自动触发**，支持远端命令执行、文件同步与长耗时后台作业轮询。即使不开启知识库服务或社区贡献，`remote-dev` 也能完全独立运行。
 
-### 场景 3：唤醒 `/mindie-agent` 攻坚并沉淀脱敏经验回开源社区（可选 Opt-in）
-> **痛点**：花半天定位完一个棘手的算子或推理 Bug，关掉终端后排障思路就丢了；想分享给社区又担心泄露内部 IP、密钥或私有路径。  
-> **用法示例（直接复制发给 Kimi Code）**：
+### 场景 3：开启社区贡献后，每次会话结束默认自动沉淀脱敏经验（无需每次手动叮嘱）
+> **痛点**：花半天定位完一个棘手的算子或推理 Bug，关掉终端后排障思路就丢了；如果每次还要专门记得提醒 Agent「帮我总结沉淀一下经验」，不仅打断心流也很容易遗忘。  
+> **用法示例（平时怎么排查就怎么写，完全不需要提「沉淀经验」）**：
 > ```text
-> /mindie-agent 帮我结合知识库和远端 NPU 容器定位一下当前 vllm-ascend 自定义算子编译失败的问题，修好跑通单测后我们把这次排障经验沉淀下来。
+> /mindie-agent 帮我结合知识库和远端 NPU 容器定位一下当前 vllm-ascend 自定义算子编译失败的问题，修好并跑通对应的单测。
 > ```
-> **会发生什么**：社区贡献**默认关闭**。仅在你显式对指定公开仓库开启共享后，插件会在会话结束（`Stop`）时提取公开可见对话，使用本地确定性规则与 Gitleaks 完成脱敏，并通过隔离的整理器生成标题与摘要以提交知识 PR。
+> **会发生什么**：安装完成并选择开启社区贡献（Opt-in）后，**经验沉淀闭环即成为每次会话的默认后台行为**——你完全不需要在对话里特意说「帮我沉淀经验」。在每次会话结束（`Stop`）时，插件会在后台自动提取公开可见对话，通过本地确定性规则与 Gitleaks 扫描剔除 IP、密钥、账号和私有路径，并在后台由隔离的整理器生成结构化知识包提交 PR。
 > - 关于公开消息筛选范围、本地脱敏边界与公开 Git 历史说明，请参阅 **[用户须知](skills/mindie-agent/references/user-notice.md)**。
 > - 如需在本地搭建 `vllm` + `vllm-ascend` 多任务 Git Worktree 协同工作区，可按需参考 **[工作区配置指南](skills/mindie-agent/references/workspace-setup.md)** 与 [vllm-ascend-workspace](https://github.com/mindie-agent/vllm-ascend-workspace.git)。
 
@@ -134,19 +134,20 @@ python3 scripts/install_kimi_plugin.py --kimi-home "${KIMI_CODE_HOME:-$HOME/.kim
 
 ---
 
-## 日常使用与命令参考
+## 日常使用与交互方式
 
-在 Kimi Code 会话中，**`remote-dev` 远端工具在日常对话中默认自动触发**。当你需要唤醒昇腾历史经验、领域知识库与 Skill 系统，或修改偏好设置时，可使用以下斜杠命令：
+你只需要记住 **`/mindie-agent`** 这一个入口，**不需要记忆或感知任何复杂的子命令**：
 
-| Kimi Code 命令 | 用途说明 |
+- **`remote-dev` 远端工具在日常对话中默认自动触发**（无需输入任何斜杠命令）。
+- **所有与 MindIE Agent 相关的功能**（调取经验与知识库排障、首次配置、查看状态、修改社区贡献开关等）统一通过 **`/mindie-agent` + 自然语言** 完成，Agent 会在内部按需完成渐进式上下文加载与配置操作：
+
+| 你想做的事 | 怎么用（直接输入即可） |
 |---|---|
-| `/mindie-agent <问题描述>`（或 `/skill:mindie-agent`、`/mindie-agent:init`、`/init`） | **手动触发入口**：输入 `/mindie-agent` 并阐述问题即可唤醒昇腾领域知识库、历史经验与 Skill 系统（同时绑定当前原生 Kimi 任务并确保后台知识服务就绪）。 |
-| `/mindie-agent:status`（或 `/status`） | **纯只读状态检查**：查看当前任务的知识库配置、后台服务健康度以及最近 5 条采集与贡献批次状态（不启动模型或初始化数据库）。 |
-| `/mindie-agent contribute owner/repo ACCOUNT` | 为当前项目显式配置公开知识贡献的目标仓库与 GitHub 账号。 |
-| `/mindie-agent:sharing-enable` / `/mindie-agent:sharing-disable` / `/mindie-agent:sharing-status` | 开启、暂停或查看当前项目的公开社区贡献（关闭后 `Stop` 阶段不采集对话、不调用整理器）。 |
-| `/mindie-agent:deactivate`（或 `/deactivate`） | 解除当前会话任务的知识访问绑定（保留全局共享与故障上报设置）。 |
-| `/mindie-agent:recover`（或 `/recover`） | 按 `--batch <id>` 检查或恢复指定贡献批次（常规临时网络波动由后台 Worker 自动恢复）。 |
-| `/mindie-agent:reporting-status` / `/mindie-agent:reporting-enable` / `/mindie-agent:reporting-disable` | 查看、开启或关闭独立的产品自身故障脱敏上报（开启后会返回一条一次性终端准备命令）。 |
+| **遇到昇腾 / `vLLM-Ascend` 问题，调取经验、知识库与 Skill** | `/mindie-agent <直接描述你的报错、现象或调优需求>` |
+| **操作远端昇腾服务器 / 容器（同步代码、跑单测、看 `npu-smi`）** | **无需斜杠命令**，直接用自然语言描述远端操作需求（`remote-dev` 默认自动触发） |
+| **首次初始化或调整偏好设置（如开启/暂停社区经验贡献、查看状态）** | `/mindie-agent`（或 `/mindie-agent 帮我看看当前状态 / 开启社区经验贡献`） |
+
+> 💡 **默认自动的经验贡献闭环**：一旦你在安装或首次配置时选择开启了社区经验贡献，后续每次会话结束时，插件都会在后台**默认自动**完成公开对话脱敏与知识 PR 整理，无需在每次对话中手动提及。
 
 ### 自动更新与安全卸载
 

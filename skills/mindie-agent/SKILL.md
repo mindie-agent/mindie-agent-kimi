@@ -1,51 +1,27 @@
 ---
 name: mindie-agent
-description: The single MindIE Agent entry. Invoke /mindie-agent once in a vLLM-Ascend task to bind it internally and use knowledge, optional community sharing, and remote-dev. One-time setup persists for the installation and is never re-asked.
+description: The single MindIE Agent entry. Invoke /mindie-agent in a vLLM-Ascend task to bind it internally and use knowledge, skills, optional community sharing, and remote-dev. Once opted in, experience capture runs automatically at session end without per-task prompts.
 disableModelInvocation: false
 ---
 
-# MindIE Agent
+# MindIE Agent (Unified Entry)
 
-This skill is the only entry a user needs. Invoking `/mindie-agent` in the
-current native Kimi task binds the task internally (reusing the saved
-install-level choice), ensures the background service, and returns the
-current state. Discussing the plugin does not bind anything.
+This skill is the **only** entry a user ever needs to invoke (`/mindie-agent`).
+Meanwhile, `remote-dev` MCP tools are always available on demand in normal conversation without invoking `/mindie-agent`.
 
-For this invocation, call `mindie_entry` exactly once with `op=init` and a
-fresh `request_nonce`. Never pass a session id. `${KIMI_SESSION_ID}` in this
-text is not a capability.
+1. **Bind & Initialize on Invocation**:
+   - When `/mindie-agent` is invoked in the current native Kimi task, call `mindie_entry` **exactly once** with `op=init` and a fresh `request_nonce`. Never pass or fabricate a session ID (`${KIMI_SESSION_ID}` in text is not a capability).
+   - Every subsequent knowledge and remote MCP call MUST also include a fresh `request_nonce`.
+2. **Automatic Experience Loop by Default**:
+   - Once community contribution is enabled for the approved project scope, the configured loop processes eligible `Stop` events **automatically in the background**—users never need to ask to save experience at the end of a session, and one-time setup is never re-asked.
+   - If `experience` in the `mindie_entry` response reports incomplete configuration, reuse already-approved values, ask only for the missing public `owner/repo` and GitHub account, and call `mindie_entry` with `op=choose`, `choice=contribute`, and those exact values.
 
-If `experience` reports incomplete configuration, reuse already approved
-values and ask only for the missing public repository and account. Call
-`mindie_entry` with `op=choose`, `choice=contribute` and those exact values from
-the user's reply; the native current project is the scope. Alternatively,
-`/mindie-agent contribute owner/repo ACCOUNT` configures it directly.
-Configuration then prepares capture for the existing task automatically.
+## Progressive Context Disclosure (Read Only on Demand)
 
-Explicitly disabled and legacy declined profiles remain disabled until the
-user changes them; do not offer read-only/later product modes. Missing
-configuration, out-of-scope tasks and component faults are not successful
-setup. Preserve native binding across failures; no activate/recover step is
-required. The configured loop processes eligible Stop events automatically.
-Inspect capture and contribution receipts before claiming it has completed.
-Fault reporting remains a separate optional setting; it never gates this loop.
+Do **not** load all reference files during ordinary troubleshooting. Read the specific reference file **only** when the current turn requires it:
 
-[用户须知](references/user-notice.md) explains visible-message sharing,
-redaction limits, model-provider processing and public Git history.
+- **Knowledge & Remote MCP tool usage (`knowledge_query`, `knowledge_explain`, `knowledge_feedback`, `remote_*`)**: read [Domain Tooling](references/domain-skills.md).
+- **First-time onboarding or setting up a local `vllm` + `vllm-ascend` multi-worktree workspace**: present [用户须知](references/user-notice.md) and follow [Workspace Setup](references/workspace-setup.md) (offer during setup, not ordinary task execution).
+- **Preference changes, disabled/declined profile rules, background worker recovery, or hook lifecycle details**: read [Activation Lifecycle](references/activation-lifecycle.md).
+- **Sharing scope, local redaction boundaries, or public Git history questions**: read [用户须知](references/user-notice.md).
 
-During installation or first-use setup, present the user notice, then follow
-[optional workspace setup](references/workspace-setup.md): recommend the workspace,
-ask whether and where to create it, and after creation ask whether to initialize it.
-Reuse prior answers; offer this during setup rather than ordinary task execution.
-
-Every knowledge and remote MCP call MUST include a fresh `request_nonce`.
-Remote-dev does not require the entry.
-
-A transient local or network failure is recovered by the existing background
-worker — including one bounded retry of a deadline-interrupted region. Do not
-run a contribution command or another model turn for it. Sharing status is
-how a problem is seen. Authentication, trust, rejected content, or invalid
-configuration can need an explicit user or operator action. Batch inspection
-(`/mindie-agent:recover`) is optional troubleshooting, not a recovery step.
-Details: [activation lifecycle](references/activation-lifecycle.md),
-[domain tooling](references/domain-skills.md).
