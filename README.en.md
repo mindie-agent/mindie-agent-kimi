@@ -59,13 +59,13 @@ MindIE Agent uses a two-mode trigger model—**manual on-demand activation for d
 > ```
 > **What Happens**: The built-in `remote-dev` MCP server is always on and **triggers automatically by default** whenever your prompt involves remote servers, containers, or NPU commands—supporting remote command execution, file synchronization, and bounded background job polling over SSH even if knowledge capture is disabled.
 
-### Scenario 3: Invoke `/mindie-agent` & Turn Debugging Sessions into Sanitized Community Knowledge (Opt-In)
-> **The Problem**: Hard-won debugging insights usually vanish when you close the terminal, yet sharing raw transcripts risks leaking internal IPs, keys, or private file paths.  
-> **Copy-Paste Example**:
+### Scenario 3: Automatic Sanitized Experience Capture After Opt-In (Zero Per-Session Prompts Needed)
+> **The Problem**: Hard-won debugging insights usually vanish when you close the terminal—and having to remember to tell the Agent "please summarize and save this experience" at the end of every session breaks your flow.  
+> **Copy-Paste Example (just focus on solving your problem—no need to ask the Agent to save experience)**:
 > ```text
-> /mindie-agent Help me diagnose this custom Ascend operator build failure using the knowledge base and our remote NPU container, and let's capture the sanitized takeaways once the test passes.
+> /mindie-agent Help me diagnose this custom Ascend operator build failure using the knowledge base and our remote NPU container, and run the corresponding unit test once fixed.
 > ```
-> **What Happens**: Community sharing is **off by default**. Only when you explicitly opt in for an approved public repository does the `Stop` hook extract visible user/assistant messages, run local deterministic redaction and Gitleaks scanning, generate navigation metadata via an isolated organizer, and prepare a sanitized knowledge PR.
+> **What Happens**: Once you opt in to community contribution during installation or setup, **the experience contribution loop runs automatically by default at the end of every session (`Stop`)**—you never need to ask for it in your prompt. In the background, the plugin extracts visible user/assistant messages, strips IPs, tokens, accounts, and private paths via local deterministic rules and Gitleaks, and prepares a sanitized knowledge PR through an isolated organizer.
 > - Read the **[User & Contribution Notice](skills/mindie-agent/references/user-notice.md)** for full details on sharing scope, redaction limits, and public Git history.
 > - To set up a multi-task Git worktree layout for `vllm` and `vllm-ascend`, see **[Workspace Setup](skills/mindie-agent/references/workspace-setup.md)** and [vllm-ascend-workspace](https://github.com/mindie-agent/vllm-ascend-workspace.git).
 
@@ -134,19 +134,20 @@ python3 scripts/install_kimi_plugin.py --kimi-home "${KIMI_CODE_HOME:-$HOME/.kim
 
 ---
 
-## Everyday Usage & Command Reference
+## Everyday Usage & Interaction
 
-In Kimi Code sessions, **`remote-dev` tools trigger automatically by default** in normal conversation. Use the slash commands below whenever you want to manually invoke Ascend domain knowledge, historical experience, and the Skill system—or inspect status and update preferences:
+You only ever need one entry point—**`/mindie-agent`**—with **no subcommands to memorize**:
 
-| Kimi Code Command | Description |
+- **`remote-dev` remote NPU tools trigger automatically by default** in everyday conversation (no slash command required).
+- **All MindIE Agent interactions** (troubleshooting with domain knowledge & past experience, first-time setup, checking status, or changing sharing preferences) are handled through **`/mindie-agent` + natural language**, while the Agent progressively loads internal operational context only when needed:
+
+| What You Want to Do | How to Do It |
 |---|---|
-| `/mindie-agent <problem description>` (or `/skill:mindie-agent`, `/mindie-agent:init`, `/init`) | **Manual trigger entry**: type `/mindie-agent` followed by your question to invoke Ascend domain knowledge, historical experience, and the Skill system on demand (also binds the current native Kimi task and ensures the knowledge service is ready). |
-| `/mindie-agent:status` (or `/status`) | **Read-only status check**: inspect knowledge configuration, service/storage health, and the latest 5 captures and contribution batches without starting a model. |
-| `/mindie-agent contribute owner/repo ACCOUNT` | Explicitly configure opt-in public knowledge contribution for the current project. |
-| `/mindie-agent:sharing-enable` / `/mindie-agent:sharing-disable` / `/mindie-agent:sharing-status` | Enable, pause, or inspect public community contribution (when disabled, `Stop` performs no transcript collection or organizer call). |
-| `/mindie-agent:deactivate` (or `/deactivate`) | Unbind knowledge access from the current session while keeping install-level preferences intact. |
-| `/mindie-agent:recover` (or `/recover`) | Inspect or recover a specific contribution batch (`--batch <id>`); transient network failures recover automatically. |
-| `/mindie-agent:reporting-status` / `/mindie-agent:reporting-enable` / `/mindie-agent:reporting-disable` | Inspect, enable, or disable independent sanitized product fault reporting (`reporting-enable` prints a one-time terminal setup command). |
+| **Troubleshoot Ascend / `vLLM-Ascend` issues with historical experience, knowledge & Skills** | `/mindie-agent <describe your error, symptom, or tuning goal>` |
+| **Work on a remote Ascend server / container (sync files, run tests, check `npu-smi`)** | **No slash command needed**—just describe the remote task in natural language (`remote-dev` triggers automatically) |
+| **First-time setup, check status, or toggle community experience sharing** | `/mindie-agent` (or `/mindie-agent check status / enable community sharing`) |
+
+> 💡 **Automatic Experience Loop by Default**: Once you choose to enable community sharing during installation or setup, every session automatically sanitizes and packages public troubleshooting takeaways in the background when the session ends—no need to ask the Agent each time.
 
 ### Automatic Updates & Safe Uninstall
 
