@@ -1,68 +1,10 @@
-# Service continuity during plugin updates
+# 插件更新期间的服务连续性
 
-An updater used to stop an idle knowledge service and install the next plugin
-without restoring the service. A later query hid the defect by starting it;
-a task that only used remote development could then deliver a Stop event to
-no service and lose that increment.
+中文 | [English](service-continuity.en.md) · [返回文档索引](README.md)
 
-The update transaction now confirms that the exact old loopback endpoint has
-exited, switches the native package and committed runtime tuple, and makes
-one bounded restoration attempt while retaining the exclusive operation lock.
-Restoration uses the selected interpreter and engine configuration directly,
-never a shared-lock launcher. Core startup remains one spawn, five seconds,
-and three readiness probes; the returned service must be unfrozen.
+本文说明 `mindie-agent-kimi` 在执行版本切换与回滚期间，如何保障后台知识服务的连续性、配置指纹一致性与安全交接。完整英文细则见 [`service-continuity.en.md`](service-continuity.en.md)。
 
-Only a service stopped by this updater invocation is eligible for updater
-restoration. A service already absent before the update stays absent; revoked
-or explicitly unbound task leases do not authorize updater restoration. No task is
-activated, no transcript is replayed, and no model call belongs to the updater.
+## 1. 精确服务归属与平滑交接
 
-The lifecycle repair candidate handles Stop separately: an activated task with
-contribution enabled first durably hands off its capture reference, then may
-request one coalesced wake when the service is absent. Knowledge queries retain
-on-demand startup. Hook acceptance, a live worker, organized experience and a
-submitted PR are separate outcomes. This change requires new native acceptance;
-the historical update-continuity evidence below does not establish it.
-
-Rollback restores a service only after both the retained native package and
-the exact old pointer are proven restored. Failed or interrupted handoff is
-kept in the existing updater status as service_handoff. Same-revision checks
-and successful Feed sync cannot hide it. A later scheduler invocation does
-not interpret that marker as permission to spawn or retry restoration.
-
-The selected native profile is retained for the replacement service. Claude
-Code imports only supported provider/model/effort values from that profile's
-user settings into its isolated organizer; it does not import hooks, tools,
-MCP configuration or project settings. Secret values never enter updater status.
-
-## Validation boundary
-
-Real local-daemon acceptance covers live, absent, revoked and rollback paths
-for Kimi and Claude Code. Those cases use a controlled native-install boundary;
-they establish actual process/endpoint/admission behavior, not native package
-installation or model authentication. Native acceptance is recorded separately.
-Windows real-machine acceptance remains with the maintainer after merge.
-
-Real Kimi Code 2.0.2 acceptance installed candidate `cd7728e0` through the native
-API, read back loaded resources and preserved an existing task lease. An operator
-first established the old live service as an explicit test precondition. The
-actual switch replaced its PID/endpoint with the selected unfrozen service; no
-post-update ensure or knowledge query occurred. The retained task then completed
-one K3/max continuation in 27.3 s with zero tools and one native model request.
-Its genuine Stop produced a new capture before turn completion.
-
-The background organizer attempted that new capture once and exited 2. No entry
-or PR was generated, and the failed input was not replayed. The first terminal
-observation was about 128 s after admission; a 120 s organizer deadline is a
-possible explanation, but the core discards child stderr, so the precise cause
-is not established. Model-free native config validation passed with the selected
-K3/max profile. This validates update-to-Stop delivery, not successful Kimi
-business-experience organization/publication. That remaining gap is explicit.
-The owned daemon was stopped and its endpoint/process absence verified.
-
-The harness used production stage/switch functions directly, then explicitly
-applied their normal final status aggregation; it was not a scheduled full check.
-A preflight harness argument error occurred before any installation/model action
-and remains separately recorded. Component checks: 105 passed. Real-daemon
-rollback/no-service/no-lease checks and interrupted-parent pending-state evidence
-are recorded separately from the native package run.
+- 知识服务复用要求引擎配置指纹、活动安装绑定与工作器健康状态完全一致。
+- 更新切换前先停止旧代数拥有的服务实例，确认新代数服务就绪后再对外提供服务；若交接失败，仅在旧包与旧指针均确认恢复后才恢复旧服务，否則保留明确的 `service_handoff` 诊断状态。

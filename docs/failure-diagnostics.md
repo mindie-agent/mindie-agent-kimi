@@ -1,33 +1,14 @@
-# Failure diagnosis and local cancellation
+# 故障诊断与本地取消
 
-Native status reports existing knowledge configuration, service/storage health,
-this task's binding and diagnostic failure counter, and the latest five captures
-and contribution batches associated with the bound task. A bound
-task can call status after a later failure without another user slash command;
-unbound tasks still require the explicit native status command. An absent identity
-returns no task records. A transient local or network failure is recovered by the existing worker; status is how that problem is seen. Failed batch IDs can be inspected with the optional recover command;
-unknown publication results must be reconciled before any explicit retry.
+中文 | [English](failure-diagnostics.en.md) · [返回文档索引](README.md)
 
-Status does not initialize databases, start models/services, bind a task,
-reset failure counters, or replay consumed input. SQLite read-only access may create normal
-WAL reader sidecars; it does not change business records. Failure projections omit
-raw provider stderr, transcript text, tokens and other task identities. Existing
-malformed adapter settings produce a diagnostic instead of first-use choices.
-Native shell/SSH and independent remote-dev remain available when knowledge is down.
+本文说明 `mindie-agent-kimi` 的只读状态诊断、本地子进程取消与 EOF 清理边界，以及远端作业引用保留机制。完整英文细则见 [`failure-diagnostics.en.md`](failure-diagnostics.en.md)。
 
-The stdio front keeps input responsive while bounded tool requests run. Cancel and
-EOF clean up only owned local processes; a cancelled observation does not establish
-remote job termination. Responses preserve the original job reference and delivery
-certainty. Explicitly inspect or stop that job before a new submission. Remote poll
-waiting is capped at 30 seconds without changing the remote workload timeout.
+## 1. 只读状态查询与结构化诊断
 
-Actual macOS evidence includes task-isolated SQLite diagnostics, paused state with
-unchanged counters, corrupt config, child/grandchild cancellation, ping while busy,
-EOF, output backpressure, update-lock cancellation and safe remote exception
-classification. Development checks protect those contracts. Controlled native
-identity/helper seams are not evidence that the host UI emitted a cancel event,
-that a remote job stopped, or that a full contribution loop completed.
+- 状态查询命令（`/mindie-agent:status`、`/mindie-agent:reporting-status`）仅执行纯只读检查，绝不隐式启动服务、调用模型或重放失败操作。
+- 内部工具故障返回静态阶段、错误分类与本地诊断关联 ID，同时保留原始错误与退出码。
 
-Windows remains unverified on hardware. Its blocking pipe-write and process-tree
-cleanup behavior requires separate acceptance. No new retry or background service
-is introduced by these changes.
+## 2. 本地取消与远端作业分离
+
+- 本地调用取消或标准输入 EOF 会终止当前调用拥有的本地辅助进程树；而通过 `remote-dev` 启动的远端持久后台作业拥有独立生命周期，保留其作业引用供后续查询或显式停止。

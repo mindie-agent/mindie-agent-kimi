@@ -1,41 +1,14 @@
-# Organizer failure and cancellation evidence
+# 整理器故障与取消证据
 
-The adapter pins knowledge core `59b6ec4fd2ddf1ec1c95e5f635fb6b9076737a69`.
-Failures report a static category through the shared exit-code contract;
-the core retains the category, exit status and elapsed seconds. Provider stderr
-is never copied into the persisted diagnostic. An older exit 2 stays unknown.
-The existing 120-second native / 125-second outer deadlines, output bounds,
-single attempt and consumed-input policy are unchanged.
+中文 | [English](organizer-diagnostics.en.md) · [返回文档索引](README.md)
 
-The previous POSIX runner always created a separate native process group.
-An actual macOS process reproduction showed the organizer exiting on core
-cancellation while its native child survived. A maintenance runner now keeps
-that child in the core-owned group. Local adapter cleanup kills only the direct
-child; the core closes the entire group on every terminal path. Standalone
-commands still own an independent group.
+本文说明 `mindie-agent-kimi` 调用本地 Kimi CLI 整理器（Organizer）时的静态退出分类、进程组生命周期管理与验证边界。完整英文细则见 [`organizer-diagnostics.en.md`](organizer-diagnostics.en.md)。
 
-Validation on 2026-09-21:
+## 1. 隔离调用与静态错误分类
 
-- Seven actual local process cases verified configuration, input, native,
-  invalid-result, output-limit, deadline and success behavior. The deadline
-  case ran for 120.073 seconds. All diagnostics were static and no private
-  sentinel escaped. These cases used a controlled executable in the native
-  boundary, not a model.
-- With the official core installed and no source-path override, actual
-  organizer/native/grandchild processes shared one owned group. Cancellation
-  completed in 0.948 seconds; a normal successful result completed in 0.598
-  seconds. Every owned process was gone in both cases.
-- Independent core checks covered unknown legacy exit 2, raw stderr discard,
-  output limits and the closed-pipes deadline path.
-- A single real Kimi K3/max organizer invocation then used new material from
-  these actual local checks. It returned one faithful record in 34.371 seconds,
-  with no retry or publication. Process sampling confirmed the organizer and
-  native Kimi shared the core-owned group and left no owned process behind.
-  The isolated profile selected K3/max, had no plugins, skills or MCP, and was
-  removed afterward; the original profile was unchanged. This was an
-  independent organizer call, not a new Stop-to-publication test.
+- 整理器在隔离配置下运行，不加载业务会话的 Hook、MCP 或可变工具集。
+- 启动失败、非零退出码、输出格式不合法与调用取消均映射为静态可定位阶段码，不将原始对话或敏感环境变量写入公开诊断。
 
-No failed capture was replayed, no retry budget was reset, and no knowledge PR
-was created by these diagnostics. The earlier retained-task organizer failure
-cannot be retrospectively classified from its elapsed time. These process
-checks do not prove native Stop-to-publication delivery or Windows behavior.
+## 2. 进程组清理保障
+
+- 整理操作拥有独立的进程组与临时目录；取消或异常退出时先回收整个整理进程组，再清理临时目录，并完整保留已发生的模型用量记录。
