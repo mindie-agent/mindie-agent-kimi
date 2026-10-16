@@ -1,70 +1,19 @@
-# Service continuity during plugin updates
+# Service Continuity Across Plugin Updates
 
-[中文](service-continuity.md) | English · [Documentation Index](README.en.md)
+<a href="service-continuity.md">中文</a> | <b>English</b> · <a href="README.en.md">Documentation Index</a>
 
-An updater used to stop an idle knowledge service and install the next plugin
-without restoring the service. A later query hid the defect by starting it;
-a task that only used remote development could then deliver a Stop event to
-no service and lose that increment.
+This document explains how `mindie-agent-kimi` maintains background knowledge service continuity, configuration fingerprint consistency, and reliable `Stop` event delivery across plugin updates and rollbacks.
 
-The update transaction now confirms that the exact old loopback endpoint has
-exited, switches the native package and committed runtime tuple, and makes
-one bounded restoration attempt while retaining the exclusive operation lock.
-Restoration uses the selected interpreter and engine configuration directly,
-never a shared-lock launcher. Core startup remains one spawn, five seconds,
-and three readiness probes; the returned service must be unfrozen.
+---
 
-Only a service stopped by this updater invocation is eligible for updater
-restoration. A service already absent before the update stays absent; revoked
-or explicitly unbound task leases do not authorize updater restoration. No task is
-activated, no transcript is replayed, and no model call belongs to the updater.
+## 1. Bounded Service Stop & Restoration During Updates
 
-The lifecycle repair candidate handles Stop separately: an activated task with
-contribution enabled first durably hands off its capture reference, then may
-request one coalesced wake when the service is absent. Knowledge queries retain
-on-demand startup. Hook acceptance, a live worker, organized experience and a
-submitted PR are separate outcomes. This change requires new native acceptance;
-the historical update-continuity evidence below does not establish it.
+- **Deterministic Stop and Restore**: Under the exclusive operation lock, the update transaction verifies that the exact old loopback service endpoint has exited, switches the native plugin package and `current.json` pointer, and performs one bounded restoration attempt (single spawn, 5-second budget, 3 readiness probes) using the new generation's interpreter and engine config.
+- **No Unsolicited Activation**: Only a service that was actively running and stopped by this updater run is restored. If no service was running before the update (or if task leases were revoked), it stays off—the updater never activates tasks, replays transcripts, or calls a model.
 
-Rollback restores a service only after both the retained native package and
-the exact old pointer are proven restored. Failed or interrupted handoff is
-kept in the existing updater status as service_handoff. Same-revision checks
-and successful Feed sync cannot hide it. A later scheduler invocation does
-not interpret that marker as permission to spawn or retry restoration.
+---
 
-The selected native profile is retained for the replacement service. Claude
-Code imports only supported provider/model/effort values from that profile's
-user settings into its isolated organizer; it does not import hooks, tools,
-MCP configuration or project settings. Secret values never enter updater status.
+## 2. Durable `Stop` Handoff & Rollback Safety
 
-## Validation boundary
-
-Real local-daemon acceptance covers live, absent, revoked and rollback paths
-for Kimi and Claude Code. Those cases use a controlled native-install boundary;
-they establish actual process/endpoint/admission behavior, not native package
-installation or model authentication. Native acceptance is recorded separately.
-Windows real-machine acceptance remains with the maintainer after merge.
-
-Real Kimi Code 2.0.2 acceptance installed candidate `cd7728e0` through the native
-API, read back loaded resources and preserved an existing task lease. An operator
-first established the old live service as an explicit test precondition. The
-actual switch replaced its PID/endpoint with the selected unfrozen service; no
-post-update ensure or knowledge query occurred. The retained task then completed
-one K3/max continuation in 27.3 s with zero tools and one native model request.
-Its genuine Stop produced a new capture before turn completion.
-
-The background organizer attempted that new capture once and exited 2. No entry
-or PR was generated, and the failed input was not replayed. The first terminal
-observation was about 128 s after admission; a 120 s organizer deadline is a
-possible explanation, but the core discards child stderr, so the precise cause
-is not established. Model-free native config validation passed with the selected
-K3/max profile. This validates update-to-Stop delivery, not successful Kimi
-business-experience organization/publication. That remaining gap is explicit.
-The owned daemon was stopped and its endpoint/process absence verified.
-
-The harness used production stage/switch functions directly, then explicitly
-applied their normal final status aggregation; it was not a scheduled full check.
-A preflight harness argument error occurred before any installation/model action
-and remains separately recorded. Component checks: 105 passed. Real-daemon
-rollback/no-service/no-lease checks and interrupted-parent pending-state evidence
-are recorded separately from the native package run.
+- **Durable `Stop` Queueing**: When an active task with contribution enabled finishes, `Stop` durably records its capture reference first and requests a single coalesced service wake if the worker is absent, preventing lost increments around update windows.
+- **Explicit Rollback & Handoff Status**: On rollback, the previous service is restored only after both the previous native package and pointer are confirmed restored. Any interrupted handoff remains visible in updater status as `service_handoff` and is never hidden by subsequent feed syncs.

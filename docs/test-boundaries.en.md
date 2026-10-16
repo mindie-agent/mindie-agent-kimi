@@ -1,57 +1,29 @@
-# Test boundaries and failure detection
+# Test Boundaries & Failure Detection
 
-[中文](test-boundaries.md) | English · [Documentation Index](README.en.md)
+<a href="test-boundaries.md">中文</a> | <b>English</b> · <a href="README.en.md">Documentation Index</a>
 
-The September Windows/WSL audit found green component tests alongside a broken
-Windows MCP launch. Manifest registration and an inventory readback did not
-exercise the host's Node `shell:false` launch. The generated `.cmd` entry failed
-with `EINVAL`. CI also omitted Windows entirely.
+`mindie-agent-kimi` runs its cross-platform test suite in a strict fail-fast order so dependency mismatches or native launch regressions are caught immediately without masking OS-specific behavior.
 
-The supported operating systems now run ordinary unittest jobs. Checks run in
-this order inside the same job, so an early failure stops expensive work:
+---
 
-1. Verify installed commit pins and availability of the explicitly supplied peer
-   fixture. Missing setup exits 2 instead of generating many product failures.
-2. Execute the unchanged installed-runtime probe in a clean child interpreter.
-   A negative control removes a consumed method and proves that the probe rejects
-   it. The old test-only Admission compatibility shim has been removed.
-3. On Windows/Linux, use Node to execute the generated MCP manifest and perform
-   real initialization and tools/list against the installed runtime. Windows
-   also exercises normal-exit and timeout descendant ownership with a watchdog.
-4. Exercise real frontend cancellation, EOF, an unread large response, and a
-   completely received large response. Windows now runs these cases as well.
-5. Run the component suite for consent, scope, identity, publication, update
-   rollback, diagnostics and other behavior.
+## 1. CI Execution Order
 
-## Independent failure dimensions
+Checks execute in the following order within a single job:
+1. **Commit Pin & Peer Preflight (`tests/preflight.py`)**: Verifies installed runtime commit pins and the explicitly supplied peer repository checkout (exiting immediately with code `2` if missing).
+2. **Installed Runtime Probe**: Runs the unmodified production probe in a clean child interpreter, paired with a negative control that removes a consumed method and verifies rejection.
+3. **Real Node.js MCP Launch & Descendant Ownership (`tests/native`)**: Uses Node.js (`shell: false`) to execute the generated MCP manifest and complete real `initialize` and `tools/list` exchanges; on Windows, also verifies descendant cleanup on normal exit and timeout via a watchdog.
+4. **Stdio Transport & Backpressure Cases**: Exercises frontend cancellation, `EOF`, unread large responses, and complete large responses on both POSIX and Windows.
+5. **Full Component Suite**: Covers consent persistence, project scope, task identity, publication compatibility, update rollback, and diagnostics.
 
-| Boundary | What the assertion observes | What may be replaced |
-| --- | --- | --- |
-| Dependency compatibility | Unmodified installed package and consumed API | Missing API only in the rejecting negative control |
-| Manifest launch | Node actually starts the selected executable with exact arguments | The argument-echo child for quoting; a second case uses actual MCP modules |
-| Process ownership | A real descendant is dead after its leader exits | Nothing in launch, Job assignment or liveness |
-| Output pressure | Complete large response, or bounded exit when the peer stops reading | The remote tool's business payload |
-| Concurrent configuration | Fields survive real kernel-lock contention | An observation wrapper signals contention without changing the lock result |
-| Update rollback | Pointer/package state and removal of incomplete Git generations | Download/build and the native registration response in component tests |
+---
 
-No row proves every other row. A positive output case cannot establish timeout
-cleanup, and a live-leader timeout cannot establish ownership after leader exit.
-The full suite preserves the host's default text encoding. UTF-8 source files
-and protocol subprocess output are decoded explicitly; forcing the whole test
-process into UTF-8 mode would hide missing encoding boundaries on Chinese Windows.
-Windows liveness uses a waitable process handle; `os.kill(pid, 0)` is not a safe
-observation on Windows. Permission fixtures deny the numeric current-user SID,
-and test-owned diagnostics writers close before scratch removal.
+## 2. Independent Failure Dimensions
 
-The original frontend tests skipped Windows because their observer used POSIX
-selectors. Porting the observer exposed a real unread-pipe shutdown hang. The
-four transport tests now pass on the Windows host in about 1.5 seconds, without
-a model or a network call. Genuine POSIX mechanism tests (flock, FIFO and process
-groups) remain platform-specific, alongside Windows mechanism checks.
-
-These checks complement native Kimi acceptance; they do not prove model selection,
-native command provenance, or model-driven retrieval. The audit's K3 session was
-blocked by an exhausted weekly quota. That lane remains unaccepted.
-
-References: [Python pipe blocking support](https://docs.python.org/3.13/library/os.html#os.set_blocking),
-[Windows pipe mode](https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-setnamedpipehandlestate).
+| Verification Boundary | What the Assertion Observes | What May Be Replaced by Fixtures |
+|---|---|---|
+| **Dependency Compatibility** | Unmodified installed package and consumed API signatures | Missing API only in the rejecting negative control |
+| **Manifest Launch** | Node.js actually spawns the selected executable with exact arguments | Argument-echo child for quoting check; a second test runs the real MCP modules |
+| **Process Ownership** | Real descendant processes are dead after the leader exits | Nothing in launch, Windows Job assignment, or liveness checks |
+| **Output Backpressure** | Complete large response delivery, or bounded exit when the reader closes | The remote tool's synthetic payload |
+| **Concurrent Configuration** | All fields survive real OS kernel file-lock contention | Observation wrapper to synchronize contention timing only |
+| **Update Rollback** | Pointer/package restoration and cleanup of incomplete generations | Network download/build and native registry HTTP stub in unit tests |

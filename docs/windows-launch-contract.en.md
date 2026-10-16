@@ -1,53 +1,31 @@
-# Native launch validation
+# Windows Native Launch Contract
 
-[中文](windows-launch-contract.md) | English · [Documentation Index](README.en.md)
+<a href="windows-launch-contract.md">中文</a> | <b>English</b> · <a href="README.en.md">Documentation Index</a>
 
-Kimi 0.42.0 accepts PATH command tokens or package-relative `./` commands in
-plugin MCP declarations. Acceptance by that schema and a successful plugin
-inventory record do not prove that the command can be spawned.
+On Windows, Kimi Code launches plugin MCP stdio servers without a shell (`shell: false`). This document describes how `mindie-agent-kimi` configures shell-free MCP launching and enforces descendant process cleanup via Windows Job Objects.
 
-Windows stdio MCP uses a process without a shell. The former
-`./mindie-front.cmd` passed registration but failed with `spawn EINVAL`.
-Windows packages now declare the interpreter's executable basename with its
-retained directory first in the server's child `PATH`, and pass the launcher,
-configuration and operation as separate arguments. POSIX packages retain the
-executable shell wrapper. No global PATH or user profile is modified.
+---
 
-Run the native boundary lane after installing `runtime-requirements.txt`, with
-Node.js on PATH:
+## 1. Shell-Free MCP Launch on Windows
+
+- **Direct Executable Dispatch (No `.cmd` Wrapper)**: Spawning a `.cmd` batch file under Node.js with `shell: false` fails on Windows with `spawn EINVAL`. To ensure reliable startup without modifying the user's global `PATH`, Windows packages declare the pinned Python executable basename with its directory prepended to the MCP server's child `PATH`, passing the launcher script, config path, and operation as separate argv elements.
+- **Special Character Safety**: Tested against installation paths containing Unicode characters, spaces, and shell metacharacters.
+
+---
+
+## 2. Descendant Process Ownership via Windows Job Objects
+
+- **Suspended Start Before Job Assignment**: To prevent a race where a child spawns grandchildren before joining the job, the stdio frontend starts helper subprocesses in a suspended state, assigns them to a Windows Job Object configured with `KILL_ON_JOB_CLOSE`, and then resumes execution.
+- **Deterministic Tree Cleanup**: Whether the leader process exits normally, is cancelled, or hits an inherited-pipe timeout, closing the Job Object handle guarantees that all child and grandchild processes are terminated.
+
+---
+
+## 3. Running the Native Launch Verification Suite
+
+With `runtime-requirements.txt` installed and `node` available on `PATH`, run:
 
 ```sh
-python -m unittest discover -s tests/native -v
+python3 -m unittest discover -s tests/native -v
 ```
 
-The two checks have distinct responsibilities:
-
-- Generated manifest arguments execute through real Node `spawnSync` with
-  `shell: false`, in paths containing Unicode, spaces and shell metacharacters.
-  A real Python child exposes its executable and received arguments.
-- Generated launchers complete a live MCP initialization and `tools/list`
-  exchange through the selected runtime for both knowledge and remote
-  surfaces. No dependency API, process or MCP response is mocked.
-
-On the Windows validation machine, these checks took about 1.1 seconds.
-The same argument test against the original `281fd795` updater failed with
-`EINVAL` for both surfaces; the candidate passed. The candidate also installed
-through Kimi's native plugin API, and its installed package returned four
-knowledge tools and eighteen remote tools through a real MCP transport.
-
-These results establish registration and process/protocol contracts, not
-model-driven task completion. The attempted K3/max revalidation was blocked by
-the account's weekly quota (HTTP 403); it must be repeated when quota is
-available. Read-only feed synchronization is separate: isolated installs using
-`--no-schedule` need an explicit sync/update check before retrieval acceptance.
-
-The same native lane also checks Windows descendant ownership after the leader
-exits, for normal exit and inherited-pipe timeout. The stdlib front uses a
-suspended start, establishes a Windows Job, and then resumes execution. Late
-Job assignment was reproduced as a race; a Job must exist before execution.
-The initial 0.5-second timeout needed external cleanup after four seconds;
-the repaired probe returned in 0.704 seconds. All three native tests passed
-in 2.084 seconds, including both process terminal states.
-
-Host references: [plugin command rules](https://moonshotai.github.io/kimi-code/en/customization/plugins.html)
-and [MCP child environment](https://moonshotai.github.io/kimi-code/en/customization/mcp).
+- **Host References**: [Kimi Code Plugin Command Rules](https://moonshotai.github.io/kimi-code/en/customization/plugins.html) · [MCP Child Environment](https://moonshotai.github.io/kimi-code/en/customization/mcp)

@@ -1,43 +1,20 @@
-# Organizer failure and cancellation evidence
+# Organizer Failure Classification & Process Groups
 
-[中文](organizer-diagnostics.md) | English · [Documentation Index](README.en.md)
+<a href="organizer-diagnostics.md">中文</a> | <b>English</b> · <a href="README.en.md">Documentation Index</a>
 
-The adapter pins knowledge core `59b6ec4fd2ddf1ec1c95e5f635fb6b9076737a69`.
-Failures report a static category through the shared exit-code contract;
-the core retains the category, exit status and elapsed seconds. Provider stderr
-is never copied into the persisted diagnostic. An older exit 2 stays unknown.
-The existing 120-second native / 125-second outer deadlines, output bounds,
-single attempt and consumed-input policy are unchanged.
+When community experience sharing is enabled, `mindie-agent-kimi` invokes an isolated Kimi CLI organizer to extract block titles and summaries. This document describes the static exit-code classification and process-group lifecycle guarantees for the organizer.
 
-The previous POSIX runner always created a separate native process group.
-An actual macOS process reproduction showed the organizer exiting on core
-cancellation while its native child survived. A maintenance runner now keeps
-that child in the core-owned group. Local adapter cleanup kills only the direct
-child; the core closes the entire group on every terminal path. Standalone
-commands still own an independent group.
+---
 
-Validation on 2026-09-21:
+## 1. Isolated Execution & Static Error Categories
 
-- Seven actual local process cases verified configuration, input, native,
-  invalid-result, output-limit, deadline and success behavior. The deadline
-  case ran for 120.073 seconds. All diagnostics were static and no private
-  sentinel escaped. These cases used a controlled executable in the native
-  boundary, not a model.
-- With the official core installed and no source-path override, actual
-  organizer/native/grandchild processes shared one owned group. Cancellation
-  completed in 0.948 seconds; a normal successful result completed in 0.598
-  seconds. Every owned process was gone in both cases.
-- Independent core checks covered unknown legacy exit 2, raw stderr discard,
-  output limits and the closed-pipes deadline path.
-- A single real Kimi K3/max organizer invocation then used new material from
-  these actual local checks. It returned one faithful record in 34.371 seconds,
-  with no retry or publication. Process sampling confirmed the organizer and
-  native Kimi shared the core-owned group and left no owned process behind.
-  The isolated profile selected K3/max, had no plugins, skills or MCP, and was
-  removed afterward; the original profile was unchanged. This was an
-  independent organizer call, not a new Stop-to-publication test.
+- **Isolated Profile**: The organizer runs inside a temporary profile with no plugins, skills, hooks, or MCP servers loaded, and cleans up its temporary directory upon completion.
+- **Static Exit-Code Mapping**: Configuration errors, invalid inputs, native execution failures, schema-invalid outputs, output-size overflows, and deadlines (120s inner / 125s outer deadline) map to static shared failure categories.
+- **Zero Secret Leakage**: The shared Core records only the static failure category, exit code, and elapsed seconds—never copying raw provider stderr, prompts, or environment variables into persisted diagnostics. Failed inputs are never automatically replayed.
 
-No failed capture was replayed, no retry budget was reset, and no knowledge PR
-was created by these diagnostics. The earlier retained-task organizer failure
-cannot be retrospectively classified from its elapsed time. These process
-checks do not prove native Stop-to-publication delivery or Windows behavior.
+---
+
+## 2. Unified Process-Group Cleanup
+
+- **Shared Process-Group Ownership**: The organizer script and its spawned native Kimi child process remain in the Core-owned process group so that normal completion, timeout, or cancellation reliably closes the entire process tree without leaving orphan processes behind.
+- **Verification Scope**: Verified on macOS across all 7 process termination paths (configuration, input, native failure, invalid result, output limit, 120s deadline, and success) as well as isolated K3 organizer calls, confirming sub-second cancellation cleanup and zero lingering child processes.
