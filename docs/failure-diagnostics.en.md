@@ -1,35 +1,22 @@
-# Failure diagnosis and local cancellation
+# Failure Diagnostics & Local Cancellation
 
-[中文](failure-diagnostics.md) | English · [Documentation Index](README.en.md)
+<a href="failure-diagnostics.md">中文</a> | <b>English</b> · <a href="README.en.md">Documentation Index</a>
 
-Native status reports existing knowledge configuration, service/storage health,
-this task's binding and diagnostic failure counter, and the latest five captures
-and contribution batches associated with the bound task. A bound
-task can call status after a later failure without another user slash command;
-unbound tasks still require the explicit native status command. An absent identity
-returns no task records. A transient local or network failure is recovered by the existing worker; status is how that problem is seen. Failed batch IDs can be inspected with the optional recover command;
-unknown publication results must be reconciled before any explicit retry.
+Following Principle 9 of the [MindIE Agent Engineering Design Principles](https://github.com/mindie-agent/mindie-agent/blob/main/docs/design-principles.en.md) (*observable, diagnosable tools; never hide errors*), `mindie-agent-kimi` provides read-only status inspection, deterministic local process cleanup on cancellation, and preserved remote job references.
 
-Status does not initialize databases, start models/services, bind a task,
-reset failure counters, or replay consumed input. SQLite read-only access may create normal
-WAL reader sidecars; it does not change business records. Failure projections omit
-raw provider stderr, transcript text, tokens and other task identities. Existing
-malformed adapter settings produce a diagnostic instead of first-use choices.
-Native shell/SSH and independent remote-dev remain available when knowledge is down.
+---
 
-The stdio front keeps input responsive while bounded tool requests run. Cancel and
-EOF clean up only owned local processes; a cancelled observation does not establish
-remote job termination. Responses preserve the original job reference and delivery
-certainty. Explicitly inspect or stop that job before a new submission. Remote poll
-waiting is capped at 30 seconds without changing the remote workload timeout.
+## 1. Read-Only Status Inspection (`/mindie-agent:status`)
 
-Actual macOS evidence includes task-isolated SQLite diagnostics, paused state with
-unchanged counters, corrupt config, child/grandchild cancellation, ping while busy,
-EOF, output backpressure, update-lock cancellation and safe remote exception
-classification. Development checks protect those contracts. Controlled native
-identity/helper seams are not evidence that the host UI emitted a cancel event,
-that a remote job stopped, or that a full contribution loop completed.
+- **What It Reports**: Current knowledge configuration, service and storage health, the bound task's state and diagnostic failure counter, and the latest 5 captures and contribution batches associated with the bound task.
+- **Strictly Read-Only**: Calling `status` never initializes databases, starts models or background services, binds a task, resets failure counters, or replays consumed input. Uncertain external PR publications must be reconciled before any explicit `recover` retry.
+- **Sanitized Diagnostics & Corrupt Config Detection**: Failure projections omit raw provider stderr, transcript text, and tokens. If an existing adapter configuration file is malformed, `status` reports an explicit diagnostic error rather than presenting first-time onboarding choices.
+- **Independent Remote Execution**: Native shell/SSH and `remote-dev` remain fully usable even if the local knowledge service is unavailable.
 
-Windows remains unverified on hardware. Its blocking pipe-write and process-tree
-cleanup behavior requires separate acceptance. No new retry or background service
-is introduced by these changes.
+---
+
+## 2. Local Cancellation vs. Remote Ascend Jobs
+
+- **Responsive Stdio Frontend**: The MCP stdio frontend stays responsive to `ping`, cancellation, and `EOF` while tool requests execute.
+- **Local Process Cleanup**: Cancelling a request or closing stdin (`EOF`) terminates only the local helper subprocesses owned by that request.
+- **Preserved Remote Job Identity**: Cancelling a local observation or polling call does **not** stop a remote compilation or test job on the Ascend server. The response preserves the original remote job reference and delivery certainty so you can explicitly inspect or stop the remote job before submitting a new one. Remote poll requests wait up to 30 seconds per call without altering the remote workload's timeout.

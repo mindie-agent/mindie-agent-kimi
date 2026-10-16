@@ -2,156 +2,201 @@
   <img src="https://raw.githubusercontent.com/mindie-agent/mindie-agent/main/assets/brand/mindie-agent-logo.png" alt="MindIE Agent logo" width="128" height="128">
 </p>
 
-# MindIE Agent for Kimi Code
+<h1 align="center">MindIE Agent for Kimi Code</h1>
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-0F766E.svg)](LICENSE)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-2563EB.svg)](runtime-requirements.txt)
-[![Host: Kimi Code](https://img.shields.io/badge/host-Kimi%20Code-7C3AED.svg)](kimi.plugin.json)
+<p align="center">
+  <b>面向昇腾（Ascend）推理与算子工程的 Kimi Code 原生插件</b><br/>
+  <sub>按需领域知识检索 · SSH 远端 NPU 开发调试 · 隐私受控的经验沉淀闭环</sub>
+</p>
 
-中文 | [English](README.en.md)
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-0F766E.svg" alt="License: MIT"></a>
+  <a href="runtime-requirements.txt"><img src="https://img.shields.io/badge/python-3.11%2B-2563EB.svg" alt="Python 3.11+"></a>
+  <a href="kimi.plugin.json"><img src="https://img.shields.io/badge/host-Kimi_Code-7C3AED.svg" alt="Host: Kimi Code"></a>
+</p>
 
-面向 **Ascend（昇腾）推理与算子工程**的 **MindIE Agent** Kimi Code 原生插件适配器，提供本地领域知识检索、隐私门控的社区经验沉淀、通用 SSH 远端开发（`remote-dev`）与结构化故障诊断。
-
-本仓库完整继承 [MindIE Agent / VAWS 九条设计原则](https://github.com/mindie-agent/mindie-agent/blob/main/docs/design-principles.md)（旧运行时的退役不改变设计原则的有效性）。作为轻量级 Kimi 原生插件，共享知识运行时由 `mindie-knowledge` 承载，本仓库负责 Kimi 会话身份标识、`wire.jsonl` 解析、MCP 调度以及可选的 K3 元数据提取器。
-
-> **生态与版本说明**：MindIE Agent 首个正式产品版本（`v0.0.1`）聚焦于 Codex（`mindie-agent-codex`）与 Claude Code（`mindie-agent-cc`）宿主；`mindie-agent-kimi` 作为生态中的实验性 / 源码安装（source-installed）适配器持续维护，实机验收与边界说明见[文档索引](#文档索引)。
+<p align="center">
+  <b>中文</b> | <a href="README.en.md">English</a> ·
+  <a href="#快速开始">快速开始</a> ·
+  <a href="#装上之后能做什么">应用场景</a> ·
+  <a href="#日常使用与命令参考">命令参考</a> ·
+  <a href="#架构与组件边界">系统架构</a> ·
+  <a href="docs/README.md">技术文档</a>
+</p>
 
 ---
 
-## 核心特性
+**MindIE Agent for Kimi Code**（`mindie-agent-kimi`）是 [MindIE Agent](https://github.com/mindie-agent/mindie-agent) 面向 Kimi Code 打造的原生插件适配器。它把 **`vLLM-Ascend` 领域知识检索**、**SSH 远端昇腾 NPU 开发调试**以及**隐私受控的本地经验闭环**直接融入你的 Kimi Code 日常研发流中。
 
-- **按需领域知识检索**：基于本地 SQLite FTS5（支持 `contentless_delete`）提供低延迟的昇腾推理与算子工程知识检索，辅助排障、算子迁移与性能优化，知识仅作参考且不强制预设工作流。
-- **本地经验闭环与隐私门控共享**：
-  - 采集路径使用宿主公开的会话投影（public transcript projection）并执行本地确定性脱敏（deterministic redaction），仅保存完整用户消息与可见助手回复，不包含工具载荷，也不使用正文改写模型。
-  - 安装与更新自动配置扫描器与可选的 K3 元数据 worker（仅提取标题与摘要，禁用或最小化思考开销；提取失败时保留原文摘录，不增加用户配置负担）。
-  - 社区贡献默认关闭，仅在用户显式授权公开仓库后按项目范围启用。共享范围、脱敏边界、模型服务商处理与公开 Git 历史说明见[用户须知](skills/mindie-agent/references/user-notice.md)。
-  - 安装或首次配置时在展示用户须知后，可按需推荐并引导初始化 [mindie-agent/vllm-ascend-workspace](https://github.com/mindie-agent/vllm-ascend-workspace.git) 工作区（详见[工作区配置说明](skills/mindie-agent/references/workspace-setup.md)）。
-- **SSH 远端昇腾开发（`remote-dev`）**：提供独立的远端命令执行、文件同步与长任务轮询能力，无需绑定知识入口或开启社区共享即可直接使用。
-- **结构化故障诊断与无模型更新**：提供与任务隔离的本地只读状态诊断、可选的脱敏产品故障上报，以及由系统调度器驱动的后台不可变代数（generation）原子更新与回滚机制。
+项目设计遵循 [MindIE Agent 工程设计原则](https://github.com/mindie-agent/mindie-agent/blob/main/docs/design-principles.md)：共享知识引擎与远端开发能力由独立组件承载，本仓库专注于 Kimi 会话身份绑定、`wire.jsonl` 公开对话提取、MCP 桥接与本地不可变版本更新。
+
+> **生态与版本说明**：MindIE Agent 首个正式产品版本（`v0.0.1`）优先面向 Codex（[`mindie-agent-codex`](https://github.com/mindie-agent/mindie-agent-codex)）与 Claude Code（[`mindie-agent-cc`](https://github.com/mindie-agent/mindie-agent-cc)）发布；`mindie-agent-kimi` 作为生态中的实验性源码安装（Source-Installed）适配器持续维护，验证范围详见[文档导航](#文档导航)。
+
+---
+
+## 装上之后能做什么？
+
+在昇腾推理与算子工程研发中，你可以直接用自然语言让 Kimi Code 配合本插件完成以下典型任务：
+
+### 场景 1：排障时按需查阅 `vLLM-Ascend` 实战案例（`mindie-knowledge`）
+> **痛点**：遇到 `HCCL` 通信超时、`ACL` 算子报错、图模式（Graph Mode）编译异常或精度问题时，在零散的 Issue 和群聊记录中大海捞针非常耗时。  
+> **怎么做**：把报错信息直接发给 Kimi。插件会基于本地 SQLite FTS5 检索引擎查询已同步的 [`knowledge-vllm-ascend`](https://github.com/mindie-agent/knowledge-vllm-ascend) 知识包，返回附带**适用版本、验证证据和已知限制**的工程排障案例作为参考，不强制规定你的排障路线。
+
+### 场景 2：本地写代码，一键在远端昇腾 NPU 服务器上编译与跑测（`remote-dev`）
+> **痛点**：本地开发机是 Mac 或 Windows 笔记本，而昇腾 NPU 环境在远端服务器上，频繁手动同步补丁、盯长耗时测试日志极其繁琐。  
+> **怎么做**：直接对 Kimi 说 *“把当前改动同步到远端昇腾开发机，跑一下对应的单元测试并实时看日志”*。内置的 `remote-dev` 工具集支持远端命令执行、文件同步与长耗时后台作业轮询。即使不开启知识库服务或社区贡献，`remote-dev` 也能完全独立运行。
+
+### 场景 3：将踩坑经验安全脱敏后沉淀回开源社区（可选 Opt-in）
+> **痛点**：花半天定位完一个棘手的算子或推理 Bug，关掉终端后排障思路就丢了；想分享给社区又担心泄露内部 IP、密钥或私有路径。  
+> **怎么做**：社区贡献**默认关闭**。仅在你显式对指定公开仓库开启共享后，插件会在会话结束（`Stop`）时提取公开可见对话，使用本地确定性规则与 Gitleaks 完成脱敏，并通过隔离的整理器生成标题与摘要以提交知识 PR。
+> - 关于公开消息筛选范围、本地脱敏边界与公开 Git 历史说明，请参阅 **[用户须知](skills/mindie-agent/references/user-notice.md)**。
+> - 如需在本地搭建 `vllm` + `vllm-ascend` 多任务 Git Worktree 协同工作区，可按需参考 **[工作区配置指南](skills/mindie-agent/references/workspace-setup.md)** 与 [vllm-ascend-workspace](https://github.com/mindie-agent/vllm-ascend-workspace.git)。
 
 ---
 
 ## 快速开始
 
-### 1. 环境要求与安装
+### 方式一：直接把链接发给你的 Agent 自动安装（推荐）
 
-需要 Python 3.11+、Git，以及已安装并登录、支持原生插件的 Kimi Code。
+直接复制下面这句话发送给你的 Kimi Code（或其他支持终端执行的 AI Agent），让它自动帮你完成环境检查、运行时构建与插件注册：
 
-知识引擎的 Python 解释器需链接 **SQLite 3.43.0 及以上版本**，且编译启用了 FTS5 与 `contentless_delete` 支持。安装脚本会直接校验底层 SQLite 动态库能力（仅凭 Python 版本号不能证明满足该要求）。
-
-```sh
-git clone https://github.com/mindie-agent/mindie-agent-kimi.git
-cd mindie-agent-kimi
-python3 scripts/setup.py
+```text
+帮我安装一下这个 https://github.com/mindie-agent/mindie-agent-kimi
 ```
 
-`setup.py` 会在持久化 MindIE 数据目录中构建固定版本的虚拟环境（pinned runtime）、写入 MindIE 配置文件、保持社区共享默认关闭，并注册无模型的定时更新检查。可通过 `--knowledge-python /absolute/path/to/python` 显式指定解释器，或在隔离开发安装时使用 `--no-schedule` 跳过定时任务注册。
+<details open>
+<summary>🤖 <b>AI Agent 自动安装执行协议（Instructions for AI Agents）</b></summary>
 
-`setup.py` 执行完成后会输出 `native_package` 路径。请使用该确切路径通过宿主原生插件接口完成安装：
+如果你是收到用户安装请求的 AI Agent，请直接按顺序在终端执行以下步骤完成安装与自检，**无需让用户手动翻阅文档**：
+
+1. **检查基础工具与 SQLite FTS5 支持**：
+   ```sh
+   git --version
+   kimi --version
+   python3 -c "import sqlite3; assert sqlite3.sqlite_version_info >= (3, 43, 0), sqlite3.sqlite_version; print('SQLite OK:', sqlite3.sqlite_version)"
+   ```
+   - 确认 Python >= 3.11，且链接的底层 SQLite 版本 `>= 3.43.0`（支持 FTS5 与 `contentless_delete`）。
+
+2. **克隆仓库、构建持久化锁定运行时并通过 Kimi 原生插件接口注册**：
+   ```sh
+   git clone https://github.com/mindie-agent/mindie-agent-kimi.git /tmp/mindie-agent-kimi
+   cd /tmp/mindie-agent-kimi
+   SETUP_JSON=$(python3 scripts/setup.py)
+   echo "$SETUP_JSON"
+   NATIVE_PKG=$(printf '%s' "$SETUP_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin)['native_package'])")
+   python3 scripts/install_kimi_plugin.py \
+     --kimi-home "${KIMI_CODE_HOME:-$HOME/.kimi-code}" \
+     --plugin-root "$NATIVE_PKG"
+   ```
+
+3. **校验原生安装回读结果并向用户汇报**：
+   ```sh
+   python3 scripts/install_kimi_plugin.py \
+     --kimi-home "${KIMI_CODE_HOME:-$HOME/.kimi-code}" \
+     --plugin-root "$NATIVE_PKG" \
+     --readback
+   ```
+   - 确认返回的插件列表中 `mindie-agent` 处于 `enabled: true`、`state: "ok"`，且两个 MCP 服务（`knowledge` 与 `remote`）均已启用。随后告知用户安装已完成（临时克隆目录 `/tmp/mindie-agent-kimi` 可随时清理，持久化运行时保存在 `~/.local/share/mindie-agent/kimi`）。
+
+</details>
+
+### 方式二：终端手动一行安装（One-Line Terminal Install）
+
+如果你习惯在终端手动执行，可直接运行以下命令完成克隆、运行时构建与原生插件注册：
 
 ```sh
-python3 scripts/install_kimi_plugin.py \
-  --kimi-home "${KIMI_CODE_HOME:-$HOME/.kimi-code}" \
-  --plugin-root /absolute/native_package/from/setup
+git clone https://github.com/mindie-agent/mindie-agent-kimi.git && \
+cd mindie-agent-kimi && \
+NATIVE_PKG=$(python3 scripts/setup.py | python3 -c "import json,sys; print(json.load(sys.stdin)['native_package'])") && \
+python3 scripts/install_kimi_plugin.py --kimi-home "${KIMI_CODE_HOME:-$HOME/.kimi-code}" --plugin-root "$NATIVE_PKG"
 ```
 
-请将参数中的占位路径替换为 `setup.py` 实际打印的 `native_package` 绝对路径。安装成功后，下载的源码目录可移动或删除（请保留持久化运行时与启动器目录）。安装脚本调用 Kimi 原生插件 API，不会伪造宿主的已安装插件注册表；生成的插件包指向持久化启动器，因此在后续自动更新后，已加载的入口依然可直接调用。
+#### 环境与目录说明
+- **SQLite 要求**：知识引擎使用的 Python 解释器需链接 **SQLite `>= 3.43.0`**（编译启用 FTS5 与 `contentless_delete`），可通过 `--knowledge-python /path/to/python` 指定解释器。
+- **持久化路径**：默认配置文件位于 `~/.config/mindie-agent/kimi.json`，持久化运行时与启动器位于 `~/.local/share/mindie-agent/kimi`。安装完成后，最初克隆的源码目录可以安全移动或删除。
 
-- **默认配置目录**：`~/.config/mindie-agent/`
-- **默认本地运行时数据目录**：`~/.local/share/mindie-agent/kimi`
-- 安装后仍可通过 `setup.py` 的 `--community-*` 参数修改配置，无需重装或手动编辑 JSON。
+---
 
-当前实现行为、可复现检查命令与验收边界详见[框架稳定性与验证说明](docs/framework-stability.md)。
+## 日常使用与命令参考
 
-### 2. 首次使用与常用命令
+在 Kimi Code 会话中，`remote-dev` 远端工具可随时按需调用。需要使用知识库或修改偏好设置时，可使用以下斜杠命令：
 
-在 Kimi Code 会话中调用 `/mindie-agent`（或通过技能入口 `/skill:mindie-agent`、命令别名 `/mindie-agent:init` / `/init`）。入口会复用已保存的安装级选择，仅在缺少公开目标仓库、账号或项目范围时提示补充。
-
-- **启用社区共享**：在回复中提供公开仓库（`owner/repo`）与账号，或直接运行 `/mindie-agent contribute owner/repo ACCOUNT`（或 `/mindie-agent:sharing-enable`），即可为当前项目启用公开经验贡献。已配置的经验闭环会自动处理符合条件的 `Stop` 事件。任务绑定与异步处理回执相互独立；显式禁用或历史拒绝配置在用户主动修改前保持关闭（不再提供只读或稍后决定模式）。
-- **关闭共享时**：不会触发 `Stop` 会话采集、抓取或整理模型调用；公共知识同步与 `remote-dev` 远端开发仍可正常使用。
-
-| Kimi Code 命令 | 功能说明 |
+| Kimi Code 命令 | 用途说明 |
 |---|---|
-| `/mindie-agent`（或 `/skill:mindie-agent`、`/mindie-agent:init`、`/init`） | 绑定当前原生 Kimi 任务、确保后台知识服务就绪并返回当前配置状态 |
-| `/mindie-agent:status`（或 `/status`） | 离线查询当前任务的知识配置、服务健康度及最近 5 条采集与贡献批次状态（不启动模型或初始化数据库） |
-| `/mindie-agent:deactivate`（或 `/deactivate`） | 解除当前任务的知识访问绑定（保留安装级共享与故障上报设置） |
-| `/mindie-agent:recover`（或 `/recover`） | 可选地按 `--batch <id>` 检查指定贡献批次状态（常规临时网络故障由后台 worker 自动恢复，无需手动执行） |
-| `/mindie-agent:sharing-enable` / `/mindie-agent:sharing-disable` / `/mindie-agent:sharing-status` | 显式启用、关闭当前项目的公开社区贡献，或离线查看共享状态 |
-| `/mindie-agent:reporting-status` / `/mindie-agent:reporting-enable` / `/mindie-agent:reporting-disable` | 查询、启用或关闭独立的脱敏产品故障上报 |
+| `/mindie-agent`（或 `/skill:mindie-agent`、`/mindie-agent:init`、`/init`） | 绑定当前原生 Kimi 任务、确保后台知识服务就绪，并查看或配置社区共享偏好（已保存的选择跨会话持久生效）。 |
+| `/mindie-agent:status`（或 `/status`） | **纯只读状态检查**：查看当前任务的知识库配置、后台服务健康度以及最近 5 条采集与贡献批次状态（不启动模型或初始化数据库）。 |
+| `/mindie-agent contribute owner/repo ACCOUNT` | 为当前项目显式配置公开知识贡献的目标仓库与 GitHub 账号。 |
+| `/mindie-agent:sharing-enable` / `/mindie-agent:sharing-disable` / `/mindie-agent:sharing-status` | 开启、暂停或查看当前项目的公开社区贡献（关闭后 `Stop` 阶段不采集对话、不调用整理器）。 |
+| `/mindie-agent:deactivate`（或 `/deactivate`） | 解除当前会话任务的知识访问绑定（保留全局共享与故障上报设置）。 |
+| `/mindie-agent:recover`（或 `/recover`） | 按 `--batch <id>` 检查或恢复指定贡献批次（常规临时网络波动由后台 Worker 自动恢复）。 |
+| `/mindie-agent:reporting-status` / `/mindie-agent:reporting-enable` / `/mindie-agent:reporting-disable` | 查看、开启或关闭独立的产品自身故障脱敏上报（开启后会返回一条一次性终端准备命令）。 |
 
-原生入口在内部管理任务身份与工具绑定，用户无需手动维护 nonce 或租约（lease）。`remote-dev` 远端工具集独立于知识入口与贡献设置，可随时按需调用。
+### 自动更新与安全卸载
+
+- **后台自动更新**：在 macOS 上通过 `launchd` 每 5 分钟自动检查一次远端 `main` 分支，在独立代数（Generation）目录中构建锁定虚拟环境，确认核心空闲后通过 Kimi 原生插件接口完成切换并保留回滚回执（详见 [自动更新机制](docs/update.md)）。可通过以下命令随时查看更新状态：
+  ```sh
+  MINDIE_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/mindie-agent/kimi.json"
+  MINDIE_LAUNCHER=$(python3 -c 'import json,sys,pathlib; cfg=json.loads(pathlib.Path(sys.argv[1]).read_text()); u=pathlib.Path(cfg["state_dir"])/"update"; cur=json.loads((u/"current.json").read_text()); print(u/"launch"/(cur["sha"] or "bootstrap")/"mindie_launch.py")' "$MINDIE_CONFIG")
+  python3 "$MINDIE_LAUNCHER" --config "$MINDIE_CONFIG" updater status
+  ```
+  > 提示：将 `status` 替换为 `check` 可立即检查更新，替换为 `uninstall-schedule` 可移除定时任务。
+- **安全卸载**：关闭正在使用插件的会话，先运行 `python3 "$MINDIE_LAUNCHER" --config "$MINDIE_CONFIG" updater uninstall-schedule` 移除定时任务，随后在 Kimi 原生 Plugins 界面移除 `mindie-agent`。
 
 ---
 
-## 自动更新
+## 架构与组件边界
 
-本适配器由操作系统调度器驱动（macOS 上通过 `launchd` 每 5 分钟检查一次；Windows 计划任务注册尚未实机验收），通过宿主原生插件 API 更新本地插件包。每次检查将远端 `main` 解析为唯一 commit SHA，在独立目录中构建含固定版本虚拟环境的不可变代数（immutable generation），在排他操作锁下请求共享核心执行 `stop_if_idle`，通过 Kimi 原生插件 API 安装并回读校验，最后原子切换代数指针（含回滚回执记录）。完整机制、状态/恢复命令及宿主重载边界见 [docs/update.md](docs/update.md)。
+`mindie-agent-kimi` 采用**薄适配层（Thin Adapter）**架构：它负责对接 Kimi Code 的插件清单、会话身份绑定、`wire.jsonl` 解析与本地版本代数切换；核心的知识检索、远端开发和故障诊断能力均由独立的共享组件提供。
 
-即使已删除最初下载的源码仓库，也可通过已安装的配置文件定位持久化启动器并查看更新状态：
-
-```sh
-MINDIE_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/mindie-agent/kimi.json"
-MINDIE_LAUNCHER=$(python3 - "$MINDIE_CONFIG" <<'PYCODE'
-import json, sys
-from pathlib import Path
-adapter = json.loads(Path(sys.argv[1]).read_text())
-update = Path(adapter["state_dir"]) / "update"
-current = json.loads((update / "current.json").read_text())
-print(update / "launch" / (current["sha"] or "bootstrap") / "mindie_launch.py")
-PYCODE
-)
-python3 "$MINDIE_LAUNCHER" --config "$MINDIE_CONFIG" updater status
+```mermaid
+flowchart LR
+  Kimi["Kimi Code 宿主<br/>(Plugin API / Hooks / MCP stdio)"] --> Launcher["mindie-agent-kimi<br/>(持久化启动器 & 会话桥接)"]
+  Launcher --> Knowledge["mindie-agent/knowledge<br/>(SQLite FTS5 检索、本地脱敏与 PR 闭环)"]
+  Knowledge --> Feed["mindie-agent/knowledge-vllm-ascend<br/>(vLLM-Ascend 领域知识源)"]
+  Launcher --> RemoteDev["mindie-agent/remote-dev<br/>(SSH 远端昇腾命令、同步与轮询)"]
+  Launcher --> Diagnostics["mindie-agent/diagnostics<br/>(有界本地诊断 & 可选故障上报)"]
 ```
 
-- 将 `status` 替换为 `check` 可立即执行一次 `main` 分支更新检查；
-- 替换为 `uninstall-schedule` 可停止自动定时检查，`install-schedule` 可重新注册定时任务；
-- 已知的临时网络或证书信任失败会在到达记录的退避时间后由下一次定时检查自动重试，且全程保持 TLS 校验开启；
-- `recover` 仅用于清除隔离（quarantined）内容或未知安装故障，常规网络抖动无需调用。
+| 仓库 / 组件 | 核心职责 |
+|---|---|
+| [`mindie-agent/mindie-agent`](https://github.com/mindie-agent/mindie-agent) | 顶层架构、MindIE Agent 工程设计原则、领域边界与配套发布规范。 |
+| `mindie-agent/mindie-agent-kimi`（本仓库） | Kimi 原生插件清单（`kimi.plugin.json`、`commands/`、`skills/`）、`wire.jsonl` 对话解析、隔离整理器调度与不可变代数更新管理（`scripts/`）。 |
+| [`mindie-agent/knowledge`](https://github.com/mindie-agent/knowledge) | 共享知识引擎：本地 SQLite FTS5 检索、确定性脱敏、采集队列與 GitHub PR 发布回执。 |
+| [`mindie-agent/knowledge-vllm-ascend`](https://github.com/mindie-agent/knowledge-vllm-ascend) | 持续演进的 `vllm-ascend` 领域知识包。 |
+| [`mindie-agent/remote-dev`](https://github.com/mindie-agent/remote-dev) | 面向远端昇腾服务器的 SSH 命令执行、文件同步与长耗时后台作业管理。 |
+| [`mindie-agent/diagnostics`](https://github.com/mindie-agent/diagnostics) | 本地有界结构化诊断日志与可选的脱敏 GitHub Issue 自动上报。 |
 
 ---
 
-## 可选的产品故障上报
+## 开发者验证与测试
 
-产品故障上报与知识社区贡献是两个完全独立的用户选项，默认保持关闭，仅在用户通过原生命令显式启用后生效，且该配置与其他 MindIE 适配器共享：
+在仓库根目录下，准备好锁定的运行时依赖与对等测试仓库后，可运行完整的预检与测试套件：
 
-- `/mindie-agent:reporting-status`：读取共享上报开关与 reporter 运行状态。
-- `/mindie-agent:reporting-enable`：开启向 `mindie-agent/mindie-agent` 提交脱敏产品故障报告，并返回一条准备 reporter 的确切命令。请在 Hook 之外执行一次该命令并核对输出：需同时满足运行时就绪（runtime ready）与 worker 健康（worker healthy）才算准备完成；准备失败不会自动重试。
-- `/mindie-agent:reporting-disable`：撤销后续上报授权（本地诊断记录仍会保留）。
-
-`not_configured` 仅表示尚未授权上传，不代表缺少本地日志。修改此共享设置会同步作用于所有 MindIE 适配器。
-
-上报事件仅包含静态产品阶段、错误类型与已安装代码版本，**绝不收集**任务会话原文、提示词、执行命令、环境变量或凭据。取消操作、调用方参数校验、未启用权限、常规锁竞争与业务命令执行失败均不属于产品缺陷，不会触发上报。附加诊断引用时，原始工具返回结果与远端作业引用均原样保留。
-
-即便关闭故障上报，更新检查仍会执行有界离线日志维护。`launchd` 标准输出重定向至空设备，更新状态与有界诊断文件承载故障证据，不会产生无限增长的 `scheduler.log`。
+```sh
+export MINDIE_PEER_CC_REPO=/path/to/mindie-agent-cc
+python3 tests/preflight.py
+python3 -m unittest discover -s tests -p test_runtime_contract.py
+python3 -m unittest discover -s tests/native -v
+python3 -m unittest discover -s tests
+```
 
 ---
 
-## 停止使用与卸载
+## 文档导航
 
-- `/mindie-agent:deactivate`：结束当前任务的知识库访问绑定。
-- `/mindie-agent:sharing-disable`：停止已配置范围的社区经验贡献。
-- 上述命令不会卸载插件，也不会停止无模型自动更新。
+详细设计与验证文档见 [`docs/`](docs/README.md) 目录（提供完整的中英双语版本）：
 
-卸载插件前，请先关闭正在使用该插件的任务，并运行持久化启动器的 `updater uninstall-schedule` 命令（若取消定时任务失败，将保留 plist 并明确报错）。随后在 Kimi 原生 Plugins 界面移除 MindIE Agent。在仍有任务或组件可能使用时，请保留运行时数据、回执与旧启动器，切勿递归删除共享数据目录。卸载本适配器不会自动关闭跨适配器共享的故障上报开关；如需全局关闭故障上报，请单独执行 `/mindie-agent:reporting-disable`。
-
----
-
-## 文档索引
-
-完整文档索引见 [docs/README.md](docs/README.md)（[English](docs/README.en.md)）：
-
-| 文档（中文） | English Counterpart | 说明 |
-|---|---|---|
-| [自动更新机制](docs/update.md) | [Automatic Update](docs/update.en.md) | 后台代数构建、原子指针切换、回滚回执、命令与宿主重载边界 |
-| [框架稳定性与验证](docs/framework-stability.md) | [Framework Stability](docs/framework-stability.en.md) | 日常使用契约、组件预检与测试命令、Windows 原子配置读写与验收边界 |
-| [故障诊断与本地取消](docs/failure-diagnostics.md) | [Failure Diagnostics](docs/failure-diagnostics.en.md) | 只读状态诊断、取消与 EOF 进程清理边界、远端作业引用保留 |
-| [整理器故障与取消证据](docs/organizer-diagnostics.md) | [Organizer Diagnostics](docs/organizer-diagnostics.en.md) | 整理器静态退出码分类、进程组生命周期管理与独立验证记录 |
-| [插件更新期间的服务连续性](docs/service-continuity.md) | [Service Continuity](docs/service-continuity.en.md) | 更新事务中的知识服务停止、有界恢复、回滚交接与验证边界 |
-| [测试边界与故障检测](docs/test-boundaries.md) | [Test Boundaries](docs/test-boundaries.en.md) | 跨平台 CI 检查顺序、独立故障维度与前后端传输边界测试 |
-| [Windows 原生启动契约](docs/windows-launch-contract.md) | [Windows Launch Contract](docs/windows-launch-contract.en.md) | Windows 无 shell MCP 启动、子进程 Job 归属与原生边界验证 |
+- **[文档索引（中文）](docs/README.md)** | **[Documentation Index (English)](docs/README.en.md)**
+- **自动更新机制**：[中文](docs/update.md) | [English](docs/update.en.md) — 后台不可变代数构建、原子指针切换、回滚回执与宿主重载边界。
+- **框架稳定性与验证**：[中文](docs/framework-stability.md) | [English](docs/framework-stability.en.md) — 日常无感使用保障、Windows 原子配置读写与测试预检流程。
+- **故障诊断与本地进程取消**：[中文](docs/failure-diagnostics.md) | [English](docs/failure-diagnostics.en.md) — 纯只读状态诊断、本地取消清理与远端作业引用保留。
+- **整理器故障分类与进程组管理**：[中文](docs/organizer-diagnostics.md) | [English](docs/organizer-diagnostics.en.md) — 隔离整理器静态退出码分类、进程组生命周期管理与验证记录。
+- **插件更新期间的服务连续性**：[中文](docs/service-continuity.md) | [English](docs/service-continuity.en.md) — 更新事务中的知识服务停止、有界恢复、回滚交接与验收边界。
+- **测试边界与故障检测**：[中文](docs/test-boundaries.md) | [English](docs/test-boundaries.en.md) — 跨平台 CI 检查顺序、独立故障维度与 stdio 传输边界测试。
+- **Windows 原生启动契约**：[中文](docs/windows-launch-contract.md) | [English](docs/windows-launch-contract.en.md) — Windows 无 Shell MCP 启动、Job Object 后代进程回收与原生边界验证。
 
 ---
 
 ## 许可证
 
-本项目采用 [MIT License](LICENSE) 开源。
+本项目基于 [MIT License](LICENSE) 开源。
