@@ -34,21 +34,38 @@ Designed around the [MindIE Agent Engineering Design Principles](https://github.
 
 ---
 
-## Why Use This Plugin?
+## Why Use This Plugin? (Trigger Modes & Usage Examples)
 
-Here are three concrete ways `mindie-agent-kimi` helps during daily Ascend inference and operator development:
+MindIE Agent uses a two-mode trigger model—**manual on-demand activation for domain knowledge & skills** plus **default automatic triggering for remote NPU execution**:
 
-### Scenario 1: Search Verified `vLLM-Ascend` Troubleshooting Cases (`mindie-knowledge`)
+| Capability | Trigger Mode | When to Use | How to Trigger |
+| :--- | :--- | :--- | :--- |
+| **Experience, Knowledge & Skill System**<br/>(`mindie-knowledge` + `mindie-agent` Skill) | **🎯 Manual Trigger** | When troubleshooting Ascend / `vLLM-Ascend` errors, adapting operators, debugging Graph Mode failures, or tuning performance/accuracy and you want historical experience, domain knowledge, and Skill guidance | Explicitly type **`/mindie-agent` + your problem description** |
+| **Remote Ascend NPU Development**<br/>(`remote-dev` MCP toolset) | **⚡ Default Auto-Trigger** | When syncing local edits to a remote Ascend server/container, running NPU builds/tests, checking `npu-smi`, or tailing long job logs | **No slash command needed**—just describe the remote task in natural language |
+
+### Scenario 1: Type `/mindie-agent` to Invoke Experience, Knowledge & Skills (Manual Trigger)
 > **The Problem**: When you hit an `HCCL` communication timeout, an `ACL` operator error, a Graph Mode compilation failure, or numerical drift, hunting through scattered GitHub Issues and chat logs takes hours.  
-> **How It Helps**: Paste the traceback or symptom directly into Kimi Code. The plugin queries locally synced [`knowledge-vllm-ascend`](https://github.com/mindie-agent/knowledge-vllm-ascend) packages via SQLite FTS5 and returns verified troubleshooting cases complete with **applicable environments, evidence, and known caveats**—as optional reference material rather than a rigid workflow.
+> **Copy-Paste Example**:
+> ```text
+> /mindie-agent I'm hitting an HCCL AllReduce timeout (hcclRet=4) running DeepSeek-R1 with vllm-ascend on 8x Ascend 910B (CANN 8.0.RC3). Please check past experience and help me find the root cause.
+> ```
+> **What Happens**: Typing `/mindie-agent` activates the `mindie-agent` Skill and queries locally synced [`knowledge-vllm-ascend`](https://github.com/mindie-agent/knowledge-vllm-ascend) packages via SQLite FTS5, returning verified troubleshooting cases complete with **applicable environments, evidence, and known caveats** as optional reference material rather than a rigid workflow.
 
-### Scenario 2: Edit Locally, Build & Debug on Remote Ascend NPU Servers (`remote-dev`)
-> **The Problem**: Your daily machine is a macOS or Windows laptop while the Ascend NPU hardware lives on a remote Linux server. Manually syncing patches and tailing long test runs slows down every iteration.  
-> **How It Helps**: Ask Kimi to *"sync my local changes to the remote Ascend server, run the unit tests, and watch the logs."* The built-in `remote-dev` MCP server supports remote command execution, file synchronization, and bounded background job polling over SSH—working independently even if knowledge capture is disabled.
+### Scenario 2: Everyday Conversation Automatically Triggers Remote Ascend NPU Execution (`remote-dev` Default Auto-Trigger)
+> **The Problem**: Your daily machine is a macOS or Windows laptop while the Ascend NPU hardware lives on a remote Linux server or container. Manually syncing patches and tailing long test runs slows down every iteration.  
+> **Copy-Paste Example (no slash command required)**:
+> ```text
+> Connect to the vllm_dev container on my remote 910B server, check current NPU memory usage, and sync my local rotary_embedding.py changes to run the corresponding pytest unit test.
+> ```
+> **What Happens**: The built-in `remote-dev` MCP server is always on and **triggers automatically by default** whenever your prompt involves remote servers, containers, or NPU commands—supporting remote command execution, file synchronization, and bounded background job polling over SSH even if knowledge capture is disabled.
 
-### Scenario 3: Turn Debugging Sessions into Sanitized Community Knowledge (Opt-In)
+### Scenario 3: Invoke `/mindie-agent` & Turn Debugging Sessions into Sanitized Community Knowledge (Opt-In)
 > **The Problem**: Hard-won debugging insights usually vanish when you close the terminal, yet sharing raw transcripts risks leaking internal IPs, keys, or private file paths.  
-> **How It Helps**: Community sharing is **off by default**. Only when you explicitly opt in for an approved public repository does the `Stop` hook extract visible user/assistant messages, run local deterministic redaction and Gitleaks scanning, generate navigation metadata via an isolated organizer, and prepare a sanitized knowledge PR.
+> **Copy-Paste Example**:
+> ```text
+> /mindie-agent Help me diagnose this custom Ascend operator build failure using the knowledge base and our remote NPU container, and let's capture the sanitized takeaways once the test passes.
+> ```
+> **What Happens**: Community sharing is **off by default**. Only when you explicitly opt in for an approved public repository does the `Stop` hook extract visible user/assistant messages, run local deterministic redaction and Gitleaks scanning, generate navigation metadata via an isolated organizer, and prepare a sanitized knowledge PR.
 > - Read the **[User & Contribution Notice](skills/mindie-agent/references/user-notice.md)** for full details on sharing scope, redaction limits, and public Git history.
 > - To set up a multi-task Git worktree layout for `vllm` and `vllm-ascend`, see **[Workspace Setup](skills/mindie-agent/references/workspace-setup.md)** and [vllm-ascend-workspace](https://github.com/mindie-agent/vllm-ascend-workspace.git).
 
@@ -119,11 +136,11 @@ python3 scripts/install_kimi_plugin.py --kimi-home "${KIMI_CODE_HOME:-$HOME/.kim
 
 ## Everyday Usage & Command Reference
 
-In Kimi Code sessions, `remote-dev` tools work on demand at any time. Use the slash commands below to bind knowledge access, inspect status, or update sharing preferences:
+In Kimi Code sessions, **`remote-dev` tools trigger automatically by default** in normal conversation. Use the slash commands below whenever you want to manually invoke Ascend domain knowledge, historical experience, and the Skill system—or inspect status and update preferences:
 
 | Kimi Code Command | Description |
 |---|---|
-| `/mindie-agent` (or `/skill:mindie-agent`, `/mindie-agent:init`, `/init`) | Bind the current native Kimi task, ensure the background knowledge service is ready, and view or configure preferences (saved choices persist across sessions). |
+| `/mindie-agent <problem description>` (or `/skill:mindie-agent`, `/mindie-agent:init`, `/init`) | **Manual trigger entry**: type `/mindie-agent` followed by your question to invoke Ascend domain knowledge, historical experience, and the Skill system on demand (also binds the current native Kimi task and ensures the knowledge service is ready). |
 | `/mindie-agent:status` (or `/status`) | **Read-only status check**: inspect knowledge configuration, service/storage health, and the latest 5 captures and contribution batches without starting a model. |
 | `/mindie-agent contribute owner/repo ACCOUNT` | Explicitly configure opt-in public knowledge contribution for the current project. |
 | `/mindie-agent:sharing-enable` / `/mindie-agent:sharing-disable` / `/mindie-agent:sharing-status` | Enable, pause, or inspect public community contribution (when disabled, `Stop` performs no transcript collection or organizer call). |

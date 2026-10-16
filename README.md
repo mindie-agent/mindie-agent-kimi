@@ -34,21 +34,38 @@
 
 ---
 
-## 装上之后能做什么？
+## 装上之后能做什么？（触发方式与使用示例）
 
-在昇腾推理与算子工程研发中，你可以直接用自然语言让 Kimi Code 配合本插件完成以下典型任务：
+MindIE Agent 采用**「知识与 Skill 手动按需触发 + 远端执行工具默认常驻触发」**的双模式设计：
 
-### 场景 1：排障时按需查阅 `vLLM-Ascend` 实战案例（`mindie-knowledge`）
+| 能力模块 | 触发方式 | 什么时候用？ | 怎么触发？ |
+| :--- | :--- | :--- | :--- |
+| **经验、知识库与 Skill 系统**<br/>（`mindie-knowledge` + `mindie-agent` Skill） | **🎯 手动触发** | 遇到昇腾 / `vLLM-Ascend` 报错排障、算子适配、图模式编译异常、精度/性能调优，需要调取历史踩坑经验、领域知识库与专业 Skill 引导时 | 在输入框中显式输入 **`/mindie-agent` + 你的问题描述** |
+| **远端昇腾 NPU 开发与执行**<br/>（`remote-dev` MCP 工具集） | **⚡ 默认自动触发** | 日常需要将本地改动同步到远端昇腾服务器/容器、在 NPU 上跑编译/测试、查看 `npu-smi` 或实时轮询长日志时 | **无需输入任何斜杠命令**，直接用自然语言描述远端操作即可 |
+
+### 场景 1：输入 `/mindie-agent` 唤醒经验、知识库与 Skill 排障（手动触发）
 > **痛点**：遇到 `HCCL` 通信超时、`ACL` 算子报错、图模式（Graph Mode）编译异常或精度问题时，在零散的 Issue 和群聊记录中大海捞针非常耗时。  
-> **怎么做**：把报错信息直接发给 Kimi。插件会基于本地 SQLite FTS5 检索引擎查询已同步的 [`knowledge-vllm-ascend`](https://github.com/mindie-agent/knowledge-vllm-ascend) 知识包，返回附带**适用版本、验证证据和已知限制**的工程排障案例作为参考，不强制规定你的排障路线。
+> **用法示例（直接复制发给 Kimi Code）**：
+> ```text
+> /mindie-agent 我在 8 卡 910B 上用 vllm-ascend 跑 DeepSeek-R1 推理时遇到 HCCL AllReduce timeout (hcclRet=4)，CANN 是 8.0.RC3，请结合历史经验帮我排查根因。
+> ```
+> **会发生什么**：输入 `/mindie-agent` 后，插件会唤醒 `mindie-agent` Skill 并基于本地 SQLite FTS5 检索引擎查询已同步的 [`knowledge-vllm-ascend`](https://github.com/mindie-agent/knowledge-vllm-ascend) 知识包，返回附带**适用版本、验证证据和已知限制**的工程排障案例作为参考，不强制规定你的排障路线。
 
-### 场景 2：本地写代码，一键在远端昇腾 NPU 服务器上编译与跑测（`remote-dev`）
-> **痛点**：本地开发机是 Mac 或 Windows 笔记本，而昇腾 NPU 环境在远端服务器上，频繁手动同步补丁、盯长耗时测试日志极其繁琐。  
-> **怎么做**：直接对 Kimi 说 *“把当前改动同步到远端昇腾开发机，跑一下对应的单元测试并实时看日志”*。内置的 `remote-dev` 工具集支持远端命令执行、文件同步与长耗时后台作业轮询。即使不开启知识库服务或社区贡献，`remote-dev` 也能完全独立运行。
+### 场景 2：日常对话直接操作远端昇腾 NPU 服务器与容器（`remote-dev` 默认自动触发）
+> **痛点**：本地开发机是 Mac 或 Windows 笔记本，而昇腾 NPU 环境在远端服务器或容器上，频繁手动同步补丁、盯长耗时测试日志极其繁琐。  
+> **用法示例（无需斜杠命令，直接用自然语言发给 Kimi Code）**：
+> ```text
+> 帮我连上远端 910B 服务器的 vllm_dev 容器，看看当前 NPU 显存占用，然后把我本地改好的 rotary_embedding.py 同步过去跑一下对应的 pytest 单测。
+> ```
+> **会发生什么**：内置的 `remote-dev` 工具集作为常驻 MCP 服务，会在识别到远端开发意图时**默认自动触发**，支持远端命令执行、文件同步与长耗时后台作业轮询。即使不开启知识库服务或社区贡献，`remote-dev` 也能完全独立运行。
 
-### 场景 3：将踩坑经验安全脱敏后沉淀回开源社区（可选 Opt-in）
+### 场景 3：唤醒 `/mindie-agent` 攻坚并沉淀脱敏经验回开源社区（可选 Opt-in）
 > **痛点**：花半天定位完一个棘手的算子或推理 Bug，关掉终端后排障思路就丢了；想分享给社区又担心泄露内部 IP、密钥或私有路径。  
-> **怎么做**：社区贡献**默认关闭**。仅在你显式对指定公开仓库开启共享后，插件会在会话结束（`Stop`）时提取公开可见对话，使用本地确定性规则与 Gitleaks 完成脱敏，并通过隔离的整理器生成标题与摘要以提交知识 PR。
+> **用法示例（直接复制发给 Kimi Code）**：
+> ```text
+> /mindie-agent 帮我结合知识库和远端 NPU 容器定位一下当前 vllm-ascend 自定义算子编译失败的问题，修好跑通单测后我们把这次排障经验沉淀下来。
+> ```
+> **会发生什么**：社区贡献**默认关闭**。仅在你显式对指定公开仓库开启共享后，插件会在会话结束（`Stop`）时提取公开可见对话，使用本地确定性规则与 Gitleaks 完成脱敏，并通过隔离的整理器生成标题与摘要以提交知识 PR。
 > - 关于公开消息筛选范围、本地脱敏边界与公开 Git 历史说明，请参阅 **[用户须知](skills/mindie-agent/references/user-notice.md)**。
 > - 如需在本地搭建 `vllm` + `vllm-ascend` 多任务 Git Worktree 协同工作区，可按需参考 **[工作区配置指南](skills/mindie-agent/references/workspace-setup.md)** 与 [vllm-ascend-workspace](https://github.com/mindie-agent/vllm-ascend-workspace.git)。
 
@@ -119,11 +136,11 @@ python3 scripts/install_kimi_plugin.py --kimi-home "${KIMI_CODE_HOME:-$HOME/.kim
 
 ## 日常使用与命令参考
 
-在 Kimi Code 会话中，`remote-dev` 远端工具可随时按需调用。需要使用知识库或修改偏好设置时，可使用以下斜杠命令：
+在 Kimi Code 会话中，**`remote-dev` 远端工具在日常对话中默认自动触发**。当你需要唤醒昇腾历史经验、领域知识库与 Skill 系统，或修改偏好设置时，可使用以下斜杠命令：
 
 | Kimi Code 命令 | 用途说明 |
 |---|---|
-| `/mindie-agent`（或 `/skill:mindie-agent`、`/mindie-agent:init`、`/init`） | 绑定当前原生 Kimi 任务、确保后台知识服务就绪，并查看或配置社区共享偏好（已保存的选择跨会话持久生效）。 |
+| `/mindie-agent <问题描述>`（或 `/skill:mindie-agent`、`/mindie-agent:init`、`/init`） | **手动触发入口**：输入 `/mindie-agent` 并阐述问题即可唤醒昇腾领域知识库、历史经验与 Skill 系统（同时绑定当前原生 Kimi 任务并确保后台知识服务就绪）。 |
 | `/mindie-agent:status`（或 `/status`） | **纯只读状态检查**：查看当前任务的知识库配置、后台服务健康度以及最近 5 条采集与贡献批次状态（不启动模型或初始化数据库）。 |
 | `/mindie-agent contribute owner/repo ACCOUNT` | 为当前项目显式配置公开知识贡献的目标仓库与 GitHub 账号。 |
 | `/mindie-agent:sharing-enable` / `/mindie-agent:sharing-disable` / `/mindie-agent:sharing-status` | 开启、暂停或查看当前项目的公开社区贡献（关闭后 `Stop` 阶段不采集对话、不调用整理器）。 |
