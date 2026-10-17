@@ -172,6 +172,9 @@ def handle_stop():
         from mindie_knowledge.loop.cli import capture_hook
 
         try:
+            from knowledge_service import prepare_service_env
+
+            prepare_service_env()
             result = capture_hook(str(engine_path()), normalized)
         except Exception:
             _record_failure("handoff", "internal")

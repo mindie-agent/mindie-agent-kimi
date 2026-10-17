@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import shutil
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 IDENTITY = r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}\Z"
@@ -159,3 +160,22 @@ def configured_python(config=None) -> str:
     if not isinstance(python, str) or not python:
         raise ValueError("adapter configuration has no runtime interpreter")
     return python
+
+
+def resolve_kimi_bin(config=None):
+    """The deterministic absolute native kimi binary for service launch
+    contexts whose PATH differs from the login shell (systemd --user has no
+    ~/.local/bin; Task Scheduler differs). MINDIE_KIMI_BIN wins, then
+    <kimi_home>/bin/kimi (the native install layout), then PATH. Returns
+    None when none exists — a configuration fault to surface honestly,
+    never a guessed path."""
+    explicit = os.environ.get("MINDIE_KIMI_BIN")
+    if explicit:
+        return explicit
+    config = config if config is not None else load_adapter_config()
+    home = config.get("kimi_home") or os.environ.get("KIMI_CODE_HOME")
+    if isinstance(home, str) and home:
+        candidate = Path(home) / "bin" / ("kimi.exe" if os.name == "nt" else "kimi")
+        if candidate.is_file():
+            return str(candidate)
+    return shutil.which("kimi")

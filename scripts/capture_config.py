@@ -15,4 +15,8 @@ def prepare(python, scripts):
     if not Path(path).is_absolute() or not Path(path).is_file():
         raise RuntimeError('installed transcript redactor is missing')
     return dict(capture_mode='public-transcript', redactor_executable=path,
-                summary_command=[str(python), str(Path(scripts) / 'organizer.py')])
+                summary_command=[str(python), str(Path(scripts) / 'organizer.py')],
+                # The summary worker needs the native kimi binary even under
+                # a service manager whose PATH lacks it; only the current
+                # caller's declared value crosses the launch boundary.
+                service_launch_context=dict(paths={}, environment=['MINDIE_KIMI_BIN']))

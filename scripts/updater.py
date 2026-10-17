@@ -328,6 +328,18 @@ def write_generation_configs(generation: Path, python: Path, adapter: dict) -> P
     )
     if padapter is not None and isinstance(padapter.get("community_config"), str):
         gen_adapter_value["community_config"] = padapter["community_config"]
+    kimi_bin = adapter.get("kimi_bin")
+    if not (isinstance(kimi_bin, str) and kimi_bin):
+        # Pre-fix adapter without the key: re-resolve deterministically,
+        # never guess; absent stays absent and fails visibly in the worker.
+        from paths import resolve_kimi_bin
+
+        try:
+            kimi_bin = resolve_kimi_bin(padapter or adapter)
+        except (OSError, ValueError, FileNotFoundError):
+            kimi_bin = None
+    if isinstance(kimi_bin, str) and kimi_bin:
+        gen_adapter_value["kimi_bin"] = kimi_bin
     atomic_write(gen_adapter, gen_adapter_value)
     return gen_adapter
 
@@ -762,6 +774,9 @@ def _restore_stopped_service(adapter, final, deadline):
         env["MINDIE_KIMI_CONFIG"] = final["adapter_config"]
         if selected.get("kimi_home"):
             env["KIMI_CODE_HOME"] = selected["kimi_home"]
+        kimi_bin = selected.get("kimi_bin")
+        if isinstance(kimi_bin, str) and kimi_bin:
+            env["MINDIE_KIMI_BIN"] = kimi_bin
         output = bounded_run(
             [final["python"], str(HERE / "service_handoff.py"),
              "restore", selected["engine_config"]], "", env=env,

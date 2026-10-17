@@ -406,6 +406,17 @@ def main():
         )
     if args.update_remote:
         adapter_value["update_remote"] = args.update_remote
+    from paths import resolve_kimi_bin
+
+    kimi_bin = None
+    try:
+        kimi_bin = resolve_kimi_bin(adapter_value)
+    except (OSError, ValueError):
+        kimi_bin = None
+    if kimi_bin is not None:
+        # Service launches (systemd --user, Task Scheduler) do not share the
+        # login shell's PATH; the summary worker gets a deterministic binary.
+        adapter_value["kimi_bin"] = kimi_bin
     write_private(config, adapter_value)
     sharing = write_community(
         community_config, community,
@@ -441,28 +452,31 @@ def main():
             scheduled = "registered" if code == 0 else "manual"
         except Exception as exc:
             scheduled = f"manual ({type(exc).__name__}: {str(exc)[:120]})"
-    print(
-        json.dumps(
-            dict(
-                config=str(config),
-                engine_config=str(engine_config),
-                community_config=str(community_config),
-                admission_path=str(admission),
-                native_package=str(bootstrap_package),
-                domain=args.domain,
-                sharing=sharing,
-                update_schedule=scheduled,
-                plugin_install=(
-                    "Native install: POST /api/v1/plugins {source: <host-package>} "
-                    "in the selected Kimi home (scripts/install_kimi_plugin.py). "
-                    "Automatic updates: scripts/updater.py check (scheduled), "
-                    "status via scripts/updater.py status, recovery via "
-                    "scripts/updater.py recover. See docs/update.md."
-                ),
-            ),
-            indent=2,
-        )
+    result = dict(
+        config=str(config),
+        engine_config=str(engine_config),
+        community_config=str(community_config),
+        admission_path=str(admission),
+        native_package=str(bootstrap_package),
+        domain=args.domain,
+        sharing=sharing,
+        update_schedule=scheduled,
+        kimi_bin=kimi_bin,
+        plugin_install=(
+            "Native install: POST /api/v1/plugins {source: <host-package>} "
+            "in the selected Kimi home (scripts/install_kimi_plugin.py). "
+            "Automatic updates: scripts/updater.py check (scheduled), "
+            "status via scripts/updater.py status, recovery via "
+            "scripts/updater.py recover. See docs/update.md."
+        ),
     )
+    if kimi_bin is None:
+        result["warnings"] = [
+            "no kimi binary resolved (MINDIE_KIMI_BIN unset, no "
+            "<kimi_home>/bin/kimi, not on PATH); the summary worker will "
+            "report configuration-unavailable until one exists"
+        ]
+    print(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":
