@@ -1,4 +1,4 @@
-# Published component Releases: knowledge v0.11.2 and remote-dev v0.9.5.
+# Published component Releases: knowledge v0.11.3 and remote-dev v0.9.5.
 # Each pin is the exact commit the published Release tag resolves to.
-mindie-knowledge @ git+https://github.com/mindie-agent/knowledge@be310aa6c984ecc91b9f78047acea810eaebe3be
+mindie-knowledge @ git+https://github.com/mindie-agent/knowledge@fedea0652f53445cb6d1fcd3d5b771e068ecaca5
 remote-dev @ git+https://github.com/mindie-agent/remote-dev@46a91a5b409506760ea530f7037a3f9f04d9a2d7
