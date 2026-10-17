@@ -406,7 +406,7 @@ def main():
         )
     if args.update_remote:
         adapter_value["update_remote"] = args.update_remote
-    from paths import resolve_kimi_bin
+    from paths import resolve_git_bin, resolve_kimi_bin
 
     kimi_bin = None
     try:
@@ -417,6 +417,15 @@ def main():
         # Service launches (systemd --user, Task Scheduler) do not share the
         # login shell's PATH; the summary worker gets a deterministic binary.
         adapter_value["kimi_bin"] = kimi_bin
+    git_bin = None
+    try:
+        git_bin = resolve_git_bin()
+    except (OSError, ValueError):
+        git_bin = None
+    if git_bin is not None:
+        # The scheduled update check fires in a reduced environment whose
+        # PATH may lack git (Task Scheduler Session 0); pin what setup saw.
+        adapter_value["git_bin"] = git_bin
     write_private(config, adapter_value)
     sharing = write_community(
         community_config, community,
@@ -462,6 +471,7 @@ def main():
         sharing=sharing,
         update_schedule=scheduled,
         kimi_bin=kimi_bin,
+        git_bin=git_bin,
         plugin_install=(
             "Native install: POST /api/v1/plugins {source: <host-package>} "
             "in the selected Kimi home (scripts/install_kimi_plugin.py). "
@@ -470,12 +480,21 @@ def main():
             "scripts/updater.py recover. See docs/update.md."
         ),
     )
+    warnings = []
     if kimi_bin is None:
-        result["warnings"] = [
+        warnings.append(
             "no kimi binary resolved (MINDIE_KIMI_BIN unset, no "
             "<kimi_home>/bin/kimi, not on PATH); the summary worker will "
             "report configuration-unavailable until one exists"
-        ]
+        )
+    if git_bin is None:
+        warnings.append(
+            "no git executable resolved (MINDIE_KIMI_GIT_BIN unset, not on "
+            "PATH); scheduled update checks will report configuration-"
+            "unavailable until one exists"
+        )
+    if warnings:
+        result["warnings"] = warnings
     print(json.dumps(result, indent=2))
 
 

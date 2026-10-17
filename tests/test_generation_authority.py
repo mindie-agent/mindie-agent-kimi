@@ -144,6 +144,48 @@ class GenerationAuthorityTests(unittest.TestCase):
         gen_value = json.loads(Path(gen_adapter).read_text())
         self.assertNotIn("kimi_bin", gen_value)
 
+    def test_generation_adapter_carries_and_reresolves_git_bin(self):
+        config = make_config(self.tmp, sharing=False)
+        adapter = json.loads(config.read_text())
+        adapter["git_bin"] = "/opt/git-stamped"
+        generation = (
+            self.tmp / "adapter-state" / "update" / "generations" / ("f" * 40)
+        )
+        (generation / "scripts").mkdir(parents=True)
+        os.environ["MINDIE_KIMI_CONFIG"] = str(config)
+        gen_adapter = updater.write_generation_configs(
+            generation, Path(sys.executable), adapter
+        )
+        gen_value = json.loads(Path(gen_adapter).read_text())
+        self.assertEqual(gen_value["git_bin"], "/opt/git-stamped")
+        # Missing key: re-resolve deterministically (PATH hit), or stay
+        # absent — never a guessed path.
+        adapter.pop("git_bin")
+        config.write_text(json.dumps(adapter, indent=2) + "\n")
+        from unittest.mock import patch
+
+        refill = (
+            self.tmp / "adapter-state" / "update" / "generations" / ("0" * 40)
+        )
+        (refill / "scripts").mkdir(parents=True)
+        with patch("paths.shutil.which", return_value="/usr/bin/git"):
+            gen_adapter = updater.write_generation_configs(
+                refill, Path(sys.executable), adapter
+            )
+        gen_value = json.loads(Path(gen_adapter).read_text())
+        self.assertEqual(gen_value["git_bin"], "/usr/bin/git")
+        empty = (
+            self.tmp / "adapter-state" / "update" / "generations" / ("1" * 40)
+        )
+        (empty / "scripts").mkdir(parents=True)
+        with patch("paths.shutil.which", return_value=None), \
+             patch("paths.GIT_WINDOWS_LOCATIONS", ()):
+            gen_adapter = updater.write_generation_configs(
+                empty, Path(sys.executable), adapter
+            )
+        gen_value = json.loads(Path(gen_adapter).read_text())
+        self.assertNotIn("git_bin", gen_value)
+
     def test_generation_configs_keep_profile_authority_paths(self):
         config, gen_adapter, generation = self._flipped(sharing=True)
         adapter = json.loads(config.read_text())

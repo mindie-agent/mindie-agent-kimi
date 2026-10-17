@@ -46,16 +46,22 @@ class SetupInstallTests(unittest.TestCase):
             self.assertNotIn("warnings", payload)
             adapter = json.loads(config.read_text())
             self.assertEqual(adapter["kimi_bin"], str(binary))
+            import shutil as shutil_mod
+
+            git = shutil_mod.which("git")
+            self.assertIsNotNone(git, "test requires git on PATH")
+            self.assertEqual(payload["git_bin"], git)
+            self.assertEqual(adapter["git_bin"], git)
             engine = json.loads(Path(payload["engine_config"]).read_text())
             self.assertEqual(
                 engine["service_launch_context"],
-                {"paths": {}, "environment": ["MINDIE_KIMI_BIN"]},
+                {"paths": {}, "environment": ["MINDIE_KIMI_BIN", "MINDIE_GIT_BIN"]},
             )
             from mindie_knowledge.loop import service_context
 
             self.assertEqual(
                 service_context.validate(engine),
-                {"paths": {}, "environment": ["MINDIE_KIMI_BIN"]},
+                {"paths": {}, "environment": ["MINDIE_KIMI_BIN", "MINDIE_GIT_BIN"]},
             )
 
     def test_setup_default_sharing_off_and_no_session_activation_alias(self):
@@ -161,6 +167,7 @@ class SetupInstallTests(unittest.TestCase):
             )
 
     def test_bootstrap_runtime_uses_stdlib_venv_when_ensurepip_present(self):
+        sys.path.insert(0, str(SCRIPTS))
         import setup
 
         with tempfile.TemporaryDirectory() as raw:
@@ -176,6 +183,7 @@ class SetupInstallTests(unittest.TestCase):
             self.assertEqual(calls[1][1:4], ["-m", "pip", "install"])
 
     def test_bootstrap_runtime_falls_back_to_uv_venv_without_ensurepip(self):
+        sys.path.insert(0, str(SCRIPTS))
         import setup
 
         with tempfile.TemporaryDirectory() as raw:
@@ -193,6 +201,7 @@ class SetupInstallTests(unittest.TestCase):
             self.assertEqual(calls[1][1:4], ["-m", "pip", "install"])
 
     def test_bootstrap_runtime_without_ensurepip_or_uv_names_both_remedies(self):
+        sys.path.insert(0, str(SCRIPTS))
         import setup
 
         with tempfile.TemporaryDirectory() as raw:

@@ -179,3 +179,28 @@ def resolve_kimi_bin(config=None):
         if candidate.is_file():
             return str(candidate)
     return shutil.which("kimi")
+
+
+GIT_WINDOWS_LOCATIONS = (
+    r"C:\Program Files\Git\cmd\git.exe",
+    r"C:\Program Files (x86)\Git\cmd\git.exe",
+)
+
+
+def resolve_git_bin():
+    """The deterministic git executable for reduced-PATH launch contexts
+    (Task Scheduler Session 0 has System32 only). MINDIE_KIMI_GIT_BIN wins,
+    then PATH, then the standard Git-for-Windows locations. Returns None
+    when none exists — an honest configuration fault, never a guessed
+    path."""
+    explicit = os.environ.get("MINDIE_KIMI_GIT_BIN")
+    if explicit:
+        return explicit
+    found = shutil.which("git")
+    if found:
+        return found
+    if os.name == "nt":
+        for candidate in GIT_WINDOWS_LOCATIONS:
+            if Path(candidate).is_file():
+                return candidate
+    return None

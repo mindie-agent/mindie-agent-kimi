@@ -16,7 +16,9 @@ def prepare(python, scripts):
         raise RuntimeError('installed transcript redactor is missing')
     return dict(capture_mode='public-transcript', redactor_executable=path,
                 summary_command=[str(python), str(Path(scripts) / 'organizer.py')],
-                # The summary worker needs the native kimi binary even under
-                # a service manager whose PATH lacks it; only the current
-                # caller's declared value crosses the launch boundary.
-                service_launch_context=dict(paths={}, environment=['MINDIE_KIMI_BIN']))
+                # The summary worker needs the native kimi binary and the
+                # component needs git even under a service manager whose
+                # PATH lacks them; only the current caller's declared
+                # values cross the launch boundary.
+                service_launch_context=dict(
+                    paths={}, environment=['MINDIE_KIMI_BIN', 'MINDIE_GIT_BIN']))

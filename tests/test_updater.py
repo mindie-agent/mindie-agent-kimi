@@ -142,6 +142,117 @@ class UpdaterTests(unittest.TestCase):
         args.update(kw)
         return updater.check(self.adapter, **args)
 
+    def test_git_argv_uses_the_stamped_binary(self):
+        from unittest.mock import patch
+
+        self.adapter["git_bin"] = "/pinned/git"
+        write_json(self.config_path, self.adapter)
+        calls = []
+        with patch.object(updater, "bounded_run",
+                          side_effect=lambda argv, stdin, **kw: calls.append(list(argv)) or ""):
+            updater._git(["ls-remote", "x"], timeout=5,
+                         deadline=time.monotonic() + 240)
+        self.assertEqual(calls[0][0], "/pinned/git")
+        with patch.dict(os.environ, {"MINDIE_KIMI_GIT_BIN": "/env/git"}):
+            with patch.object(updater, "bounded_run",
+                              side_effect=lambda argv, stdin, **kw: calls.append(list(argv)) or ""):
+                updater._git(["fetch", "y"], timeout=5,
+                             deadline=time.monotonic() + 240)
+        self.assertEqual(calls[1][0], "/env/git")
+
+    def test_scheduled_check_resolves_with_pinned_git_under_stripped_path(self):
+        import shutil as shutil_mod
+
+        git = shutil_mod.which("git")
+        self.assertIsNotNone(git, "test requires git on PATH")
+        self.adapter["git_bin"] = git
+        write_json(self.config_path, self.adapter)
+        from unittest.mock import patch
+
+        # Session-0-style environment: no git and no uv on PATH. The pinned
+        # binary resolves the remote anyway; the build keeps its own fakes.
+        with patch.dict(updater.GIT_ENV, {"PATH": "/nonexistent-mindie"}), \
+             patch.dict(updater.UV_ENV, {"PATH": "/nonexistent-mindie"}), \
+             patch.dict(updater.PIP_ENV, {"PATH": "/nonexistent-mindie"}), \
+             patch.dict(os.environ, {"PATH": "/nonexistent-mindie"}):
+            self.assertEqual(self.run_check(), 0)
+        status = genstate.read_status(self.adapter)
+        self.assertEqual(status["result"], "switched")
+        self.assertNotIn("resolve_failure_class", status)
+
+    def test_missing_git_is_an_honest_failure_not_a_network_one(self):
+        from unittest.mock import patch
+
+        self.assertNotIn("git_bin", self.adapter)
+        # A stamp pointing at a moved/deleted binary (or no git anywhere):
+        # the spawn itself must fail, deterministically on every host —
+        # scrubbing PATH alone does not stop Windows from resolving a bare
+        # "git" through App Paths or a Git-for-Windows standard install.
+        missing = str(self.tmp / "mindie-no-such-git")
+        with patch.object(updater, "_git_bin", return_value=missing):
+            self.assertEqual(self.run_check(), 1)
+        status = genstate.read_status(self.adapter)
+        self.assertEqual(status["result"], "check-failed")
+        self.assertIsNone(status["resolve_failure_class"])
+        self.assertNotEqual(
+            status.get("error"), updater._STATIC_FAILURE["temporary_network"]
+        )
+        # The missing-file evidence is platform-shaped: POSIX strerror
+        # includes the path; Windows FileNotFoundError reports only
+        # WinError 2 (the path lives on the exception's filename attribute
+        # and never reaches this string).
+        self.assertTrue(
+            "mindie-no-such-git" in status["error"]
+            or "WinError 2" in status["error"]
+            or "No such file or directory" in status["error"],
+            status["error"],
+        )
+
+    def test_feed_sync_carries_stamped_git_bin_to_the_component(self):
+        from unittest.mock import patch
+
+        calls = []
+        run = lambda argv, stdin, **kw: calls.append((list(argv), kw)) or "[]"
+        genstate.update_dir(self.adapter).mkdir(parents=True, exist_ok=True)
+        with patch.object(updater, "bounded_run", side_effect=run):
+            self.assertTrue(self._sync(
+                dict(self.adapter, git_bin="/pinned/git"),
+                time.monotonic() + 240,
+            ))
+            self.assertTrue(self._sync(self.adapter, time.monotonic() + 240))
+        stamped = calls[0][1]["env"]["MINDIE_GIT_BIN"]
+        self.assertEqual(stamped, "/pinned/git")
+        self.assertIsNone(calls[1][1]["env"])
+
+    def test_restore_env_carries_git_bin_when_stamped(self):
+        from unittest.mock import patch
+
+        generation = self.tmp / "restored-gen"
+        generation.mkdir()
+        final = dict(
+            generation=str(generation),
+            python=str(Path(sys.executable)),
+            adapter_config=str(self.tmp / "restored-adapter.json"),
+            sha=self.sha,
+        )
+        write_json(
+            self.tmp / "restored-adapter.json",
+            dict(
+                engine_config=str(self.tmp / "restored-engine.json"),
+                git_bin="/pinned/git",
+            ),
+        )
+        genstate.write_current(final, self.adapter)
+        envs = []
+        run = lambda argv, stdin, **kw: envs.append(kw.get("env")) or '{"status": "restored"}'
+        with patch.object(updater, "bounded_run", side_effect=run):
+            updater._restore_stopped_service(
+                self.adapter, final, time.monotonic() + 240
+            )
+        self.assertEqual(len(envs), 1)
+        self.assertEqual(envs[0]["MINDIE_GIT_BIN"], "/pinned/git")
+        self.assertNotIn("MINDIE_KIMI_BIN", envs[0])
+
     def test_switch_commits_one_tuple_and_preserves_stable_state(self):
         # Default idle: REAL stop_if_idle subprocess through the committed
         # interpreter; no service endpoint exists here, so it is idle.

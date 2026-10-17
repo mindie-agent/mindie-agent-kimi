@@ -6,18 +6,20 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from paths import engine_config_path, resolve_kimi_bin
+from paths import engine_config_path, resolve_git_bin, resolve_kimi_bin
 
 
 def prepare_service_env(config=None):
-    """Pin MINDIE_KIMI_BIN for service launches whose PATH is not the login
-    shell's (a systemd --user unit has no ~/.local/bin; Task Scheduler
-    differs). The engine declares environment: [MINDIE_KIMI_BIN], and only
-    the current caller's value crosses the launch boundary. The adapter's
-    stamped kimi_bin wins; otherwise resolve deterministically. An
-    unresolvable binary stays the summary worker's honest configuration
-    failure, never a guessed path. Never raises: launch failures stay
-    visible downstream."""
+    """Pin MINDIE_KIMI_BIN and MINDIE_GIT_BIN for service launches whose
+    PATH is not the login shell's (a systemd --user unit has no
+    ~/.local/bin; Task Scheduler differs). The engine declares both names
+    in service_launch_context.environment, and only the current caller's
+    values cross the launch boundary. Each adapter stamp wins for its
+    name; otherwise resolve deterministically, with an explicit
+    MINDIE_GIT_BIN/MINDIE_KIMI_GIT_BIN override taking precedence.
+    Unresolvable tools stay unset: the component and the summary worker
+    keep their own honest configuration failures, never a guessed path.
+    Never raises: launch failures stay visible downstream."""
     from paths import load_adapter_config
 
     try:
@@ -33,6 +35,16 @@ def prepare_service_env(config=None):
         value = None
     if value:
         os.environ["MINDIE_KIMI_BIN"] = value
+    try:
+        git = os.environ.get("MINDIE_GIT_BIN")
+        if not git:
+            git = config.get("git_bin") if isinstance(config, dict) else None
+            if not (isinstance(git, str) and git):
+                git = resolve_git_bin()
+    except Exception:
+        git = None
+    if isinstance(git, str) and git:
+        os.environ["MINDIE_GIT_BIN"] = git
 
 
 def engine_config(engine_file=None):
