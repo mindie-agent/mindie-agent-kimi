@@ -119,22 +119,27 @@ DOUBLE_SOURCE = textwrap.dedent(
     """\
     import json, sys
     from pathlib import Path
+    from mindie_knowledge.materials import summarizer
     log = Path(sys.argv[1])
     raw = sys.stdin.buffer.read()
+    if "--identity" in sys.argv[2:]:
+        # The identity probe is not a model call; it is never counted.
+        sys.stdout.write(summarizer.canonical(summarizer.policy_identity(
+            model="double", effort="off", implementation={"double": "1"})) + "\\n")
+        raise SystemExit(0)
     with log.open("ab") as handle:
         handle.write(b"\\n@@GROK_KIMI_MODEL@@\\n" + raw)
-    try:
-        payload = json.loads(raw)
-    except ValueError:
-        payload = {}
-    text = str(payload.get("increment") or "no-increment")[:500]
-    sys.stdout.write(json.dumps({"entries": [{
-        "entry_id": None,
-        "title": "Observed increment",
-        "summary": "Public material was organized once.",
-        "content": text,
-        "conditions": {},
-    }]}))
+    request = summarizer.validate_request(json.loads(raw))
+    result = {
+        "blocks": [dict(block_id=block["block_id"], title="Observed increment",
+                        summary="Public material was organized once.")
+                   for block in request["blocks"]],
+        "navigation": {"title": "Observed increment",
+                       "summary": "Public material was organized once."},
+    }
+    sys.stdout.write(summarizer.canonical(summarizer.outcome(
+        request, status="returned", result=result, model_calls=1,
+        usage_known=False, elapsed_ms=1)) + "\\n")
     """
 )
 
@@ -186,7 +191,9 @@ def _kill_wakes(root: Path) -> None:
 
 
 def _store_path(tmp: Path) -> Path:
-    return tmp / "domain" / "vllm-ascend" / "store-v3.sqlite3"
+    from mindie_knowledge.state_layout import state_root
+
+    return state_root(tmp / "domain", "vllm-ascend") / "state-v4.sqlite3"
 
 
 def _captures(tmp: Path):
@@ -230,7 +237,8 @@ def _prepare_store(tmp: Path) -> None:
 def _point_agent(tmp: Path, script: Path, log: Path) -> None:
     path = tmp / "kimi.engine.json"
     data = json.loads(path.read_text())
-    data["agent_command"] = [sys.executable, str(script), str(log)]
+    data.pop("agent_command", None)
+    data["summary_command"] = [sys.executable, str(script), str(log)]
     path.write_text(json.dumps(data, indent=2) + "\n")
 
 
@@ -262,13 +270,16 @@ def _drain_pending(tmp: Path, log: Path) -> None:
     from mindie_knowledge.loop.activation import Admission
     from mindie_knowledge.loop.engine import Engine
     from mindie_knowledge.loop.store import Store
+    from mindie_knowledge.loop.transcript_capture import summarize_due
     import transcript as transcript_mod
 
     store = Store(tmp / "domain", "vllm-ascend")
     try:
         engine = Engine(
             store,
-            agent_command=engine_doc["agent_command"],
+            capture_mode="public-transcript",
+            redactor_executable=engine_doc["redactor_executable"],
+            summary_command=engine_doc["summary_command"],
             settings_path=engine_doc["community_config"],
             admission=Admission(engine_doc["admission_path"]),
             transcript_adapter=transcript_mod,
@@ -279,6 +290,10 @@ def _drain_pending(tmp: Path, log: Path) -> None:
             current = store.capture_row(row["id"])
             if current and current["status"] in {"queued", "pending", "deferred"}:
                 engine._process(row["id"])
+        if not _model_calls(log):
+            # The summary stage runs in its own core loop, not in capture.
+            engine.last_activity = 0
+            summarize_due(engine)
     finally:
         store.close()
 
@@ -398,11 +413,9 @@ class LaneIsolation(unittest.TestCase):
         project.mkdir(exist_ok=True)
         store_dir = self.tmp / "domain" / "vllm-ascend"
         if store_dir.exists():
-            for name in (
-                "store-v3.sqlite3", "store-v3.sqlite3-wal",
-                "store-v3.sqlite3-shm", "wake.json",
-            ):
-                (store_dir / name).unlink(missing_ok=True)
+            import shutil
+
+            shutil.rmtree(store_dir, ignore_errors=True)
         config = make_config(self.tmp, sharing=sharing, roots=[project])
         os.environ["MINDIE_KIMI_CONFIG"] = str(config)
         _prepare_store(self.tmp)
@@ -444,7 +457,10 @@ class ConsentGateTests(LaneIsolation):
         self.assertEqual(calls, 1, f"model calls={calls} captures={captures}")
         self.assertIn(SENTINEL, text)
         docs = _entries(self.tmp)
-        self.assertTrue(any(SENTINEL in doc for doc in docs), docs)
+        self.assertTrue(
+            any("Public material was organized once." in doc for doc in docs),
+            docs,
+        )
         again = _stop(self.tmp, "ses_gate", home, log, project)
         self.assertEqual(again.returncode, 0, again.stderr)
         self.assertEqual(
@@ -846,7 +862,11 @@ class ConsentGateTests(LaneIsolation):
         after = json.loads((self.tmp / "mindie-consent.json").read_text())
         self.assertEqual(after["choice"], before["choice"])
         self.assertEqual(after["reporting"], before["reporting"])
-        self.assertFalse(any(SENTINEL in doc for doc in _entries(self.tmp)))
+        docs = _entries(self.tmp)
+        self.assertFalse(any(SENTINEL in doc for doc in docs))
+        self.assertFalse(
+            any("Public material was organized once." in doc for doc in docs)
+        )
         import entry
 
         payload = entry.status_payload("ses_gate")

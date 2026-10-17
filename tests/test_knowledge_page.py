@@ -1,10 +1,11 @@
-"""Schema and knowledge-page wire. No native host is attached.
+"""Schema and immutable-block wire. No native host is attached.
 
-A call without a locally published PreToolUse bind fails closed. The page
-is a local Store.explain fixture from the installed mindie_knowledge
-dependency; the helper forwards that object, including next_offset.
+A call without a locally published PreToolUse bind fails closed. Real current
+material packages exercise navigation and exact block reads through the
+adapter's duplicated text/structured-content response.
 """
 
+import hashlib
 import json
 import os
 import subprocess
@@ -15,7 +16,6 @@ from pathlib import Path
 
 from support import SCRIPTS, env_for, make_config
 
-PAGE = 32768
 SESSION = "ses_page"
 
 HELPER = r"""
@@ -33,10 +33,8 @@ def knowledge_call(name, args, session):
         raise AssertionError(session)
     if args.get("ref") != os.environ["REF"]:
         raise AssertionError("ref")
-    if args.get("offset") != int(os.environ["OFFSET"]):
-        raise AssertionError(args.get("offset"))
-    if args.get("limit") != 32768:
-        raise AssertionError(args.get("limit"))
+    if set(args) != {"ref"}:
+        raise AssertionError("unexpected block-read arguments")
     if "request_nonce" in args or "session_id" in args or "_session_id" in args:
         raise AssertionError("identity leaked into the knowledge call")
     return page
@@ -51,7 +49,7 @@ mcp_server.send(response)
 STUB = r"""
 import json, sys
 message = json.loads(sys.stdin.read())
-blob = "\u6d4b" * 88000
+blob = "测" * 88000
 body = {
     "jsonrpc": "2.0",
     "id": message["id"],
@@ -62,13 +60,12 @@ sys.stdout.buffer.write(json.dumps(body, ensure_ascii=False).encode("utf-8"))
 
 
 def _bodies():
-    extra = 8
-    escape = ('\\"' * ((PAGE + extra) // 2 + 1))[: PAGE + extra]
+    from mindie_knowledge.materials.store import MAX_BLOCK_BYTES
     return {
-        "ascii": "A" * (PAGE + extra),
-        "chinese": "\u6d4b" * (PAGE + extra),
-        "nonbmp": "\U00020000" * (PAGE + extra),
-        "escape": escape,
+        "ascii": "A" * MAX_BLOCK_BYTES,
+        "chinese": "测" * (MAX_BLOCK_BYTES // 3),
+        "nonbmp": "\U00020000" * (MAX_BLOCK_BYTES // 4),
+        "escape": '\\"' * (MAX_BLOCK_BYTES // 2),
     }
 
 
@@ -103,21 +100,81 @@ class KnowledgePageTests(unittest.TestCase):
 
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def test_explain_schema_maximum_and_query_unchanged(self):
+    def test_explain_block_schema_and_query_continuation(self):
         import mcp_server
 
         explain = next(item for item in mcp_server.KNOWLEDGE_TOOLS if item["name"] == "knowledge_explain")
         query = next(item for item in mcp_server.KNOWLEDGE_TOOLS if item["name"] == "knowledge_query")
-        self.assertEqual(explain["inputSchema"]["properties"]["limit"]["maximum"], PAGE)
+        self.assertEqual(
+            set(explain["inputSchema"]["properties"]), {"ref", "request_nonce"}
+        )
         self.assertEqual(explain["inputSchema"]["required"], ["ref", "request_nonce"])
-        self.assertIn("next_offset", explain["description"])
+        self.assertIn("next_block_ref", explain["description"])
         self.assertIn("slice", explain["description"])
         self.assertNotIn("offset", query["inputSchema"]["properties"])
         self.assertEqual(query["inputSchema"]["properties"]["limit"]["maximum"], 20)
         self.assertEqual(
             set(query["inputSchema"]["properties"]),
-            {"query", "limit", "conditions", "request_nonce"},
+            {"query", "limit", "conditions", "continuation", "request_nonce"},
         )
+
+    def test_query_rejects_invalid_arguments_before_starting_service(self):
+        import mcp_server
+        from unittest.mock import patch
+
+        for invalid in ({}, {"query": "x", "continuation": "opaque-next-page"},
+                        {"continuation": "malformed"}, {"query": "x", "limit": True}):
+            with self.subTest(invalid=invalid), \
+                    patch("knowledge_service.ensure_service") as start, \
+                    patch("mindie_knowledge.loop.cli.rpc") as rpc:
+                with self.assertRaises(ValueError):
+                    mcp_server.knowledge_call("knowledge_query", invalid, SESSION)
+                start.assert_not_called()
+                rpc.assert_not_called()
+
+    def test_query_does_not_time_out_a_cold_native_read(self):
+        import admission
+        import mcp_server
+        import threading
+        import time
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        from unittest.mock import patch
+
+        admission.activate(SESSION, project_root=str(self.tmp.resolve()))
+        result = {"results": [{"ref": "synthetic-result"}]}
+        calls = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+
+            def do_POST(self):
+                calls.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+                time.sleep(5.25)
+                body = json.dumps({"ok": True, "result": result}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                try:
+                    self.wfile.write(body)
+                except BrokenPipeError:
+                    pass
+
+        with HTTPServer(("127.0.0.1", 0), Handler) as server:
+            server.timeout = 10
+            worker = threading.Thread(target=server.handle_request)
+            worker.start()
+            connection = {"url": f"http://127.0.0.1:{server.server_port}", "token": "synthetic"}
+            try:
+                with patch("knowledge_service.ensure_service", return_value=connection):
+                    self.assertEqual(
+                        mcp_server.knowledge_call("knowledge_query", {"query": "synthetic"}, SESSION),
+                        result,
+                    )
+            finally:
+                worker.join(timeout=10)
+            self.assertFalse(worker.is_alive())
+        self.assertEqual(len(calls), 1)
 
     def test_explain_without_host_bind_fails_closed(self):
         message = {
@@ -147,36 +204,39 @@ class KnowledgePageTests(unittest.TestCase):
         self.assertIn("host did not authorize", text)
         self.assertNotIn("content_offset", text)
 
-    def test_store_explain_page_fits_knowledge_bound(self):
+    def test_store_navigation_and_blocks_fit_knowledge_bound(self):
         import bounded
         import mindie_launch
         from mindie_knowledge.loop.store import Store
+        from mindie_knowledge.materials import MaterialStore
+        from mindie_knowledge.materials.references import task_ref
 
         knowledge_bound = mindie_launch.KNOWLEDGE_MAX_OUTPUT
 
         helper = self.tmp / "helper.py"
         helper.write_text(HELPER)
         store = Store(self.tmp / "store", "vllm-ascend")
+        author = MaterialStore(self.tmp / "author", "vllm-ascend")
         sizes = {}
-        nonbmp_out = None
-        observed = {
-            "explain_page_chars": getattr(Store, "EXPLAIN_PAGE_CHARS", None),
-            "explain_max_limit": getattr(Store, "EXPLAIN_MAX_LIMIT", None),
-        }
         try:
             for name, body in _bodies().items():
-                self.assertEqual(len(body), PAGE + 8)
-                doc = store.create_draft(
-                    kind="knowledge",
-                    title="Local page fixture",
-                    summary="Local component fixture only.",
-                    content=body,
+                task = hashlib.sha256(name.encode()).hexdigest()
+                second = "Later correction; reference material only.\n"
+                author.append_batch(
+                    task,
+                    [dict(block_id=hashlib.sha256(f"{name}-{i}".encode()).hexdigest(),
+                          text=text, source_range=dict(part=i),
+                          title=f"Observation {i}", summary="Synthetic component fixture.")
+                     for i, text in enumerate((body, second))],
+                    "Two synthetic observations.", title="Local block fixture",
+                    domain="vllm-ascend", status="complete", promote=True,
                 )
-                ref = store.ref(doc["entry_id"], doc["revision"])
-                offset = 0
-                for _ in range(3):
-                    page = store.explain(ref, offset=offset, limit=PAGE)
-                    out = self._helper(bounded, helper, name, ref, offset, page)
+                store.install_feed([author.export_task(task)], feed_ident="f" * 64)
+                ref = task_ref("vllm-ascend", task)
+                previous = None
+                for position in range(3):
+                    page = store.explain(ref)
+                    out = self._helper(bounded, helper, name, ref, position, page)
                     response = json.loads(out)
                     result = response["result"]
                     self.assertIs(result["isError"], False)
@@ -185,62 +245,40 @@ class KnowledgePageTests(unittest.TestCase):
                     self.assertEqual(text, page)
                     self.assertEqual(structured, page)
                     self.assertEqual(structured["ref"], ref)
-                    self.assertEqual(structured["content_offset"], offset)
                     nbytes = len(out.encode())
                     self.assertLessEqual(nbytes, knowledge_bound, f"{name} {nbytes}")
-                    self.assertIn("next_offset", structured)
-                    self.assertEqual(structured["next_offset"], page["next_offset"])
-                    if offset == 0:
-                        self.assertEqual(len(structured["content"]), PAGE)
-                        self.assertEqual(structured["content"], body[:PAGE])
-                        sizes[name] = nbytes
-                        if name == "nonbmp":
-                            nonbmp_out = out
+                    self.assertNotIn("next_offset", structured)
+                    if position == 0:
+                        self.assertEqual(structured["kind"], "task")
+                        self.assertNotIn("content", structured)
+                        ref = structured["first_block_ref"]
                     else:
-                        self.assertEqual(structured["content"], body[offset:])
-                    nxt = page["next_offset"]
-                    if nxt is None:
-                        self.assertEqual(offset + len(page["content"]), page["content_length"])
-                        break
-                    self.assertIsInstance(nxt, int)
-                    self.assertEqual(nxt, offset + len(page["content"]))
-                    offset = nxt
-                else:
-                    self.fail("paging did not reach the end")
+                        self.assertEqual(structured["kind"], "block")
+                        self.assertEqual(structured["content"], body if position == 1 else second)
+                        self.assertEqual(structured["previous_block_ref"], previous)
+                        previous, ref = ref, structured["next_block_ref"]
+                        if position == 1:
+                            sizes[name] = nbytes
+                self.assertIsNone(ref)
         finally:
             store.close()
-        self.assertGreater(sizes["nonbmp"], bounded.MAX_OUTPUT)
-        with self.assertRaises(bounded.OutputLimitExceeded):
-            bounded.run(
-                [sys.executable, "-c", "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read())"],
-                nonbmp_out,
-                timeout=10,
-                max_output=bounded.MAX_OUTPUT,
-            )
-        observed["bytes"] = sizes
-        observed["bound"] = knowledge_bound
-        observed["previous_default"] = bounded.MAX_OUTPUT
-        print("KNOWLEDGE_PAGE_BYTES " + json.dumps(observed, sort_keys=True))
+            author.close()
+        self.assertEqual(set(sizes), set(_bodies()))
 
-    def _helper(self, bounded, helper, name, ref, offset, page):
+    def _helper(self, bounded, helper, name, ref, position, page):
         import identity
         import mindie_launch
 
-        path = self.tmp / f"{name}-{offset}.json"
+        path = self.tmp / f"{name}-{position}.json"
         path.write_text(json.dumps(page, ensure_ascii=False), encoding="utf-8")
-        nonce = f"nonce-{name}-{offset}"
-        arguments = {
-            "ref": ref,
-            "offset": offset,
-            "limit": PAGE,
-            "request_nonce": nonce,
-        }
+        nonce = f"nonce-{name}-{position}"
+        arguments = {"ref": ref, "request_nonce": nonce}
         identity.publish_nonce_bind(
-            SESSION, nonce, "knowledge_explain", f"tool-{name}-{offset}", arguments
+            SESSION, nonce, "knowledge_explain", f"tool-{name}-{position}", arguments
         )
         message = {
             "jsonrpc": "2.0",
-            "id": f"id-{name}-{offset}",
+            "id": f"id-{name}-{position}",
             "method": "tools/call",
             "params": {"name": "knowledge_explain", "arguments": arguments},
         }
@@ -251,7 +289,6 @@ class KnowledgePageTests(unittest.TestCase):
                 "CONFIG": str(self.config),
                 "PAGE": str(path),
                 "REF": ref,
-                "OFFSET": str(offset),
                 "SESSION": SESSION,
                 # The real MCP writer uses UTF-8 bytes, independent of locale.
                 "PYTHONIOENCODING": "cp1252",

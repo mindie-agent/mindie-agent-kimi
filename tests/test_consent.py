@@ -1,6 +1,6 @@
-"""F2 consent authority: one profile-shared persistent choice, legacy
-migration, damaged-state honesty, and cross-adapter reuse. Real files and
-subprocesses; no knowledge service, no network."""
+"""F2 consent authority: one profile-shared persistent choice, damaged-state
+honesty, and cross-adapter reuse. Real files and subprocesses; no knowledge
+service, no network."""
 
 import json
 import os
@@ -55,47 +55,20 @@ class ConsentTests(unittest.TestCase):
         # A new "session" in the same installation reads the same choice.
         self.assertEqual(self._payload("ses_new")["first_use"], "later")
 
-    def test_legacy_marker_choice_migrates_once_at_the_entry_boundary(self):
+    def test_legacy_marker_is_never_imported_as_a_choice(self):
+        """A pre-release first-use marker is not consent evidence: no read
+        and no boundary writes a choice from it."""
         from paths import first_use_path
         import consent
 
         first_use_path().parent.mkdir(parents=True, exist_ok=True)
         first_use_path().write_text(json.dumps({"choice": "read-only"}))
-        # Reads are side-effect free: status never imports legacy state.
         payload = self._payload()
         self.assertIsNone(payload["first_use"])
         self.assertFalse(self._consent_path().exists())
-        # The explicit install/upgrade/entry boundary imports it exactly once.
-        migrated = consent.adopt_legacy_choice()
-        self.assertEqual(migrated["action"], "imported")
-        self.assertEqual(migrated["choice"], "read-only")
-        self.assertEqual(consent.adopt_legacy_choice()["action"], "already")
-        payload = self._payload()
-        self.assertEqual(payload["first_use"], "read-only")
+        # The marker still marks an existing installation: no fresh onboarding.
+        self.assertTrue(payload["repeat"])
         self.assertEqual(payload["choices"], [])
-        saved = json.loads(self._consent_path().read_text())
-        self.assertEqual(saved["choice"], "read-only")
-        # The marker is then ignored: deleting it changes nothing.
-        first_use_path().unlink()
-        self.assertEqual(self._payload()["first_use"], "read-only")
-
-    def test_conflicting_legacy_evidence_is_diagnosed_not_guessed(self):
-        from paths import first_use_path
-        import consent
-        import sharing as sharing_mod
-
-        first_use_path().parent.mkdir(parents=True, exist_ok=True)
-        first_use_path().write_text(json.dumps({"choice": "read-only"}))
-        sharing_mod.write_enabled(
-            repository="owner/repo", project_roots=[str(self.tmp)],
-            account="acc",
-        )
-        migrated = consent.adopt_legacy_choice()
-        self.assertEqual(migrated["action"], "conflict")
-        self.assertFalse(self._consent_path().exists())
-        # An explicit user choice converges the conflict; nothing was guessed.
-        consent.record_choice("contribute")
-        self.assertEqual(self._payload()["first_use"], "contribute")
 
     def test_corrupt_marker_does_not_reonboard(self):
         from paths import first_use_path

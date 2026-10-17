@@ -229,7 +229,10 @@ class SetupInstallTests(unittest.TestCase):
                      str(SCRIPTS / "install_kimi_plugin.py"),
                      "--kimi-home", str(tmp / "home")],
                     "",
-                    timeout=1.5,
+                    # Generous ceiling: the deadline must fire after the fake
+                    # host started even under full-suite load; the tree-kill
+                    # assertion below is what this test proves.
+                    timeout=10,
                     env=env,
                 )
             pid = int(pidfile.read_text().strip())

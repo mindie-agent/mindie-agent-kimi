@@ -91,6 +91,27 @@ def write_json(path: Path, value):
     return path
 
 
+def redactor_executable():
+    """The installed transcript redactor, resolved once per suite run.
+
+    Tests replace HOME/USERPROFILE per case, so the verified scanner is
+    installed under the real user home captured at import time; a per-test
+    cache would be deleted by the case's own teardown.
+    """
+    global _REDACTOR
+    if _REDACTOR is None:
+        from mindie_knowledge.loop.transcript_redaction import install_scanner
+
+        _REDACTOR = install_scanner(
+            _REAL_HOME / ".cache" / "mindie-agent" / "gitleaks"
+        )
+    return _REDACTOR
+
+
+_REDACTOR = None
+_REAL_HOME = Path.home()
+
+
 def make_config(tmp: Path, *, sharing=False, roots=None):
     config = tmp / "kimi.json"
     engine = tmp / "kimi.engine.json"
@@ -104,7 +125,9 @@ def make_config(tmp: Path, *, sharing=False, roots=None):
             domain="vllm-ascend",
             admission_path=str(admission),
             transcript_adapter=str(SCRIPTS / "transcript.py"),
-            agent_command=[sys.executable, str(SCRIPTS / "organizer.py")],
+            capture_mode="public-transcript",
+            redactor_executable=redactor_executable(),
+            summary_command=[sys.executable, str(SCRIPTS / "organizer.py")],
             community_config=str(community),
         ),
     )
@@ -129,8 +152,16 @@ def make_config(tmp: Path, *, sharing=False, roots=None):
             project_roots=[str(Path(p).resolve()) for p in (roots or ([tmp] if sharing else []))],
             idle_seconds=300,
             visibility="public",
+            consent_config=str((tmp / "mindie-consent.json").resolve()),
         ),
     )
+    if sharing:
+        # Capture requires an explicit saved contribution choice (knowledge
+        # v0.11 gate); a sharing fixture without one is not configured.
+        write_json(
+            tmp / "mindie-consent.json",
+            {"schema": "mindie-consent/1", "choice": "contribute", "choice_at": 1.0},
+        )
     return config
 
 
