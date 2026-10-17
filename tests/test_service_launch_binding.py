@@ -80,6 +80,57 @@ class KimiBinResolutionTests(unittest.TestCase):
                 self.assertNotIn("MINDIE_KIMI_BIN", os.environ)
 
 
+class GitBinResolutionTests(unittest.TestCase):
+    def setUp(self):
+        self._saved = os.environ.get("MINDIE_KIMI_GIT_BIN")
+        os.environ.pop("MINDIE_KIMI_GIT_BIN", None)
+
+    def tearDown(self):
+        if self._saved is None:
+            os.environ.pop("MINDIE_KIMI_GIT_BIN", None)
+        else:
+            os.environ["MINDIE_KIMI_GIT_BIN"] = self._saved
+
+    def test_env_override_wins(self):
+        os.environ["MINDIE_KIMI_GIT_BIN"] = "/opt/git-custom"
+        with patch.object(paths.shutil, "which", return_value="/usr/bin/git"):
+            self.assertEqual(paths.resolve_git_bin(), "/opt/git-custom")
+
+    def test_path_search_fallback(self):
+        with patch.object(paths.shutil, "which", return_value="/usr/bin/git"):
+            self.assertEqual(paths.resolve_git_bin(), "/usr/bin/git")
+
+    def test_windows_standard_locations_after_path_search(self):
+        class FakePath:
+            def __init__(self, _value):
+                pass
+
+            def is_file(self):
+                return True
+
+        with patch.object(paths.shutil, "which", return_value=None), \
+             patch.object(paths.os, "name", "nt"), \
+             patch.object(paths, "Path", new=FakePath):
+            self.assertEqual(
+                paths.resolve_git_bin(), r"C:\Program Files\Git\cmd\git.exe"
+            )
+
+    def test_honest_absence(self):
+        class FakePath:
+            def __init__(self, _value):
+                pass
+
+            def is_file(self):
+                return False
+
+        with patch.object(paths.shutil, "which", return_value=None):
+            if os.name == "nt":
+                with patch.object(paths, "Path", new=FakePath):
+                    self.assertIsNone(paths.resolve_git_bin())
+            else:
+                self.assertIsNone(paths.resolve_git_bin())
+
+
 class LaunchContextDeclarationTests(unittest.TestCase):
     def test_engine_declaration_passes_core_validation(self):
         import capture_config

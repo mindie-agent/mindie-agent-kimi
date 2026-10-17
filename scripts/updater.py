@@ -184,8 +184,27 @@ def _op_timeout(deadline: float, reserve: float, cap: float) -> float:
     return min(cap, left)
 
 
+def _git_bin():
+    """The git executable for one updater call: MINDIE_KIMI_GIT_BIN wins,
+    then the adapter config's stamped absolute path (the scheduled task
+    fires in a reduced environment whose PATH lacks git), else bare git —
+    a missing executable then fails visibly, never as a network fault."""
+    explicit = os.environ.get("MINDIE_KIMI_GIT_BIN")
+    if explicit:
+        return explicit
+    try:
+        from paths import load_adapter_config
+
+        stamped = load_adapter_config().get("git_bin")
+    except (OSError, ValueError, FileNotFoundError):
+        stamped = None
+    if isinstance(stamped, str) and stamped:
+        return stamped
+    return "git"
+
+
 def _git(args, *, timeout, deadline, cwd=None, transport=False):
-    return bounded_run(["git", *args], "",
+    return bounded_run([_git_bin(), *args], "",
                        timeout=min(timeout, _remaining(deadline, RESERVE)),
                        cwd=cwd, env=GIT_ENV, transport=transport)
 
@@ -340,6 +359,18 @@ def write_generation_configs(generation: Path, python: Path, adapter: dict) -> P
             kimi_bin = None
     if isinstance(kimi_bin, str) and kimi_bin:
         gen_adapter_value["kimi_bin"] = kimi_bin
+    git_bin = adapter.get("git_bin")
+    if not (isinstance(git_bin, str) and git_bin):
+        # Pre-fix adapter without the key: re-resolve deterministically,
+        # never guess; absent stays absent and fails visibly in the check.
+        from paths import resolve_git_bin
+
+        try:
+            git_bin = resolve_git_bin()
+        except (OSError, ValueError):
+            git_bin = None
+    if isinstance(git_bin, str) and git_bin:
+        gen_adapter_value["git_bin"] = git_bin
     atomic_write(gen_adapter, gen_adapter_value)
     return gen_adapter
 

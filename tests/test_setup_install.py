@@ -46,6 +46,12 @@ class SetupInstallTests(unittest.TestCase):
             self.assertNotIn("warnings", payload)
             adapter = json.loads(config.read_text())
             self.assertEqual(adapter["kimi_bin"], str(binary))
+            import shutil as shutil_mod
+
+            git = shutil_mod.which("git")
+            self.assertIsNotNone(git, "test requires git on PATH")
+            self.assertEqual(payload["git_bin"], git)
+            self.assertEqual(adapter["git_bin"], git)
             engine = json.loads(Path(payload["engine_config"]).read_text())
             self.assertEqual(
                 engine["service_launch_context"],
