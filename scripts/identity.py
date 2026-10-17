@@ -255,15 +255,62 @@ def _tail_records(session_id: str, *, kimi_home=None):
         return []
 
 
+_NESTED_AMBIGUOUS = "nested_activation_ambiguous"
+_NESTED_STEERING = "nested_activation_steering"
+
+
+def _normalize_activation(origin, *, steering):
+    """Normalize kimi 2.2.0's nested skill-activation form onto the existing
+    skill_activation contract; unknown variants stay fail-closed.
+
+    kimi 2.1.1 records carry origin.kind=skill_activation at the top level
+    (with trigger/inTurn). kimi 2.2.0 instead records a turn-opening user
+    record whose origin is kind=user with skillActivations=[{activationId,
+    skillName, skillArgs, skillPath, skillSource}]. Exactly one mindie-agent
+    activation in such a turn-OPENING record is the user's own slash
+    submission and normalizes to a skill_activation opening (the 2.2.0 form
+    carries no trigger/inTurn; a turn opener is user-slash equivalent).
+    More than one mindie-agent activation in one record is ambiguous, a
+    steering/in-turn nested variant is not a known user entry shape, and
+    activations of other skills leave the record an ordinary user message.
+    """
+    if origin.get("kind") != "user" or "skillActivations" not in origin:
+        return origin
+    activations = origin.get("skillActivations")
+    if not isinstance(activations, list):
+        return {"kind": _NESTED_AMBIGUOUS}
+    mine = [
+        item
+        for item in activations
+        if isinstance(item, dict) and item.get("skillName") == PLUGIN_ID
+    ]
+    if not mine:
+        return origin
+    if len(mine) != 1:
+        return {"kind": _NESTED_AMBIGUOUS}
+    if steering:
+        return {"kind": _NESTED_STEERING}
+    activation = mine[0]
+    return {
+        "kind": "skill_activation",
+        "activationId": activation.get("activationId"),
+        "skillName": PLUGIN_ID,
+        "skillPath": activation.get("skillPath"),
+        "skillArgs": activation.get("skillArgs"),
+    }
+
+
 def _opening_origin(record):
     """Turn-opening/steering native origin, or None when this record can
     neither open nor steer a turn. An origin-less user message still bounds
     the turn (as an empty origin that matches no entry); injected content
     never does."""
-    if record.get("type") in {"turn.prompt", "turn.steer"}:
+    rtype = record.get("type")
+    if rtype in {"turn.prompt", "turn.steer"}:
         origin = record.get("origin")
-        return origin if isinstance(origin, dict) else {}
-    if record.get("type") == "context.append_message":
+        origin = origin if isinstance(origin, dict) else {}
+        return _normalize_activation(origin, steering=rtype == "turn.steer")
+    if rtype == "context.append_message":
         message = record.get("message")
         if not isinstance(message, dict) or message.get("role") != "user":
             return None
@@ -272,7 +319,7 @@ def _opening_origin(record):
             return {}
         if origin.get("kind") == "injection":
             return None
-        return origin
+        return _normalize_activation(origin, steering=False)
     return None
 
 
@@ -420,6 +467,10 @@ def _entry_from_openings(openings, command: str) -> dict:
     """Validate the latest fork-filtered opening as the current entry."""
     record, origin = openings[-1]
     kind = origin.get("kind")
+    if kind == _NESTED_AMBIGUOUS:
+        raise ValueError("current turn has ambiguous MindIE skill activations")
+    if kind == _NESTED_STEERING:
+        raise ValueError("an in-turn nested skill activation is not the user entry")
     if kind == "plugin_command":
         if origin.get("pluginId") != PLUGIN_ID:
             raise ValueError("current turn is not this plugin's slash command")
@@ -461,12 +512,14 @@ def require_current_entry(session_id: str, command: str = "init", *, kimi_home=N
 
     Dispatches on the ACTUAL host records: a native plugin_command opener
     (slash command, with the init alias), a native skill_activation opener
-    (the TUI `/mindie-agent` slash), or an in-turn skill_activation after
+    (the TUI `/mindie-agent` slash; kimi 2.1.1 top-level form, or the kimi
+    2.2.0 nested skillActivations form normalized by ``_opening_origin``),
+    or an in-turn skill_activation after
     the host resolved the user's `/mindie-agent` prompt (print/model-tool
     flow) — the latter requires the turn-opening user text to actually
     invoke the entry, so a model-initiated skill use is never admitted.
-    Plain mentions, injected content, same-named foreign skills and
-    inherited fork history never match.
+    Plain mentions, injected content, same-named foreign skills, ambiguous
+    nested activations and inherited fork history never match.
     """
     openings = _turn_openings(session_id, kimi_home=kimi_home)
     if not openings:

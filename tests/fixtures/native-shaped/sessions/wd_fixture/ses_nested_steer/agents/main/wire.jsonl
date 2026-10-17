@@ -1,0 +1,4 @@
+{"type": "metadata", "protocol_version": "1.6", "created_at": 1789911900000, "time": 1789911900000}
+{"type": "turn.prompt", "time": 1789911901000, "origin": {"kind": "user"}, "input": [{"type": "text", "text": "continue the refactor"}]}
+{"type": "context.append_message", "time": 1789911901500, "message": {"role": "user", "content": [{"type": "text", "text": "continue the refactor"}], "origin": {"kind": "user"}}}
+{"type": "turn.steer", "time": 1789911902000, "origin": {"kind": "user", "skillActivations": [{"activationId": "0d0e9a4d-0000-4000-8000-0000000000aa", "skillName": "mindie-agent", "skillArgs": "", "skillPath": "__PLUGIN_ROOT__/skills/mindie-agent/SKILL.md", "skillSource": "extra"}]}, "input": [{"type": "text", "text": "/mindie-agent"}]}

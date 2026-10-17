@@ -1,13 +1,16 @@
 import os
+import shutil
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-from support import SCRIPTS, plugin_origin, turn_records, write_session
+from support import FIXTURES, SCRIPTS, plugin_origin, turn_records, write_session
 
 sys.path.insert(0, str(SCRIPTS))
 import identity  # noqa: E402
+
+REPO = Path(__file__).resolve().parents[1]
 
 
 class IdentityTests(unittest.TestCase):
@@ -88,3 +91,102 @@ class IdentityTests(unittest.TestCase):
             found = identity.require_current_plugin_command("ses_ok", "init", kimi_home=home)
             self.assertEqual(found["command"], "init")
             self.assertEqual(found["activation_id"], "act-1")
+
+    def test_plugin_command_without_command_args_still_binds(self):
+        with tempfile.TemporaryDirectory() as raw:
+            home = Path(raw)
+            origin = plugin_origin("status", "act-nocargs")
+            del origin["commandArgs"]
+            records = turn_records(origin, "status", time=1)
+            write_session(home, "ses_nocargs", records)
+            found = identity.require_current_plugin_command(
+                "ses_nocargs", "status", kimi_home=home
+            )
+            self.assertEqual(found["command"], "status")
+            self.assertEqual(found["arguments"], "")
+            self.assertEqual(found["activation_id"], "act-nocargs")
+
+
+class SkillActivationShapeTests(unittest.TestCase):
+    """kimi 2.1.1 top-level vs kimi 2.2.0 nested skill-activation wire forms."""
+
+    def _fixture_home(self, tmp: Path, fixture_session: str, session: str) -> Path:
+        src = (
+            FIXTURES
+            / "native-shaped"
+            / "sessions"
+            / "wd_fixture"
+            / fixture_session
+        )
+        home = tmp / "kimi-home"
+        dest = home / "sessions" / "wd_fixture" / session
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(src, dest)
+        wire = dest / "agents" / "main" / "wire.jsonl"
+        wire.write_text(
+            wire.read_text(encoding="utf-8").replace("__PLUGIN_ROOT__", str(REPO)),
+            encoding="utf-8",
+        )
+        return home
+
+    def test_nested_220_activation_binds_the_entry(self):
+        with tempfile.TemporaryDirectory() as raw:
+            home = self._fixture_home(Path(raw), "ses_nested_220", "ses_nested_220")
+            found = identity.require_current_entry(
+                "ses_nested_220", "init", kimi_home=home
+            )
+            self.assertEqual(found["command"], "init")
+            self.assertEqual(found["arguments"], "init")
+            self.assertEqual(
+                found["activation_id"], "d8cf954f-6b26-49cc-b019-606640c397d5"
+            )
+            # The nested turn is not an ordinary user reply either.
+            self.assertEqual(
+                identity.current_user_text("ses_nested_220", kimi_home=home), ""
+            )
+
+    def test_top_level_211_activation_still_binds(self):
+        from contract_support import skill_origin
+
+        with tempfile.TemporaryDirectory() as raw:
+            home = Path(raw)
+            records = turn_records(
+                skill_origin("act-211", args="init"), "/mindie-agent init"
+            )
+            write_session(home, "ses_211", records)
+            found = identity.require_current_entry("ses_211", "init", kimi_home=home)
+            self.assertEqual(found["activation_id"], "act-211")
+            self.assertEqual(found["arguments"], "init")
+
+    def test_ambiguous_nested_activations_fail_closed(self):
+        with tempfile.TemporaryDirectory() as raw:
+            home = self._fixture_home(
+                Path(raw), "ses_nested_ambiguous", "ses_nested_ambiguous"
+            )
+            with self.assertRaisesRegex(ValueError, "ambiguous"):
+                identity.require_current_entry(
+                    "ses_nested_ambiguous", "init", kimi_home=home
+                )
+
+    def test_foreign_nested_skill_is_not_the_entry(self):
+        with tempfile.TemporaryDirectory() as raw:
+            home = self._fixture_home(
+                Path(raw), "ses_nested_foreign", "ses_nested_foreign"
+            )
+            with self.assertRaises(ValueError):
+                identity.require_current_entry(
+                    "ses_nested_foreign", "init", kimi_home=home
+                )
+            # A foreign skill activation is an ordinary user message.
+            self.assertEqual(
+                identity.current_user_text("ses_nested_foreign", kimi_home=home),
+                "/mindie-agent init",
+            )
+
+    def test_steering_nested_activation_is_not_an_opener(self):
+        with tempfile.TemporaryDirectory() as raw:
+            home = self._fixture_home(Path(raw), "ses_nested_steer", "ses_nested_steer")
+            with self.assertRaisesRegex(ValueError, "in-turn nested"):
+                identity.require_current_entry(
+                    "ses_nested_steer", "init", kimi_home=home
+                )

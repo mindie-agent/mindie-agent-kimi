@@ -555,6 +555,69 @@ class EntryTests(unittest.TestCase):
             settings = json.loads((tmp / "kimi.community.json").read_text())
             self.assertFalse(settings["enabled"])
 
+    def _nested_origin(self, activation="act-nested-220", args="", name="mindie-agent"):
+        """kimi 2.2.0 wire form: kind=user with nested skillActivations."""
+        from paths import PLUGIN_ROOT
+
+        return dict(
+            kind="user",
+            skillActivations=[
+                dict(
+                    activationId=activation,
+                    skillName=name,
+                    skillArgs=args,
+                    skillPath=str(PLUGIN_ROOT / "skills" / "mindie-agent" / "SKILL.md"),
+                    skillSource="extra",
+                )
+            ],
+        )
+
+    def test_nested_220_contribute_via_native_args(self):
+        """kimi 2.2.0 nested skill activation is the same user entry."""
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            config = make_config(tmp)
+            os.environ["MINDIE_KIMI_CONFIG"] = str(config)
+            origin = self._nested_origin(args="contribute owner/repo acc-name")
+            self._home(
+                tmp, "ses_n220",
+                turn_records(origin, "/mindie-agent contribute owner/repo acc-name"),
+            )
+            self._stub_service()
+            import consent
+            import entry
+
+            payload = entry.op_init("ses_n220", str(tmp))
+            self.assertEqual(payload["first_use"], "contribute")
+            self.assertTrue(payload["sharing"]["enabled"])
+            self.assertEqual(consent.load()["choice"], "contribute")
+            settings = json.loads(consent.shared_community_path().read_text())
+            self.assertEqual(settings["account"], "acc-name")
+            self.assertEqual(settings["project_roots"], [str(tmp.resolve())])
+
+    def test_nested_220_turn_is_not_an_ordinary_user_reply(self):
+        """The nested activation turn binds through the entry boundary; a
+        conversational (user-reply) destination must NOT be accepted on it."""
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            config = make_config(tmp)
+            os.environ["MINDIE_KIMI_CONFIG"] = str(config)
+            origin = self._nested_origin(args="")
+            self._home(tmp, "ses_nreply", turn_records(origin, "/mindie-agent"))
+            self._stub_service()
+            import consent
+            import entry
+
+            with self.assertRaises(ValueError):
+                entry.op_choose(
+                    "ses_nreply", "contribute", str(tmp),
+                    repository="owner/repo", account="acc-name",
+                )
+            self.assertIsNone(consent.load()["choice"])
+            # The same turn DOES perform entry operations needing no destination.
+            payload = entry.op_choose("ses_nreply", "disabled", str(tmp))
+            self.assertEqual(payload["first_use"], "disabled")
+
     def test_native_contribute_args_enable_sharing(self):
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
