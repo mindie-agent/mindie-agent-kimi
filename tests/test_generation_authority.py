@@ -179,7 +179,7 @@ class GenerationAuthorityTests(unittest.TestCase):
         )
         (empty / "scripts").mkdir(parents=True)
         with patch("paths.shutil.which", return_value=None), \
-             patch("paths.os.name", "posix"):
+             patch("paths.GIT_WINDOWS_LOCATIONS", ()):
             gen_adapter = updater.write_generation_configs(
                 empty, Path(sys.executable), adapter
             )

@@ -96,7 +96,7 @@ class KimiBinResolutionTests(unittest.TestCase):
 
     def test_prepare_service_env_leaves_git_unset_when_unstamped(self):
         with patch.object(paths.shutil, "which", return_value=None), \
-             patch.object(paths.os, "name", "posix"):
+             patch.object(paths, "GIT_WINDOWS_LOCATIONS", ()):
             knowledge_service.prepare_service_env({})
         self.assertNotIn("MINDIE_GIT_BIN", os.environ)
 
@@ -140,25 +140,20 @@ class GitBinResolutionTests(unittest.TestCase):
 
         with patch.object(paths.shutil, "which", return_value=None), \
              patch.object(paths.os, "name", "nt"), \
+             patch.object(paths, "GIT_WINDOWS_LOCATIONS",
+                          (r"X:\Git\cmd\git.exe", r"Y:\Git\cmd\git.exe")), \
              patch.object(paths, "Path", new=FakePath):
-            self.assertEqual(
-                paths.resolve_git_bin(), r"C:\Program Files\Git\cmd\git.exe"
-            )
+            self.assertEqual(paths.resolve_git_bin(), r"X:\Git\cmd\git.exe")
 
     def test_honest_absence(self):
-        class FakePath:
-            def __init__(self, _value):
-                pass
-
-            def is_file(self):
-                return False
-
-        with patch.object(paths.shutil, "which", return_value=None):
-            if os.name == "nt":
-                with patch.object(paths, "Path", new=FakePath):
-                    self.assertIsNone(paths.resolve_git_bin())
-            else:
-                self.assertIsNone(paths.resolve_git_bin())
+        # "Missing everywhere" is simulated by candidate paths that exist on
+        # no host — deterministic on POSIX (branch never consulted) and on
+        # Windows runners that really have Git for Windows installed.
+        with patch.object(paths.shutil, "which", return_value=None), \
+             patch.object(paths, "GIT_WINDOWS_LOCATIONS",
+                          (r"Z:\no-such\Git\cmd\git.exe",
+                           r"Z:\no-such-x86\Git\cmd\git.exe")):
+            self.assertIsNone(paths.resolve_git_bin())
 
 
 class LaunchContextDeclarationTests(unittest.TestCase):

@@ -184,7 +184,12 @@ class UpdaterTests(unittest.TestCase):
         from unittest.mock import patch
 
         self.assertNotIn("git_bin", self.adapter)
-        with patch.dict(updater.GIT_ENV, {"PATH": "/nonexistent-mindie"}):
+        # A stamp pointing at a moved/deleted binary (or no git anywhere):
+        # the spawn itself must fail, deterministically on every host —
+        # scrubbing PATH alone does not stop Windows from resolving a bare
+        # "git" through App Paths or a Git-for-Windows standard install.
+        missing = str(self.tmp / "mindie-no-such-git")
+        with patch.object(updater, "_git_bin", return_value=missing):
             self.assertEqual(self.run_check(), 1)
         status = genstate.read_status(self.adapter)
         self.assertEqual(status["result"], "check-failed")
@@ -192,6 +197,7 @@ class UpdaterTests(unittest.TestCase):
         self.assertNotEqual(
             status.get("error"), updater._STATIC_FAILURE["temporary_network"]
         )
+        self.assertIn("mindie-no-such-git", status["error"])
 
     def test_feed_sync_carries_stamped_git_bin_to_the_component(self):
         from unittest.mock import patch
