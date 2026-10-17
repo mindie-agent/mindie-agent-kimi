@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import sys
@@ -107,6 +108,13 @@ class IdentityTests(unittest.TestCase):
             self.assertEqual(found["activation_id"], "act-nocargs")
 
 
+def _substitute_plugin_root(text: str, root) -> str:
+    """Splice the repo path into JSONL fixture text. The placeholder sits
+    inside a JSON string, so the path is spliced in its JSON-escaped form —
+    a Windows path's backslashes must not become invalid JSON escapes."""
+    return text.replace("__PLUGIN_ROOT__", json.dumps(str(root))[1:-1])
+
+
 class SkillActivationShapeTests(unittest.TestCase):
     """kimi 2.1.1 top-level vs kimi 2.2.0 nested skill-activation wire forms."""
 
@@ -124,10 +132,49 @@ class SkillActivationShapeTests(unittest.TestCase):
         shutil.copytree(src, dest)
         wire = dest / "agents" / "main" / "wire.jsonl"
         wire.write_text(
-            wire.read_text(encoding="utf-8").replace("__PLUGIN_ROOT__", str(REPO)),
+            _substitute_plugin_root(wire.read_text(encoding="utf-8"), REPO),
             encoding="utf-8",
         )
         return home
+
+    def test_fixture_substitution_produces_valid_json_with_windows_path(self):
+        root = "C:\\Users\\runner\\mindie-agent-kimi"
+        for session in (
+            "ses_nested_220",
+            "ses_nested_steer",
+            "ses_nested_ambiguous",
+            "ses_nested_foreign",
+        ):
+            wire = (
+                FIXTURES
+                / "native-shaped"
+                / "sessions"
+                / "wd_fixture"
+                / session
+                / "agents"
+                / "main"
+                / "wire.jsonl"
+            )
+            substituted = _substitute_plugin_root(
+                wire.read_text(encoding="utf-8"), root
+            )
+            skill_paths = []
+
+            def walk(value):
+                if isinstance(value, dict):
+                    if isinstance(value.get("skillPath"), str):
+                        skill_paths.append(value["skillPath"])
+                    for item in value.values():
+                        walk(item)
+                elif isinstance(value, list):
+                    for item in value:
+                        walk(item)
+
+            for line in substituted.splitlines():
+                walk(json.loads(line))
+            self.assertTrue(skill_paths, session)
+            for path in skill_paths:
+                self.assertTrue(path.startswith(root), (session, path))
 
     def test_nested_220_activation_binds_the_entry(self):
         with tempfile.TemporaryDirectory() as raw:

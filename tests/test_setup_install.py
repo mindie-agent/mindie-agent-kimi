@@ -13,6 +13,51 @@ from support import SCRIPTS, env_for
 
 
 class SetupInstallTests(unittest.TestCase):
+    def test_setup_stamps_kimi_bin_and_service_launch_context(self):
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            fake_home = tmp / "kimi-home"
+            (fake_home / "bin").mkdir(parents=True)
+            binary = fake_home / "bin" / ("kimi.exe" if os.name == "nt" else "kimi")
+            binary.write_text("# native binary\n")
+            config = tmp / "cfg" / "kimi.json"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPTS / "setup.py"),
+                    "--knowledge-python",
+                    sys.executable,
+                    "--config",
+                    str(config),
+                    "--root",
+                    str(tmp / "data"),
+                    "--no-schedule",
+                    "--kimi-home",
+                    str(fake_home),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                env=env_for(),
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["kimi_bin"], str(binary))
+            self.assertNotIn("warnings", payload)
+            adapter = json.loads(config.read_text())
+            self.assertEqual(adapter["kimi_bin"], str(binary))
+            engine = json.loads(Path(payload["engine_config"]).read_text())
+            self.assertEqual(
+                engine["service_launch_context"],
+                {"paths": {}, "environment": ["MINDIE_KIMI_BIN"]},
+            )
+            from mindie_knowledge.loop import service_context
+
+            self.assertEqual(
+                service_context.validate(engine),
+                {"paths": {}, "environment": ["MINDIE_KIMI_BIN"]},
+            )
+
     def test_setup_default_sharing_off_and_no_session_activation_alias(self):
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)

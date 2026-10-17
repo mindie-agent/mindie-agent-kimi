@@ -90,6 +90,56 @@ class GenerationAuthorityTests(unittest.TestCase):
         knowledge_service.ensure_service = lambda *_args, **_kwargs: None
         self.addCleanup(lambda: setattr(knowledge_service, "ensure_service", original))
 
+    def test_generation_adapter_carries_stamped_kimi_bin(self):
+        config = make_config(self.tmp, sharing=False)
+        adapter = json.loads(config.read_text())
+        adapter["kimi_bin"] = "/opt/kimi-stamped"
+        generation = (
+            self.tmp / "adapter-state" / "update" / "generations" / ("c" * 40)
+        )
+        (generation / "scripts").mkdir(parents=True)
+        os.environ["MINDIE_KIMI_CONFIG"] = str(config)
+        gen_adapter = updater.write_generation_configs(
+            generation, Path(sys.executable), adapter
+        )
+        gen_value = json.loads(Path(gen_adapter).read_text())
+        self.assertEqual(gen_value["kimi_bin"], "/opt/kimi-stamped")
+
+    def test_generation_adapter_reresolves_a_missing_kimi_bin(self):
+        config = make_config(self.tmp, sharing=False)
+        adapter = json.loads(config.read_text())
+        home = self.tmp / "kimi-home"
+        (home / "bin").mkdir(parents=True)
+        binary = home / "bin" / ("kimi.exe" if os.name == "nt" else "kimi")
+        binary.write_text("# native binary\n")
+        adapter["kimi_home"] = str(home)
+        config.write_text(json.dumps(adapter, indent=2) + "\n")
+        generation = (
+            self.tmp / "adapter-state" / "update" / "generations" / ("d" * 40)
+        )
+        (generation / "scripts").mkdir(parents=True)
+        os.environ["MINDIE_KIMI_CONFIG"] = str(config)
+        gen_adapter = updater.write_generation_configs(
+            generation, Path(sys.executable), adapter
+        )
+        gen_value = json.loads(Path(gen_adapter).read_text())
+        self.assertEqual(gen_value["kimi_bin"], str(binary))
+        # Nothing resolvable: the key stays absent, never a guessed path.
+        adapter.pop("kimi_home")
+        config.write_text(json.dumps(adapter, indent=2) + "\n")
+        empty = (
+            self.tmp / "adapter-state" / "update" / "generations" / ("e" * 40)
+        )
+        (empty / "scripts").mkdir(parents=True)
+        from unittest.mock import patch
+
+        with patch("paths.shutil.which", return_value=None):
+            gen_adapter = updater.write_generation_configs(
+                empty, Path(sys.executable), adapter
+            )
+        gen_value = json.loads(Path(gen_adapter).read_text())
+        self.assertNotIn("kimi_bin", gen_value)
+
     def test_generation_configs_keep_profile_authority_paths(self):
         config, gen_adapter, generation = self._flipped(sharing=True)
         adapter = json.loads(config.read_text())

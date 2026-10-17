@@ -214,7 +214,7 @@ class KnowledgePageTests(unittest.TestCase):
         knowledge_bound = mindie_launch.KNOWLEDGE_MAX_OUTPUT
 
         helper = self.tmp / "helper.py"
-        helper.write_text(HELPER)
+        helper.write_text(HELPER, encoding="utf-8")
         store = Store(self.tmp / "store", "vllm-ascend")
         author = MaterialStore(self.tmp / "author", "vllm-ascend")
         sizes = {}
@@ -304,6 +304,12 @@ class KnowledgePageTests(unittest.TestCase):
             env=env,
         )
 
+    def test_stub_is_written_as_utf8_regardless_of_locale(self):
+        stub = self.tmp / "stub.py"
+        stub.write_text(STUB, encoding="utf-8")
+        # A cp936 default must not land: the non-ASCII blob is valid UTF-8.
+        self.assertIn("测", stub.read_bytes().decode("utf-8"))
+
     def test_dispatch_raises_knowledge_bound_only(self):
         import bounded
         import mindie_launch
@@ -312,7 +318,7 @@ class KnowledgePageTests(unittest.TestCase):
         generation = self.tmp / "generation"
         scripts = generation / "scripts"
         scripts.mkdir(parents=True)
-        (scripts / "mcp_server.py").write_text(STUB)
+        (scripts / "mcp_server.py").write_text(STUB, encoding="utf-8")
         state = Path(json.loads(self.config.read_text())["state_dir"])
         current = state / "update" / "current.json"
         current.parent.mkdir(parents=True, exist_ok=True)
