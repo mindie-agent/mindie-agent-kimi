@@ -447,6 +447,45 @@ class EntryTests(unittest.TestCase):
             settings = json.loads((tmp / "kimi.community.json").read_text())
             self.assertFalse(settings["enabled"])
 
+    def test_recover_exit_two_with_receipt_is_receipt_not_error(self):
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            config = make_config(tmp)
+            os.environ["MINDIE_KIMI_CONFIG"] = str(config)
+            self._home(
+                tmp, "ses_rec",
+                turn_records(plugin_origin("recover", "act-rec", "--batch B1"),
+                             "recover --batch B1"),
+            )
+            import bounded
+            import entry
+
+            receipt = {"batch_id": "B1", "status": "unknown", "automatic_retry": False}
+
+            def fake_run(argv, stdin, **kwargs):
+                operation = next(item for item in argv if item.startswith("contribution-"))
+                err = RuntimeError("command failed (2)")
+                err.returncode = 2
+                if operation == "contribution-inspect":
+                    # The core prints a valid receipt and exits 2 for an
+                    # incomplete outcome: the receipt is the evidence.
+                    err.mindie_output = json.dumps(receipt)
+                else:
+                    err.mindie_output = "not a receipt"
+                raise err
+
+            real_run = bounded.run
+            bounded.run = fake_run
+            try:
+                result = entry.op_recover("ses_rec", "--batch B1")
+            finally:
+                bounded.run = real_run
+            self.assertEqual(result["contribution-inspect"], receipt)
+            self.assertEqual(result["contribution-inspect_exit"], 2)
+            self.assertEqual(result["actions"], ["contribution-inspect"])
+            self.assertIn("contribution-reconcile_error", result)
+            self.assertIn("contribution-compact_error", result)
+
     def test_configured_status_is_this_session_only(self):
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
@@ -515,6 +554,69 @@ class EntryTests(unittest.TestCase):
             self.assertIsNone(consent.load()["choice"])
             settings = json.loads((tmp / "kimi.community.json").read_text())
             self.assertFalse(settings["enabled"])
+
+    def _nested_origin(self, activation="act-nested-220", args="", name="mindie-agent"):
+        """kimi 2.2.0 wire form: kind=user with nested skillActivations."""
+        from paths import PLUGIN_ROOT
+
+        return dict(
+            kind="user",
+            skillActivations=[
+                dict(
+                    activationId=activation,
+                    skillName=name,
+                    skillArgs=args,
+                    skillPath=str(PLUGIN_ROOT / "skills" / "mindie-agent" / "SKILL.md"),
+                    skillSource="extra",
+                )
+            ],
+        )
+
+    def test_nested_220_contribute_via_native_args(self):
+        """kimi 2.2.0 nested skill activation is the same user entry."""
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            config = make_config(tmp)
+            os.environ["MINDIE_KIMI_CONFIG"] = str(config)
+            origin = self._nested_origin(args="contribute owner/repo acc-name")
+            self._home(
+                tmp, "ses_n220",
+                turn_records(origin, "/mindie-agent contribute owner/repo acc-name"),
+            )
+            self._stub_service()
+            import consent
+            import entry
+
+            payload = entry.op_init("ses_n220", str(tmp))
+            self.assertEqual(payload["first_use"], "contribute")
+            self.assertTrue(payload["sharing"]["enabled"])
+            self.assertEqual(consent.load()["choice"], "contribute")
+            settings = json.loads(consent.shared_community_path().read_text())
+            self.assertEqual(settings["account"], "acc-name")
+            self.assertEqual(settings["project_roots"], [str(tmp.resolve())])
+
+    def test_nested_220_turn_is_not_an_ordinary_user_reply(self):
+        """The nested activation turn binds through the entry boundary; a
+        conversational (user-reply) destination must NOT be accepted on it."""
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            config = make_config(tmp)
+            os.environ["MINDIE_KIMI_CONFIG"] = str(config)
+            origin = self._nested_origin(args="")
+            self._home(tmp, "ses_nreply", turn_records(origin, "/mindie-agent"))
+            self._stub_service()
+            import consent
+            import entry
+
+            with self.assertRaises(ValueError):
+                entry.op_choose(
+                    "ses_nreply", "contribute", str(tmp),
+                    repository="owner/repo", account="acc-name",
+                )
+            self.assertIsNone(consent.load()["choice"])
+            # The same turn DOES perform entry operations needing no destination.
+            payload = entry.op_choose("ses_nreply", "disabled", str(tmp))
+            self.assertEqual(payload["first_use"], "disabled")
 
     def test_native_contribute_args_enable_sharing(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -623,9 +725,9 @@ class EntryTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 entry.op_init("ses_prefix", str(tmp))
 
-    def test_entry_boundary_adopts_legacy_marker_choice_once(self):
-        """The entry invocation performs the one-time legacy import; a
-        second session simply reuses the saved choice."""
+    def test_entry_never_imports_a_legacy_marker_choice(self):
+        """A pre-release first-use marker is evidence of an existing
+        installation, never a consent choice: the entry does not import it."""
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
             config = make_config(tmp)
@@ -643,8 +745,7 @@ class EntryTests(unittest.TestCase):
             import entry
 
             payload = entry.op_init("ses_legacy", str(tmp))
-            self.assertEqual(payload["first_use"], "read-only")
-            self.assertEqual(payload["choices"], [])
-            migration = payload.get("migration") or {}
-            self.assertEqual((migration.get("consent") or {}).get("action"), "imported")
-            self.assertEqual(consent.load()["choice"], "read-only")
+            self.assertIsNone(payload["first_use"])
+            self.assertFalse(consent.consent_path().exists())
+            self.assertNotIn("consent", payload.get("migration") or {})
+            self.assertEqual(consent.load()["state"], "missing")

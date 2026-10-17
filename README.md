@@ -30,7 +30,7 @@
 
 项目设计遵循 [MindIE Agent 工程设计原则](https://github.com/mindie-agent/mindie-agent/blob/main/docs/design-principles.md)：共享知识引擎与远端开发能力由独立组件承载，本仓库专注于 Kimi 会话身份绑定、`wire.jsonl` 公开对话提取、MCP 桥接与本地不可变版本更新。
 
-> **生态与版本说明**：MindIE Agent 首个正式产品版本（`v0.0.1`）优先面向 Codex（[`mindie-agent-codex`](https://github.com/mindie-agent/mindie-agent-codex)）与 Claude Code（[`mindie-agent-cc`](https://github.com/mindie-agent/mindie-agent-cc)）发布；`mindie-agent-kimi` 作为生态中的实验性源码安装（Source-Installed）适配器持续维护，验证范围详见[文档导航](#文档导航)。
+> **生态与版本说明**：MindIE Agent 首个正式产品版本（`v0.0.1`）面向 Claude Code（[`mindie-agent-cc`](https://github.com/mindie-agent/mindie-agent-cc)）、OpenAI Codex CLI（[`mindie-agent-codex`](https://github.com/mindie-agent/mindie-agent-codex)）与 Kimi Code（本仓库）三个宿主同步发布，共享同一套知识与远端开发组件。各宿主的实机验证范围详见[文档导航](#文档导航)。
 
 ---
 
@@ -105,9 +105,9 @@ MindIE Agent 采用**「领域知识与 Skill 手动按需触发 + 远端开发�
    鉴于 `@mindie-agent` 组织下仓库较多，**安装阶段仅对统一入口仓 `mindie-agent/mindie-agent` 执行 Star 与远端 Fork**（不逐一 Fork 各插件仓与知识库）：
    ```sh
    gh api -X PUT /user/starred/mindie-agent/mindie-agent
-   gh repo fork mindie-agent/mindie-agent --clone=false --remote=false
+   gh repo fork mindie-agent/mindie-agent --clone=false
    ```
-   > 说明：`--clone=false --remote=false` 仅在 GitHub 远端创建/同步派生库，不占用本地磁盘、不改写当前目录 Git Remote，且完全幂等。当用户后续通过 `/mindie-agent` 明确开启面向目标公开知识库（如 `mindie-agent/knowledge-vllm-ascend`）的社区经验贡献时，Agent 会再按需对该目标知识库执行 Star 与远端 Fork（`gh repo fork <owner/repo> --clone=false --remote=false`）并绑定个人 Fork 仓库 `$GH_USER/<repo>`。
+   > 说明：`--clone=false` 仅在 GitHub 远端创建/同步派生库，不占用本地磁盘、不改写当前目录 Git Remote，且完全幂等。当用户后续通过 `/mindie-agent` 明确开启面向目标公开知识库（如 `mindie-agent/knowledge-vllm-ascend`）的社区经验贡献时，Agent 会再按需对该目标知识库执行 Star 与远端 Fork（`gh repo fork <owner/repo> --clone=false`）并绑定个人 Fork 仓库 `$GH_USER/<repo>`。
 
 3. **克隆仓库、构建持久化锁定运行时并通过 Kimi 原生插件接口注册**：
    ```sh
@@ -139,7 +139,7 @@ MindIE Agent 采用**「领域知识与 Skill 手动按需触发 + 远端开发�
 ```sh
 gh auth status && gh auth setup-git && \
 gh api -X PUT /user/starred/mindie-agent/mindie-agent && \
-gh repo fork mindie-agent/mindie-agent --clone=false --remote=false && \
+gh repo fork mindie-agent/mindie-agent --clone=false && \
 git clone https://github.com/mindie-agent/mindie-agent-kimi.git && \
 cd mindie-agent-kimi && \
 NATIVE_PKG=$(python3 scripts/setup.py | python3 -c "import json,sys; print(json.load(sys.stdin)['native_package'])") && \

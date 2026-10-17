@@ -28,6 +28,7 @@ from support import (
     make_config,
     plugin_origin,
     run_bridge,
+    stop_real_services,
     turn_records,
     write_json,
     write_session,
@@ -119,22 +120,27 @@ DOUBLE_SOURCE = textwrap.dedent(
     """\
     import json, sys
     from pathlib import Path
+    from mindie_knowledge.materials import summarizer
     log = Path(sys.argv[1])
     raw = sys.stdin.buffer.read()
+    if "--identity" in sys.argv[2:]:
+        # The identity probe is not a model call; it is never counted.
+        sys.stdout.write(summarizer.canonical(summarizer.policy_identity(
+            model="double", effort="off", implementation={"double": "1"})) + "\\n")
+        raise SystemExit(0)
     with log.open("ab") as handle:
         handle.write(b"\\n@@GROK_KIMI_MODEL@@\\n" + raw)
-    try:
-        payload = json.loads(raw)
-    except ValueError:
-        payload = {}
-    text = str(payload.get("increment") or "no-increment")[:500]
-    sys.stdout.write(json.dumps({"entries": [{
-        "entry_id": None,
-        "title": "Observed increment",
-        "summary": "Public material was organized once.",
-        "content": text,
-        "conditions": {},
-    }]}))
+    request = summarizer.validate_request(json.loads(raw))
+    result = {
+        "blocks": [dict(block_id=block["block_id"], title="Observed increment",
+                        summary="Public material was organized once.")
+                   for block in request["blocks"]],
+        "navigation": {"title": "Observed increment",
+                       "summary": "Public material was organized once."},
+    }
+    sys.stdout.write(summarizer.canonical(summarizer.outcome(
+        request, status="returned", result=result, model_calls=1,
+        usage_known=False, elapsed_ms=1)) + "\\n")
     """
 )
 
@@ -186,7 +192,9 @@ def _kill_wakes(root: Path) -> None:
 
 
 def _store_path(tmp: Path) -> Path:
-    return tmp / "domain" / "vllm-ascend" / "store-v3.sqlite3"
+    from mindie_knowledge.state_layout import state_root
+
+    return state_root(tmp / "domain", "vllm-ascend") / "state-v4.sqlite3"
 
 
 def _captures(tmp: Path):
@@ -230,7 +238,8 @@ def _prepare_store(tmp: Path) -> None:
 def _point_agent(tmp: Path, script: Path, log: Path) -> None:
     path = tmp / "kimi.engine.json"
     data = json.loads(path.read_text())
-    data["agent_command"] = [sys.executable, str(script), str(log)]
+    data.pop("agent_command", None)
+    data["summary_command"] = [sys.executable, str(script), str(log)]
     path.write_text(json.dumps(data, indent=2) + "\n")
 
 
@@ -262,13 +271,16 @@ def _drain_pending(tmp: Path, log: Path) -> None:
     from mindie_knowledge.loop.activation import Admission
     from mindie_knowledge.loop.engine import Engine
     from mindie_knowledge.loop.store import Store
+    from mindie_knowledge.loop.transcript_capture import summarize_due
     import transcript as transcript_mod
 
     store = Store(tmp / "domain", "vllm-ascend")
     try:
         engine = Engine(
             store,
-            agent_command=engine_doc["agent_command"],
+            capture_mode="public-transcript",
+            redactor_executable=engine_doc["redactor_executable"],
+            summary_command=engine_doc["summary_command"],
             settings_path=engine_doc["community_config"],
             admission=Admission(engine_doc["admission_path"]),
             transcript_adapter=transcript_mod,
@@ -279,6 +291,10 @@ def _drain_pending(tmp: Path, log: Path) -> None:
             current = store.capture_row(row["id"])
             if current and current["status"] in {"queued", "pending", "deferred"}:
                 engine._process(row["id"])
+        if not _model_calls(log):
+            # The summary stage runs in its own core loop, not in capture.
+            engine.last_activity = 0
+            summarize_due(engine)
     finally:
         store.close()
 
@@ -381,6 +397,9 @@ class LaneIsolation(unittest.TestCase):
         import shutil
 
         _kill_wakes(self.tmp)
+        # A real spawned service outlives its fixture unless stopped
+        # explicitly; on Windows its open handles otherwise pin the store.
+        stop_real_services(self.tmp / "kimi.engine.json")
         if self._scratch is None:
             shutil.rmtree(self.tmp, ignore_errors=True)
         else:
@@ -398,11 +417,9 @@ class LaneIsolation(unittest.TestCase):
         project.mkdir(exist_ok=True)
         store_dir = self.tmp / "domain" / "vllm-ascend"
         if store_dir.exists():
-            for name in (
-                "store-v3.sqlite3", "store-v3.sqlite3-wal",
-                "store-v3.sqlite3-shm", "wake.json",
-            ):
-                (store_dir / name).unlink(missing_ok=True)
+            import shutil
+
+            shutil.rmtree(store_dir, ignore_errors=True)
         config = make_config(self.tmp, sharing=sharing, roots=[project])
         os.environ["MINDIE_KIMI_CONFIG"] = str(config)
         _prepare_store(self.tmp)
@@ -444,7 +461,10 @@ class ConsentGateTests(LaneIsolation):
         self.assertEqual(calls, 1, f"model calls={calls} captures={captures}")
         self.assertIn(SENTINEL, text)
         docs = _entries(self.tmp)
-        self.assertTrue(any(SENTINEL in doc for doc in docs), docs)
+        self.assertTrue(
+            any("Public material was organized once." in doc for doc in docs),
+            docs,
+        )
         again = _stop(self.tmp, "ses_gate", home, log, project)
         self.assertEqual(again.returncode, 0, again.stderr)
         self.assertEqual(
@@ -846,7 +866,11 @@ class ConsentGateTests(LaneIsolation):
         after = json.loads((self.tmp / "mindie-consent.json").read_text())
         self.assertEqual(after["choice"], before["choice"])
         self.assertEqual(after["reporting"], before["reporting"])
-        self.assertFalse(any(SENTINEL in doc for doc in _entries(self.tmp)))
+        docs = _entries(self.tmp)
+        self.assertFalse(any(SENTINEL in doc for doc in docs))
+        self.assertFalse(
+            any("Public material was organized once." in doc for doc in docs)
+        )
         import entry
 
         payload = entry.status_payload("ses_gate")
@@ -1477,6 +1501,92 @@ class EntryBoundaryTests(LaneIsolation):
             saved.get("lane_marker"), "keep-me",
             "adopt wrote the pre-lock adapter snapshot and dropped a concurrent field",
         )
+
+
+class StopRealServicesTests(unittest.TestCase):
+    """The cleanup helper requests the core stop and waits for release."""
+
+    def _fixture(self, tmp: Path):
+        engine = tmp / "kimi.engine.json"
+        domain = tmp / "domain" / "vllm-ascend"
+        domain.mkdir(parents=True)
+        (domain / "consumer.lock").touch()
+        engine.write_text(json.dumps({
+            "root": str(tmp / "domain"),
+            "domain": "vllm-ascend",
+            "transcript_adapter": str(SCRIPTS / "transcript.py"),
+            "redactor_executable": str(SCRIPTS / "transcript.py"),
+        }))
+        return engine, domain / "consumer.lock"
+
+    def _patched_core(self, *, released_after):
+        from unittest.mock import patch
+
+        state = {"polls": 0, "stopped": 0, "sleeps": []}
+
+        def rpc(connection, method, arguments=None, *, timeout=None):
+            state["stopped"] += 1
+            self.assertEqual(method, "stop")
+            return {"status": "stopping"}
+
+        def lock_held(path):
+            state["polls"] += 1
+            return False if state["polls"] > released_after else True
+
+        def sleep(_seconds):
+            state["sleeps"].append(1)
+
+        return state, [
+            patch("mindie_knowledge.loop.cli.connect", return_value={"url": "x", "token": "y"}),
+            patch("mindie_knowledge.loop.cli.rpc", side_effect=rpc),
+            patch("mindie_knowledge.loop.locks.lock_held", side_effect=lock_held),
+        ], sleep
+
+    def test_stop_waits_for_lock_release_within_budget(self):
+        with tempfile.TemporaryDirectory() as raw:
+            engine, _consumer = self._fixture(Path(raw))
+            state, patches, sleep = self._patched_core(released_after=3)
+            for patcher in patches:
+                patcher.start()
+                self.addCleanup(patcher.stop)
+            stop_real_services(engine, timeout=5.0, sleep=sleep)
+            self.assertEqual(state["stopped"], 1)
+            self.assertEqual(state["polls"], 4)
+            self.assertEqual(len(state["sleeps"]), 3)
+
+    def test_unconfirmed_stop_fails_loudly(self):
+        with tempfile.TemporaryDirectory() as raw:
+            engine, _consumer = self._fixture(Path(raw))
+            from unittest.mock import patch
+
+            with patch("mindie_knowledge.loop.cli.connect",
+                       return_value={"url": "x", "token": "y"}), \
+                 patch("mindie_knowledge.loop.cli.rpc",
+                       side_effect=ConnectionError("gone")):
+                with self.assertRaises(AssertionError):
+                    stop_real_services(engine, timeout=1.0)
+
+    def test_service_outliving_the_budget_fails_loudly(self):
+        with tempfile.TemporaryDirectory() as raw:
+            engine, _consumer = self._fixture(Path(raw))
+            state, patches, sleep = self._patched_core(released_after=10**9)
+            for patcher in patches:
+                patcher.start()
+                self.addCleanup(patcher.stop)
+            with self.assertRaises(AssertionError):
+                stop_real_services(engine, timeout=0.01, sleep=sleep)
+
+    def test_no_endpoint_is_a_fast_noop(self):
+        with tempfile.TemporaryDirectory() as raw:
+            engine, _consumer = self._fixture(Path(raw))
+            from unittest.mock import patch
+
+            with patch("mindie_knowledge.loop.cli.connect",
+                       side_effect=FileNotFoundError("no connection")) as connect:
+                started = time.monotonic()
+                stop_real_services(engine, timeout=5.0)
+                self.assertLess(time.monotonic() - started, 1.0)
+            connect.assert_called_once()
 
 
 if __name__ == "__main__":

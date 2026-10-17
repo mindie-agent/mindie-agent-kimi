@@ -38,6 +38,7 @@ if str(HERE) not in sys.path:
 import diagnostic_support
 
 try:
+    from bounded import CommandTimedOut
     from bounded import run as bounded_run
     from genstate import (
         LockTimeout,
@@ -88,6 +89,8 @@ PIP_ENV = dict(
     PIP_NO_INPUT="1",
     PIP_DISABLE_PIP_VERSION_CHECK="1",
 )
+# uv is non-interactive by design; git pins still shell out to git.
+UV_ENV = dict(os.environ, GIT_TERMINAL_PROMPT="0")
 
 _FEED_OK = frozenset({"synced", "unchanged"})
 _FEED_PENDING = frozenset({"busy", "deferred"})
@@ -213,8 +216,34 @@ def build_runtime(generation: Path, deadline: float) -> Path:
         raise CheckFailed("runtime-requirements.txt must pin full commit SHAs, not @main")
     venv = generation / ".venv"
     python = _venv_python(venv)
-    bounded_run([sys.executable, "-m", "venv", str(venv)], "",
-                timeout=min(180, _remaining(deadline, RESERVE)))
+    uv = shutil.which("uv")
+    from setup import ensurepip_available
+
+    if ensurepip_available():
+        bounded_run([sys.executable, "-m", "venv", str(venv)], "",
+                    timeout=min(180, _remaining(deadline, RESERVE)))
+    elif uv is not None:
+        bounded_run([uv, "venv", "--seed", str(venv)], "",
+                    timeout=min(180, _remaining(deadline, RESERVE)))
+    else:
+        raise CheckFailed(
+            "python venv support is missing (ensurepip unavailable) and uv is "
+            "not on PATH; install python3-venv or uv, then recover"
+        )
+    # The pinned tree (three git builds plus langmem/reme) cannot cold-build
+    # inside the check budget with pip; uv resolves and builds it in time. A
+    # missing uv is not an error: the pip path remains the fallback. Both
+    # stay inside the same bounded window and fail visibly either way.
+    if uv is not None:
+        bounded_run(
+            [uv, "pip", "install", "--python", str(python), "-r", str(requirements)],
+            "",
+            timeout=min(600, _remaining(deadline, RESERVE)),
+            max_output=512 * 1024,
+            env=UV_ENV,
+            transport=True,
+        )
+        return python
     bounded_run(
         [str(python), "-m", "pip", "install", "-r", str(requirements)],
         "",
@@ -236,12 +265,48 @@ def probe_runtime(python: Path, deadline: float, generation: Path) -> None:
         raise CheckFailed(f"generation runtime probe failed: {output.strip()[:300]}")
 
 
+def _profile_authority_sources(adapter: dict):
+    """(profile adapter config, profile engine config) for stable authority
+    path inheritance, or (None, None) when the profile config is
+    unreachable. Read-only; the caller's config may be a generation fork."""
+    from paths import engine_config_path as _engine_path, profile_config_path
+
+    profile = adapter.get("profile_config")
+    if not (isinstance(profile, str) and os.path.isabs(profile)):
+        profile = str(profile_config_path())
+    padapter = None
+    try:
+        candidate = json.loads(Path(profile).read_text(encoding="utf-8"))
+        if isinstance(candidate, dict):
+            padapter = candidate
+    except (OSError, ValueError):
+        pass
+    pengine = None
+    if padapter is not None:
+        try:
+            value = json.loads(
+                Path(_engine_path(padapter)).read_text(encoding="utf-8")
+            )
+            if isinstance(value, dict):
+                pengine = value
+        except (OSError, ValueError, FileNotFoundError):
+            pass
+    return padapter, pengine
+
+
 def write_generation_configs(generation: Path, python: Path, adapter: dict) -> Path:
     """Per-generation adapter+engine JSON. Admission/community/first-use
-    state paths stay stable; parser/organizer/interpreter move with the
-    generation. Returns the generation adapter config path."""
+    state paths stay stable (inherited from the PROFILE configs, even when
+    the current adapter is a generation fork); parser/organizer/interpreter
+    move with the generation. Returns the generation adapter config path."""
     engine = load_engine_config(adapter)
     engine.pop("agent_command", None)
+    padapter, pengine = _profile_authority_sources(adapter)
+    if pengine is not None:
+        for key in ("community_config", "admission_path"):
+            value = pengine.get(key)
+            if isinstance(value, str) and os.path.isabs(value):
+                engine[key] = value
     config_dir = generation / "config"
     gen_engine = config_dir / "kimi.engine.json"
     gen_adapter = config_dir / "kimi.adapter.json"
@@ -250,11 +315,32 @@ def write_generation_configs(generation: Path, python: Path, adapter: dict) -> P
         transcript_adapter=str(generation / "scripts" / "transcript.py"),
         **__import__("capture_config").prepare(python, generation / "scripts"),
     ))
-    atomic_write(gen_adapter, dict(
+    profile = (padapter or adapter).get("profile_config")
+    if not (isinstance(profile, str) and os.path.isabs(profile)):
+        from paths import profile_config_path
+
+        profile = str(profile_config_path())
+    gen_adapter_value = dict(
         adapter,
         python=str(python),
         engine_config=str(gen_engine),
-    ))
+        profile_config=profile,
+    )
+    if padapter is not None and isinstance(padapter.get("community_config"), str):
+        gen_adapter_value["community_config"] = padapter["community_config"]
+    kimi_bin = adapter.get("kimi_bin")
+    if not (isinstance(kimi_bin, str) and kimi_bin):
+        # Pre-fix adapter without the key: re-resolve deterministically,
+        # never guess; absent stays absent and fails visibly in the worker.
+        from paths import resolve_kimi_bin
+
+        try:
+            kimi_bin = resolve_kimi_bin(padapter or adapter)
+        except (OSError, ValueError, FileNotFoundError):
+            kimi_bin = None
+    if isinstance(kimi_bin, str) and kimi_bin:
+        gen_adapter_value["kimi_bin"] = kimi_bin
+    atomic_write(gen_adapter, gen_adapter_value)
     return gen_adapter
 
 
@@ -319,7 +405,7 @@ def build_host_package(generation: Path, adapter: dict, sha: str,
         shutil.rmtree(package)
     package.mkdir(parents=True)
     manifest = json.loads((generation / "kimi.plugin.json").read_text(encoding='utf-8'))
-    base = str(manifest.get("version") or "0.1.0").split("+")[0]
+    base = str(manifest.get("version") or "0.0.1").split("+")[0]
     manifest["version"] = f"{base}+mindie.{sha[:12]}"
     base_python = sys.executable
     if os.name == "nt":
@@ -459,10 +545,52 @@ def stop_if_idle(adapter: dict, current: dict, deadline: float) -> dict:
                 "error": "invalid-stop-result", "sha": current.get("sha")})
         raise CheckFailed("stop result unconfirmed; service needs attention") from None
     if result.get("service") != "stopped":
-        _record(adapter, service_handoff=previous_handoff)
+        if isinstance(previous_handoff, dict) and previous_handoff.get("status") in {
+            "failed",
+            "pending",
+        }:
+            # The stop outcome is now confirmed: an absent service is not
+            # down-for-attention (it starts on demand) and a busy service is
+            # demonstrably alive — the earlier handoff failure is resolved.
+            _clear_status_fields(adapter, "service_handoff")
+        else:
+            _record(adapter, service_handoff=previous_handoff)
     if result.get("idle") is not True:
         raise Deferred("service has actual active work; switch deferred")
     return result
+
+
+def _clear_status_fields(adapter, *names):
+    """Drop live-status fields whose stage has since succeeded. Failure
+    evidence stays in the diagnostics event log and failed.json history."""
+    status = read_status(adapter)
+    changed = False
+    for name in names:
+        if name in status:
+            status.pop(name)
+            changed = True
+    if changed:
+        write_status(status, adapter)
+
+
+def _clear_switch_ghosts(adapter):
+    """A proven install + pointer flip resolves earlier native failure
+    records of the SAME stages (rollback/pointer restore). Unrelated or
+    still-unresolved fields are left untouched."""
+    status = read_status(adapter)
+    changed = False
+    rollback = status.get("rollback")
+    if isinstance(rollback, str) and (
+        rollback.startswith("native restore FAILED")
+        or rollback.startswith("no retained previous host package")
+    ):
+        status.pop("rollback")
+        changed = True
+    if "pointer_restore" in status:
+        status.pop("pointer_restore")
+        changed = True
+    if changed:
+        write_status(status, adapter)
 
 
 def _readback(adapter: dict, deadline: float, reserve: float = RESERVE) -> dict:
@@ -574,6 +702,7 @@ def switch(adapter: dict, current: dict, generation: Path, python: Path,
                 "sha": sha,
             }
             write_current(final, adapter)
+            _clear_switch_ghosts(adapter)
         except Exception:
             # Install, pointer flip AND rollback stay under the SAME
             # exclusive lock. Restore the previous committed tuple
@@ -645,6 +774,9 @@ def _restore_stopped_service(adapter, final, deadline):
         env["MINDIE_KIMI_CONFIG"] = final["adapter_config"]
         if selected.get("kimi_home"):
             env["KIMI_CODE_HOME"] = selected["kimi_home"]
+        kimi_bin = selected.get("kimi_bin")
+        if isinstance(kimi_bin, str) and kimi_bin:
+            env["MINDIE_KIMI_BIN"] = kimi_bin
         output = bounded_run(
             [final["python"], str(HERE / "service_handoff.py"),
              "restore", selected["engine_config"]], "", env=env,
@@ -685,12 +817,13 @@ def _record(adapter, **fields) -> dict:
     return status
 
 
-_RETRYABLE = frozenset({"temporary_network", "rate_limited"})
+_RETRYABLE = frozenset({"temporary_network", "rate_limited", "deadline"})
 _ACTIONABLE = frozenset({"authentication", "permission", "hook_trust", "certificate"})
 _QUARANTINE = frozenset({"resolver", "bad_content"})
 _STATIC_FAILURE = {
     "temporary_network": "temporary network failure",
     "rate_limited": "rate limited",
+    "deadline": "operation deadline exceeded",
     "authentication": "authentication failed",
     "permission": "permission denied",
     "hook_trust": "host hook trust required",
@@ -715,6 +848,13 @@ def _retry_delay(count, retry_after=None):
 
 def _failure_category(exc):
     category = getattr(exc, "category", None)
+    if isinstance(exc, CommandTimedOut) and category == "temporary_network":
+        # A bounded transport deadline is its own honest class: the
+        # operation ran out of time (e.g. a slow cold build), which is not
+        # evidence of a network fault. Specific output-classified causes
+        # (certificate, rate limit, authentication) are kept as classified,
+        # and an unclassified timeout stays an unknown, guarded outcome.
+        return "deadline"
     if category in _RETRYABLE or category in _ACTIONABLE or category in _QUARANTINE:
         return category
     return None

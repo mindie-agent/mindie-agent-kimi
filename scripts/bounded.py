@@ -19,7 +19,9 @@ An optional cancel Event is checked before spawn, while draining/waiting
 (including after the child has closed its pipes), and before returning a
 result. Stderr bytes count toward the output bound and are then discarded.
 Updater transport commands may attach a static failure category; raw
-stderr, argv and URLs are not retained. This call does not retry.
+stderr, argv and URLs are not retained. A nonzero exit after completed
+output attaches that stdout and the return code to the raised error as
+caller evidence. This call does not retry.
 """
 
 from __future__ import annotations
@@ -430,7 +432,11 @@ def _run_posix(process, timeout, max_output, pgid, check, cancel, transport=Fals
         return err
 
     def failed_error():
+        # The completed stdout is evidence (a receipt can travel with a
+        # nonzero exit); it is never retained as log text elsewhere.
         err = RuntimeError(f"command failed ({process.returncode})")
+        err.mindie_output = bytes(output).decode("utf-8", "replace")
+        err.returncode = process.returncode
         if transport:
             _attach_transport(err, output, errors, timed_out=False)
         return err
@@ -545,6 +551,8 @@ def _run_windows(process, timeout, max_output, pgid, check, cancel, transport=Fa
             raise CommandCancelled("command cancelled")
         if check and process.returncode:
             err = RuntimeError(f"command failed ({process.returncode})")
+            err.mindie_output = bytes(output).decode("utf-8", "replace")
+            err.returncode = process.returncode
             if transport:
                 _attach_transport(err, output, errors, timed_out=False)
             raise err

@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import secrets
 import shutil
+import subprocess
 import sys
 import time
 
@@ -250,6 +251,39 @@ def write_community(path, community, consent_config=None, python=None):
     return 'enabled' if result['enabled'] else 'off'
 
 
+def ensurepip_available(python=None) -> bool:
+    """Cheap up-front probe: stock Ubuntu server images lack python3-venv,
+    so ``python -m venv`` aborts on the missing ensurepip module."""
+    interpreter = str(python or sys.executable)
+    try:
+        probe = subprocess.run(
+            [interpreter, "-m", "ensurepip", "--version"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return probe.returncode == 0
+
+
+def create_venv(venv: Path, *, timeout) -> None:
+    """Create the pinned venv, preferring the stdlib and falling back to
+    ``uv venv --seed`` (uv is a declared base tool) when ensurepip is
+    missing. A machine with neither gets both remedies in one clear error."""
+    if ensurepip_available():
+        run([sys.executable, "-m", "venv", str(venv)], "", timeout=timeout)
+        return
+    uv = shutil.which("uv")
+    if uv is None:
+        raise SystemExit(
+            "python venv support is missing (ensurepip is unavailable) and uv "
+            "was not found on PATH; install the python3-venv OS package "
+            "(e.g. apt install python3.12-venv) or uv, then rerun setup"
+        )
+    run([uv, "venv", "--seed", str(venv)], "", timeout=timeout)
+
+
 def build_bootstrap_runtime(domain_root: Path) -> str:
     """Fresh install builds its own pinned venv from runtime-requirements.txt;
     no hand-created venv required."""
@@ -264,7 +298,7 @@ def build_bootstrap_runtime(domain_root: Path) -> str:
         PIP_DISABLE_PIP_VERSION_CHECK="1",
         GIT_TERMINAL_PROMPT="0",
     )
-    run([sys.executable, "-m", "venv", str(venv)], "", timeout=180)
+    create_venv(venv, timeout=180)
     run(
         [str(python), "-m", "pip", "install", "-r",
          str(PLUGIN_ROOT / "runtime-requirements.txt")],
@@ -359,6 +393,9 @@ def main():
         engine_config=str(engine_config),
         community_config=str(community_config),
         state_dir=str(state_dir),
+        # Generations inherit this pointer: authority state anchors at the
+        # profile directory, never at a per-generation config fork.
+        profile_config=str(config),
     )
     if args.kimi_home:
         adapter_value["kimi_home"] = str(args.kimi_home.expanduser().absolute())
@@ -369,6 +406,17 @@ def main():
         )
     if args.update_remote:
         adapter_value["update_remote"] = args.update_remote
+    from paths import resolve_kimi_bin
+
+    kimi_bin = None
+    try:
+        kimi_bin = resolve_kimi_bin(adapter_value)
+    except (OSError, ValueError):
+        kimi_bin = None
+    if kimi_bin is not None:
+        # Service launches (systemd --user, Task Scheduler) do not share the
+        # login shell's PATH; the summary worker gets a deterministic binary.
+        adapter_value["kimi_bin"] = kimi_bin
     write_private(config, adapter_value)
     sharing = write_community(
         community_config, community,
@@ -404,28 +452,31 @@ def main():
             scheduled = "registered" if code == 0 else "manual"
         except Exception as exc:
             scheduled = f"manual ({type(exc).__name__}: {str(exc)[:120]})"
-    print(
-        json.dumps(
-            dict(
-                config=str(config),
-                engine_config=str(engine_config),
-                community_config=str(community_config),
-                admission_path=str(admission),
-                native_package=str(bootstrap_package),
-                domain=args.domain,
-                sharing=sharing,
-                update_schedule=scheduled,
-                plugin_install=(
-                    "Native install: POST /api/v1/plugins {source: <host-package>} "
-                    "in the selected Kimi home (scripts/install_kimi_plugin.py). "
-                    "Automatic updates: scripts/updater.py check (scheduled), "
-                    "status via scripts/updater.py status, recovery via "
-                    "scripts/updater.py recover. See docs/update.md."
-                ),
-            ),
-            indent=2,
-        )
+    result = dict(
+        config=str(config),
+        engine_config=str(engine_config),
+        community_config=str(community_config),
+        admission_path=str(admission),
+        native_package=str(bootstrap_package),
+        domain=args.domain,
+        sharing=sharing,
+        update_schedule=scheduled,
+        kimi_bin=kimi_bin,
+        plugin_install=(
+            "Native install: POST /api/v1/plugins {source: <host-package>} "
+            "in the selected Kimi home (scripts/install_kimi_plugin.py). "
+            "Automatic updates: scripts/updater.py check (scheduled), "
+            "status via scripts/updater.py status, recovery via "
+            "scripts/updater.py recover. See docs/update.md."
+        ),
     )
+    if kimi_bin is None:
+        result["warnings"] = [
+            "no kimi binary resolved (MINDIE_KIMI_BIN unset, no "
+            "<kimi_home>/bin/kimi, not on PATH); the summary worker will "
+            "report configuration-unavailable until one exists"
+        ]
+    print(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":

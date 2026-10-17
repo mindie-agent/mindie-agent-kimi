@@ -13,6 +13,51 @@ from support import SCRIPTS, env_for
 
 
 class SetupInstallTests(unittest.TestCase):
+    def test_setup_stamps_kimi_bin_and_service_launch_context(self):
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            fake_home = tmp / "kimi-home"
+            (fake_home / "bin").mkdir(parents=True)
+            binary = fake_home / "bin" / ("kimi.exe" if os.name == "nt" else "kimi")
+            binary.write_text("# native binary\n")
+            config = tmp / "cfg" / "kimi.json"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPTS / "setup.py"),
+                    "--knowledge-python",
+                    sys.executable,
+                    "--config",
+                    str(config),
+                    "--root",
+                    str(tmp / "data"),
+                    "--no-schedule",
+                    "--kimi-home",
+                    str(fake_home),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                env=env_for(),
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["kimi_bin"], str(binary))
+            self.assertNotIn("warnings", payload)
+            adapter = json.loads(config.read_text())
+            self.assertEqual(adapter["kimi_bin"], str(binary))
+            engine = json.loads(Path(payload["engine_config"]).read_text())
+            self.assertEqual(
+                engine["service_launch_context"],
+                {"paths": {}, "environment": ["MINDIE_KIMI_BIN"]},
+            )
+            from mindie_knowledge.loop import service_context
+
+            self.assertEqual(
+                service_context.validate(engine),
+                {"paths": {}, "environment": ["MINDIE_KIMI_BIN"]},
+            )
+
     def test_setup_default_sharing_off_and_no_session_activation_alias(self):
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
@@ -114,6 +159,53 @@ class SetupInstallTests(unittest.TestCase):
                 Path(result.stdout.strip()).resolve(),
                 Path(sys.executable).resolve(),
             )
+
+    def test_bootstrap_runtime_uses_stdlib_venv_when_ensurepip_present(self):
+        import setup
+
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            calls = []
+            from unittest.mock import patch
+
+            with patch.object(setup, "ensurepip_available", return_value=True), \
+                 patch.object(setup.shutil, "which", return_value=None), \
+                 patch.object(setup, "run", side_effect=lambda argv, stdin, **kw: calls.append(list(argv)) or ""):
+                setup.build_bootstrap_runtime(tmp)
+            self.assertEqual(calls[0][:3], [sys.executable, "-m", "venv"])
+            self.assertEqual(calls[1][1:4], ["-m", "pip", "install"])
+
+    def test_bootstrap_runtime_falls_back_to_uv_venv_without_ensurepip(self):
+        import setup
+
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            calls = []
+            from unittest.mock import patch
+
+            with patch.object(setup, "ensurepip_available", return_value=False), \
+                 patch.object(setup.shutil, "which", return_value="/usr/local/bin/uv"), \
+                 patch.object(setup, "run", side_effect=lambda argv, stdin, **kw: calls.append(list(argv)) or ""):
+                setup.build_bootstrap_runtime(tmp)
+            self.assertEqual(
+                calls[0][:3], ["/usr/local/bin/uv", "venv", "--seed"]
+            )
+            self.assertEqual(calls[1][1:4], ["-m", "pip", "install"])
+
+    def test_bootstrap_runtime_without_ensurepip_or_uv_names_both_remedies(self):
+        import setup
+
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            from unittest.mock import patch
+
+            with patch.object(setup, "ensurepip_available", return_value=False), \
+                 patch.object(setup.shutil, "which", return_value=None):
+                with self.assertRaises(SystemExit) as caught:
+                    setup.build_bootstrap_runtime(tmp)
+            message = str(caught.exception)
+            self.assertIn("python3-venv", message)
+            self.assertIn("uv", message)
 
     def test_requirements_are_pinned_commits(self):
         expected = {
@@ -229,7 +321,10 @@ class SetupInstallTests(unittest.TestCase):
                      str(SCRIPTS / "install_kimi_plugin.py"),
                      "--kimi-home", str(tmp / "home")],
                     "",
-                    timeout=1.5,
+                    # Generous ceiling: the deadline must fire after the fake
+                    # host started even under full-suite load; the tree-kill
+                    # assertion below is what this test proves.
+                    timeout=10,
                     env=env,
                 )
             pid = int(pidfile.read_text().strip())

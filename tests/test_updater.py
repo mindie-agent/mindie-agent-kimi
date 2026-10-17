@@ -538,5 +538,215 @@ class UpdaterTests(unittest.TestCase):
         self.assertEqual(command[4:], ["updater", "check"])
 
 
+class BuildRuntimeAndFailureClassTests(unittest.TestCase):
+    def _generation(self, tmp: Path) -> Path:
+        generation = tmp / "generation"
+        generation.mkdir()
+        (generation / "runtime-requirements.txt").write_text(
+            "mindie-knowledge @ git+https://github.com/mindie-agent/knowledge"
+            "@81fb4e222f0cba5cffe50824ffd55b33d312283d\n"
+        )
+        return generation
+
+    def _build_calls(self, which):
+        from unittest.mock import patch
+
+        calls = []
+        run = lambda argv, stdin, **kw: calls.append((list(argv), kw)) or ""
+        return patch.object(updater.shutil, "which", side_effect=which), \
+            patch.object(updater, "bounded_run", side_effect=run), calls
+
+    def test_build_runtime_prefers_uv_when_available(self):
+        with tempfile.TemporaryDirectory() as raw:
+            generation = self._generation(Path(raw))
+            found_uv = "/usr/local/bin/uv"
+            which, run, calls = self._build_calls(
+                lambda name: found_uv if name == "uv" else None)
+            with which, run:
+                updater.build_runtime(generation, time.monotonic() + 240)
+            install = next(argv for argv, _kw in calls if "install" in argv)
+            self.assertEqual(install[0], found_uv)
+            self.assertEqual(install[1:3], ["pip", "install"])
+            self.assertIn("--python", install)
+            self.assertEqual(calls[0][0][1:3], ["-m", "venv"])
+
+    def test_build_runtime_falls_back_to_pip_without_uv(self):
+        with tempfile.TemporaryDirectory() as raw:
+            generation = self._generation(Path(raw))
+            which, run, calls = self._build_calls(lambda _name: None)
+            with which, run:
+                updater.build_runtime(generation, time.monotonic() + 240)
+            install = next(argv for argv, _kw in calls if "install" in argv)
+            self.assertEqual(Path(install[0]).name.split(".")[0], "python")
+            self.assertEqual(install[1:4], ["-m", "pip", "install"])
+
+    def test_missing_uv_is_not_an_error(self):
+        with tempfile.TemporaryDirectory() as raw:
+            generation = self._generation(Path(raw))
+            which, run, _calls = self._build_calls(lambda _name: None)
+            with which, run:
+                python = updater.build_runtime(generation, time.monotonic() + 240)
+            self.assertEqual(python, updater._venv_python(generation / ".venv"))
+
+    def test_staging_deadline_is_not_reported_as_network_failure(self):
+        # bounded attaches temporary_network to a transport timeout as a
+        # guess; a deadline is its own honest, retryable class.
+        err = updater.CommandTimedOut("command timed out after 127s",
+                                      category="temporary_network")
+        self.assertEqual(updater._failure_category(err), "deadline")
+        with tempfile.TemporaryDirectory() as raw:
+            adapter = {"state_dir": raw}
+            record = updater._remember_failure(adapter, "b" * 40, err)
+            self.assertEqual(record["failure_class"], "deadline")
+            self.assertIn(record["failure_class"], updater._RETRYABLE)
+            self.assertEqual(record["error"], updater._STATIC_FAILURE["deadline"])
+            self.assertGreater(record["next_retry_at"], time.time())
+
+    def test_network_failure_still_reports_temporary_network(self):
+        err = RuntimeError("command failed (6)")
+        err.category = "temporary_network"
+        self.assertEqual(updater._failure_category(err), "temporary_network")
+        with tempfile.TemporaryDirectory() as raw:
+            adapter = {"state_dir": raw}
+            record = updater._remember_failure(adapter, "b" * 40, err)
+            self.assertEqual(record["failure_class"], "temporary_network")
+            self.assertEqual(
+                record["error"], updater._STATIC_FAILURE["temporary_network"])
+
+    def test_classified_timeout_keeps_its_specific_class(self):
+        err = updater.CommandTimedOut("command timed out after 30s",
+                                      category="certificate")
+        self.assertEqual(updater._failure_category(err), "certificate")
+
+    def test_build_runtime_falls_back_to_uv_venv_without_ensurepip(self):
+        import setup as setup_mod
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as raw:
+            generation = self._generation(Path(raw))
+            calls = []
+            run = lambda argv, stdin, **kw: calls.append((list(argv), kw)) or ""
+            with patch.object(setup_mod, "ensurepip_available", return_value=False), \
+                 patch.object(updater.shutil, "which",
+                              side_effect=lambda name: "/usr/local/bin/uv" if name == "uv" else None), \
+                 patch.object(updater, "bounded_run", side_effect=run):
+                updater.build_runtime(generation, time.monotonic() + 240)
+            self.assertEqual(calls[0][0][:3], ["/usr/local/bin/uv", "venv", "--seed"])
+            install = next(argv for argv, _kw in calls if "install" in argv)
+            self.assertEqual(install[0], "/usr/local/bin/uv")
+            self.assertEqual(install[1:3], ["pip", "install"])
+
+    def test_build_runtime_without_ensurepip_or_uv_fails_visibly(self):
+        import setup as setup_mod
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as raw:
+            generation = self._generation(Path(raw))
+            calls = []
+            run = lambda argv, stdin, **kw: calls.append((list(argv), kw)) or ""
+            with patch.object(setup_mod, "ensurepip_available", return_value=False), \
+                 patch.object(updater.shutil, "which", return_value=None), \
+                 patch.object(updater, "bounded_run", side_effect=run):
+                with self.assertRaises(updater.CheckFailed) as caught:
+                    updater.build_runtime(generation, time.monotonic() + 240)
+            message = str(caught.exception)
+            self.assertIn("python3-venv", message)
+            self.assertIn("uv", message)
+            self.assertEqual(calls, [])
+
+
+class StaleFailureFieldTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        tmp = Path(self._tmp.name)
+        self.tmp = tmp
+        self.src, self.bare, self.sha = make_remote(tmp)
+        self.config_path = make_config(tmp / "cfg", sharing=True,
+                                       roots=[tmp / "cfg"])
+        data = json.loads(self.config_path.read_text())
+        data["update_remote"] = str(self.bare)
+        data["kimi_home"] = str(tmp / "kimi-home")
+        write_json(self.config_path, data)
+        self.adapter = data
+        os.environ["MINDIE_KIMI_CONFIG"] = str(self.config_path)
+        bootstrap = genstate.launch_dir(self.adapter) / "bootstrap" / "mindie_launch.py"
+        bootstrap.parent.mkdir(parents=True, exist_ok=True)
+        bootstrap.write_text("# live bootstrap launcher\n")
+        self._sync = updater._feed_sync
+        updater._feed_sync = lambda adapter, deadline: True
+        self.installs = []
+
+    def tearDown(self):
+        updater._feed_sync = self._sync
+        os.environ.pop("MINDIE_KIMI_CONFIG", None)
+        self._tmp.cleanup()
+
+    def fake_install(self, adapter, package, deadline, reserve=0.0):
+        manifest = json.loads((Path(package) / "kimi.plugin.json").read_text())
+        return {"install": {"body": {"data": dict(
+            id=manifest["name"], version=manifest["version"], enabled=True,
+            state="ok", hasErrors=False,
+            originalSource=str(Path(package).resolve()),
+            mcpServerCount=len(manifest.get("mcpServers") or {}),
+        )}}, "after": {"body": {"data": {"plugins": []}}}}
+
+    def run_check(self, **kw):
+        args = dict(build=fake_build, install=self.fake_install)
+        args.update(kw)
+        return updater.check(self.adapter, **args)
+
+    def test_confirmed_stop_clears_stale_service_handoff(self):
+        genstate.write_status(dict(
+            result="failed",
+            service_handoff={"status": "failed",
+                             "error": "stop-outcome-unconfirmed",
+                             "sha": "c" * 40},
+        ), self.adapter)
+        current = genstate.read_current(self.adapter)
+        from unittest.mock import patch
+
+        with patch.object(updater, "bounded_run",
+                          return_value=json.dumps({"idle": True, "service": "absent"})):
+            updater.stop_if_idle(self.adapter, current, time.monotonic() + 240)
+        status = genstate.read_status(self.adapter)
+        self.assertNotIn("service_handoff", status)
+
+    def test_switch_success_clears_rollback_and_pointer_ghosts(self):
+        genstate.write_status(dict(
+            result="failed",
+            rollback=("native restore FAILED (boom); previous generation "
+                      "NOT proven restored"),
+            pointer_restore="pointer restore FAILED: disk hiccup",
+            feed_error="unrelated-field-stays",
+        ), self.adapter)
+        self.assertEqual(self.run_check(), 0)
+        status = genstate.read_status(self.adapter)
+        self.assertEqual(status["result"], "switched")
+        self.assertNotIn("rollback", status)
+        self.assertNotIn("pointer_restore", status)
+        self.assertEqual(status.get("feed_error"), "unrelated-field-stays")
+        # A following clean check reads current, never degraded from ghosts.
+        self.assertEqual(self.run_check(), 0)
+        status = genstate.read_status(self.adapter)
+        self.assertEqual(status["result"], "current")
+
+    def test_deferred_switch_keeps_unresolved_ghosts(self):
+        genstate.write_status(dict(
+            result="failed",
+            rollback=("native restore FAILED (boom); previous generation "
+                      "NOT proven restored"),
+            pointer_restore="pointer restore FAILED: disk hiccup",
+        ), self.adapter)
+
+        def busy(adapter, current, deadline):
+            raise updater.Deferred("service has actual active work; switch deferred")
+
+        self.assertEqual(self.run_check(idle=busy), 0)
+        status = genstate.read_status(self.adapter)
+        self.assertEqual(status["result"], "deferred")
+        self.assertIn("FAILED", status["rollback"])
+        self.assertIn("FAILED", status["pointer_restore"])
+
+
 if __name__ == "__main__":
     unittest.main()

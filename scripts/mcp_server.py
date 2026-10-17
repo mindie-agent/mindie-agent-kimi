@@ -25,7 +25,8 @@ from paths import load_adapter_config, load_engine_config, state_dir
 MAX_YIELD_TIME_MS = 30000
 REMOTE_ERROR_CATEGORIES = frozenset({
     "internal", "caller", "validation", "permission", "remote_execution",
-    "cancelled", "connection_capacity", "connection_timeout",
+    "cancelled", "cancel_unconfirmed", "cleanup", "configuration",
+    "process_start", "connection_capacity", "connection_timeout",
     "connection_unavailable", "rpc_disconnected", "rpc_send", "rpc_timeout",
     "command_exit", "command_protocol", "command_timeout", "remote_worker",
     "worker_capacity",
@@ -94,42 +95,37 @@ KNOWLEDGE_TOOLS = [
     ),
     dict(
         name="knowledge_query",
-        description="Search the selected domain's knowledge and experience. References are advisory.",
+        description=(
+            "Search the selected domain's knowledge and experience. Each match has a "
+            "readable block ref and a feedback_ref. For more related matches, pass "
+            "related_next as continuation without query. A changed corpus rejects "
+            "the continuation. References are advisory."
+        ),
         inputSchema=dict(
             type="object",
             properties=dict(
                 query={"type": "string"},
                 limit={"type": "integer", "minimum": 1, "maximum": 20},
                 conditions={"type": "object"},
+                continuation={"type": "string"},
                 request_nonce=NONCE_PROP,
             ),
-            required=["query", "request_nonce"],
+            required=["request_nonce"],
             additionalProperties=False,
         ),
     ),
     dict(
         name="knowledge_explain",
         description=(
-            "Read one page of a domain reference. The page is a slice, not the full case. "
-            "offset and limit are Unicode characters, not lines or bytes. "
-            "When next_offset is an integer, pass it as offset to read another page only if that page is still relevant; "
-            "do not count characters. next_offset is null at the end."
+            "Read one domain reference: a task ref returns the current navigation and "
+            "first_block_ref; a block ref returns that immutable block with "
+            "previous_block_ref/next_block_ref for walking the task. "
+            "The content is a reference slice, not the full case or a verified report."
         ),
         inputSchema=dict(
             type="object",
             properties=dict(
                 ref={"type": "string"},
-                offset={
-                    "type": "integer",
-                    "minimum": 0,
-                    "description": "Unicode character offset. Use the previous next_offset; omit for the first page.",
-                },
-                limit={
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 32768,
-                    "description": "Maximum Unicode characters in this page.",
-                },
                 request_nonce=NONCE_PROP,
             ),
             required=["ref", "request_nonce"],
@@ -266,6 +262,13 @@ def knowledge_call(name, args, session):
     from mindie_knowledge.loop.activation import Admission
     from paths import admission_path, engine_config_path
 
+    if name == "knowledge_query":
+        # Keep the native schema a plain object; enforce the shared argument
+        # contract before any service/storage operation.
+        from mindie_knowledge.materials.provenance import query_request
+
+        query_request(args.get("query"), args.get("limit", 5),
+                      args.get("conditions"), args.get("continuation"))
     engine = load_engine_config()
     if Admission(admission_path(engine)).active_lease(session) is None:
         raise ValueError(
@@ -282,7 +285,7 @@ def knowledge_call(name, args, session):
         connection,
         method,
         dict(args, _session_id=session, _session_verified=True),
-        timeout=5,
+        timeout=None,
     )
 
 
@@ -331,7 +334,7 @@ def handle(surface, message):
             result=dict(
                 protocolVersion="2025-11-25",
                 capabilities={"tools": {}},
-                serverInfo={"name": f"mindie-kimi-{surface}", "version": "0.1.0"},
+                serverInfo={"name": f"mindie-kimi-{surface}", "version": "0.0.1"},
             ),
         )
     if method == "ping":
