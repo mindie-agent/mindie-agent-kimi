@@ -533,10 +533,52 @@ def stop_if_idle(adapter: dict, current: dict, deadline: float) -> dict:
                 "error": "invalid-stop-result", "sha": current.get("sha")})
         raise CheckFailed("stop result unconfirmed; service needs attention") from None
     if result.get("service") != "stopped":
-        _record(adapter, service_handoff=previous_handoff)
+        if isinstance(previous_handoff, dict) and previous_handoff.get("status") in {
+            "failed",
+            "pending",
+        }:
+            # The stop outcome is now confirmed: an absent service is not
+            # down-for-attention (it starts on demand) and a busy service is
+            # demonstrably alive — the earlier handoff failure is resolved.
+            _clear_status_fields(adapter, "service_handoff")
+        else:
+            _record(adapter, service_handoff=previous_handoff)
     if result.get("idle") is not True:
         raise Deferred("service has actual active work; switch deferred")
     return result
+
+
+def _clear_status_fields(adapter, *names):
+    """Drop live-status fields whose stage has since succeeded. Failure
+    evidence stays in the diagnostics event log and failed.json history."""
+    status = read_status(adapter)
+    changed = False
+    for name in names:
+        if name in status:
+            status.pop(name)
+            changed = True
+    if changed:
+        write_status(status, adapter)
+
+
+def _clear_switch_ghosts(adapter):
+    """A proven install + pointer flip resolves earlier native failure
+    records of the SAME stages (rollback/pointer restore). Unrelated or
+    still-unresolved fields are left untouched."""
+    status = read_status(adapter)
+    changed = False
+    rollback = status.get("rollback")
+    if isinstance(rollback, str) and (
+        rollback.startswith("native restore FAILED")
+        or rollback.startswith("no retained previous host package")
+    ):
+        status.pop("rollback")
+        changed = True
+    if "pointer_restore" in status:
+        status.pop("pointer_restore")
+        changed = True
+    if changed:
+        write_status(status, adapter)
 
 
 def _readback(adapter: dict, deadline: float, reserve: float = RESERVE) -> dict:
@@ -648,6 +690,7 @@ def switch(adapter: dict, current: dict, generation: Path, python: Path,
                 "sha": sha,
             }
             write_current(final, adapter)
+            _clear_switch_ghosts(adapter)
         except Exception:
             # Install, pointer flip AND rollback stay under the SAME
             # exclusive lock. Restore the previous committed tuple
