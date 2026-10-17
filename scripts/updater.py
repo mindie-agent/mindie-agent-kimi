@@ -216,13 +216,24 @@ def build_runtime(generation: Path, deadline: float) -> Path:
         raise CheckFailed("runtime-requirements.txt must pin full commit SHAs, not @main")
     venv = generation / ".venv"
     python = _venv_python(venv)
-    bounded_run([sys.executable, "-m", "venv", str(venv)], "",
-                timeout=min(180, _remaining(deadline, RESERVE)))
+    uv = shutil.which("uv")
+    from setup import ensurepip_available
+
+    if ensurepip_available():
+        bounded_run([sys.executable, "-m", "venv", str(venv)], "",
+                    timeout=min(180, _remaining(deadline, RESERVE)))
+    elif uv is not None:
+        bounded_run([uv, "venv", "--seed", str(venv)], "",
+                    timeout=min(180, _remaining(deadline, RESERVE)))
+    else:
+        raise CheckFailed(
+            "python venv support is missing (ensurepip unavailable) and uv is "
+            "not on PATH; install python3-venv or uv, then recover"
+        )
     # The pinned tree (three git builds plus langmem/reme) cannot cold-build
     # inside the check budget with pip; uv resolves and builds it in time. A
     # missing uv is not an error: the pip path remains the fallback. Both
     # stay inside the same bounded window and fail visibly either way.
-    uv = shutil.which("uv")
     if uv is not None:
         bounded_run(
             [uv, "pip", "install", "--python", str(python), "-r", str(requirements)],

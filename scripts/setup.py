@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import secrets
 import shutil
+import subprocess
 import sys
 import time
 
@@ -250,6 +251,39 @@ def write_community(path, community, consent_config=None, python=None):
     return 'enabled' if result['enabled'] else 'off'
 
 
+def ensurepip_available(python=None) -> bool:
+    """Cheap up-front probe: stock Ubuntu server images lack python3-venv,
+    so ``python -m venv`` aborts on the missing ensurepip module."""
+    interpreter = str(python or sys.executable)
+    try:
+        probe = subprocess.run(
+            [interpreter, "-m", "ensurepip", "--version"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return probe.returncode == 0
+
+
+def create_venv(venv: Path, *, timeout) -> None:
+    """Create the pinned venv, preferring the stdlib and falling back to
+    ``uv venv --seed`` (uv is a declared base tool) when ensurepip is
+    missing. A machine with neither gets both remedies in one clear error."""
+    if ensurepip_available():
+        run([sys.executable, "-m", "venv", str(venv)], "", timeout=timeout)
+        return
+    uv = shutil.which("uv")
+    if uv is None:
+        raise SystemExit(
+            "python venv support is missing (ensurepip is unavailable) and uv "
+            "was not found on PATH; install the python3-venv OS package "
+            "(e.g. apt install python3.12-venv) or uv, then rerun setup"
+        )
+    run([uv, "venv", "--seed", str(venv)], "", timeout=timeout)
+
+
 def build_bootstrap_runtime(domain_root: Path) -> str:
     """Fresh install builds its own pinned venv from runtime-requirements.txt;
     no hand-created venv required."""
@@ -264,7 +298,7 @@ def build_bootstrap_runtime(domain_root: Path) -> str:
         PIP_DISABLE_PIP_VERSION_CHECK="1",
         GIT_TERMINAL_PROMPT="0",
     )
-    run([sys.executable, "-m", "venv", str(venv)], "", timeout=180)
+    create_venv(venv, timeout=180)
     run(
         [str(python), "-m", "pip", "install", "-r",
          str(PLUGIN_ROOT / "runtime-requirements.txt")],

@@ -115,6 +115,53 @@ class SetupInstallTests(unittest.TestCase):
                 Path(sys.executable).resolve(),
             )
 
+    def test_bootstrap_runtime_uses_stdlib_venv_when_ensurepip_present(self):
+        import setup
+
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            calls = []
+            from unittest.mock import patch
+
+            with patch.object(setup, "ensurepip_available", return_value=True), \
+                 patch.object(setup.shutil, "which", return_value=None), \
+                 patch.object(setup, "run", side_effect=lambda argv, stdin, **kw: calls.append(list(argv)) or ""):
+                setup.build_bootstrap_runtime(tmp)
+            self.assertEqual(calls[0][:3], [sys.executable, "-m", "venv"])
+            self.assertEqual(calls[1][1:4], ["-m", "pip", "install"])
+
+    def test_bootstrap_runtime_falls_back_to_uv_venv_without_ensurepip(self):
+        import setup
+
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            calls = []
+            from unittest.mock import patch
+
+            with patch.object(setup, "ensurepip_available", return_value=False), \
+                 patch.object(setup.shutil, "which", return_value="/usr/local/bin/uv"), \
+                 patch.object(setup, "run", side_effect=lambda argv, stdin, **kw: calls.append(list(argv)) or ""):
+                setup.build_bootstrap_runtime(tmp)
+            self.assertEqual(
+                calls[0][:3], ["/usr/local/bin/uv", "venv", "--seed"]
+            )
+            self.assertEqual(calls[1][1:4], ["-m", "pip", "install"])
+
+    def test_bootstrap_runtime_without_ensurepip_or_uv_names_both_remedies(self):
+        import setup
+
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            from unittest.mock import patch
+
+            with patch.object(setup, "ensurepip_available", return_value=False), \
+                 patch.object(setup.shutil, "which", return_value=None):
+                with self.assertRaises(SystemExit) as caught:
+                    setup.build_bootstrap_runtime(tmp)
+            message = str(caught.exception)
+            self.assertIn("python3-venv", message)
+            self.assertIn("uv", message)
+
     def test_requirements_are_pinned_commits(self):
         expected = {
             "mindie-knowledge": "https://github.com/mindie-agent/knowledge",
