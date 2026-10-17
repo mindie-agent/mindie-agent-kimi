@@ -186,9 +186,17 @@ def _op_timeout(deadline: float, reserve: float, cap: float) -> float:
 
 def _git_bin():
     """The git executable for one updater call: MINDIE_KIMI_GIT_BIN wins,
-    then the adapter config's stamped absolute path (the scheduled task
-    fires in a reduced environment whose PATH lacks git), else bare git —
-    a missing executable then fails visibly, never as a network fault."""
+    then the adapter config's stamped absolute path, then the same
+    deterministic resolution used at stamp time (PATH, then the standard
+    Git-for-Windows locations). The last step matters for a pre-fix
+    install: its adapter config has no stamp, and the Session-0 scheduled
+    task is its only update driver — with a bare-git fallback it could
+    never produce a first stamp, so the fix would never reach it. On a
+    standard Git-for-Windows install the scheduled fire now succeeds even
+    unstamped; a non-standard layout gets its stamp at the next
+    successful flip or setup. Bare git remains only when nothing
+    resolved, so a truly absent executable still fails visibly, never as
+    a network fault."""
     explicit = os.environ.get("MINDIE_KIMI_GIT_BIN")
     if explicit:
         return explicit
@@ -200,6 +208,14 @@ def _git_bin():
         stamped = None
     if isinstance(stamped, str) and stamped:
         return stamped
+    try:
+        from paths import resolve_git_bin
+
+        resolved = resolve_git_bin()
+    except (OSError, ValueError):
+        resolved = None
+    if isinstance(resolved, str) and resolved:
+        return resolved
     return "git"
 
 
