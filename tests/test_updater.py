@@ -538,5 +538,86 @@ class UpdaterTests(unittest.TestCase):
         self.assertEqual(command[4:], ["updater", "check"])
 
 
+class BuildRuntimeAndFailureClassTests(unittest.TestCase):
+    def _generation(self, tmp: Path) -> Path:
+        generation = tmp / "generation"
+        generation.mkdir()
+        (generation / "runtime-requirements.txt").write_text(
+            "mindie-knowledge @ git+https://github.com/mindie-agent/knowledge"
+            "@81fb4e222f0cba5cffe50824ffd55b33d312283d\n"
+        )
+        return generation
+
+    def _build_calls(self, which):
+        from unittest.mock import patch
+
+        calls = []
+        run = lambda argv, stdin, **kw: calls.append((list(argv), kw)) or ""
+        return patch.object(updater.shutil, "which", side_effect=which), \
+            patch.object(updater, "bounded_run", side_effect=run), calls
+
+    def test_build_runtime_prefers_uv_when_available(self):
+        with tempfile.TemporaryDirectory() as raw:
+            generation = self._generation(Path(raw))
+            found_uv = "/usr/local/bin/uv"
+            which, run, calls = self._build_calls(
+                lambda name: found_uv if name == "uv" else None)
+            with which, run:
+                updater.build_runtime(generation, time.monotonic() + 240)
+            install = next(argv for argv, _kw in calls if "install" in argv)
+            self.assertEqual(install[0], found_uv)
+            self.assertEqual(install[1:3], ["pip", "install"])
+            self.assertIn("--python", install)
+            self.assertEqual(calls[0][0][1:3], ["-m", "venv"])
+
+    def test_build_runtime_falls_back_to_pip_without_uv(self):
+        with tempfile.TemporaryDirectory() as raw:
+            generation = self._generation(Path(raw))
+            which, run, calls = self._build_calls(lambda _name: None)
+            with which, run:
+                updater.build_runtime(generation, time.monotonic() + 240)
+            install = next(argv for argv, _kw in calls if "install" in argv)
+            self.assertEqual(Path(install[0]).name.split(".")[0], "python")
+            self.assertEqual(install[1:4], ["-m", "pip", "install"])
+
+    def test_missing_uv_is_not_an_error(self):
+        with tempfile.TemporaryDirectory() as raw:
+            generation = self._generation(Path(raw))
+            which, run, _calls = self._build_calls(lambda _name: None)
+            with which, run:
+                python = updater.build_runtime(generation, time.monotonic() + 240)
+            self.assertEqual(python, updater._venv_python(generation / ".venv"))
+
+    def test_staging_deadline_is_not_reported_as_network_failure(self):
+        # bounded attaches temporary_network to a transport timeout as a
+        # guess; a deadline is its own honest, retryable class.
+        err = updater.CommandTimedOut("command timed out after 127s",
+                                      category="temporary_network")
+        self.assertEqual(updater._failure_category(err), "deadline")
+        with tempfile.TemporaryDirectory() as raw:
+            adapter = {"state_dir": raw}
+            record = updater._remember_failure(adapter, "b" * 40, err)
+            self.assertEqual(record["failure_class"], "deadline")
+            self.assertIn(record["failure_class"], updater._RETRYABLE)
+            self.assertEqual(record["error"], updater._STATIC_FAILURE["deadline"])
+            self.assertGreater(record["next_retry_at"], time.time())
+
+    def test_network_failure_still_reports_temporary_network(self):
+        err = RuntimeError("command failed (6)")
+        err.category = "temporary_network"
+        self.assertEqual(updater._failure_category(err), "temporary_network")
+        with tempfile.TemporaryDirectory() as raw:
+            adapter = {"state_dir": raw}
+            record = updater._remember_failure(adapter, "b" * 40, err)
+            self.assertEqual(record["failure_class"], "temporary_network")
+            self.assertEqual(
+                record["error"], updater._STATIC_FAILURE["temporary_network"])
+
+    def test_classified_timeout_keeps_its_specific_class(self):
+        err = updater.CommandTimedOut("command timed out after 30s",
+                                      category="certificate")
+        self.assertEqual(updater._failure_category(err), "certificate")
+
+
 if __name__ == "__main__":
     unittest.main()

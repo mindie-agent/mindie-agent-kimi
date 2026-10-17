@@ -38,6 +38,7 @@ if str(HERE) not in sys.path:
 import diagnostic_support
 
 try:
+    from bounded import CommandTimedOut
     from bounded import run as bounded_run
     from genstate import (
         LockTimeout,
@@ -88,6 +89,8 @@ PIP_ENV = dict(
     PIP_NO_INPUT="1",
     PIP_DISABLE_PIP_VERSION_CHECK="1",
 )
+# uv is non-interactive by design; git pins still shell out to git.
+UV_ENV = dict(os.environ, GIT_TERMINAL_PROMPT="0")
 
 _FEED_OK = frozenset({"synced", "unchanged"})
 _FEED_PENDING = frozenset({"busy", "deferred"})
@@ -215,6 +218,21 @@ def build_runtime(generation: Path, deadline: float) -> Path:
     python = _venv_python(venv)
     bounded_run([sys.executable, "-m", "venv", str(venv)], "",
                 timeout=min(180, _remaining(deadline, RESERVE)))
+    # The pinned tree (three git builds plus langmem/reme) cannot cold-build
+    # inside the check budget with pip; uv resolves and builds it in time. A
+    # missing uv is not an error: the pip path remains the fallback. Both
+    # stay inside the same bounded window and fail visibly either way.
+    uv = shutil.which("uv")
+    if uv is not None:
+        bounded_run(
+            [uv, "pip", "install", "--python", str(python), "-r", str(requirements)],
+            "",
+            timeout=min(600, _remaining(deadline, RESERVE)),
+            max_output=512 * 1024,
+            env=UV_ENV,
+            transport=True,
+        )
+        return python
     bounded_run(
         [str(python), "-m", "pip", "install", "-r", str(requirements)],
         "",
@@ -685,12 +703,13 @@ def _record(adapter, **fields) -> dict:
     return status
 
 
-_RETRYABLE = frozenset({"temporary_network", "rate_limited"})
+_RETRYABLE = frozenset({"temporary_network", "rate_limited", "deadline"})
 _ACTIONABLE = frozenset({"authentication", "permission", "hook_trust", "certificate"})
 _QUARANTINE = frozenset({"resolver", "bad_content"})
 _STATIC_FAILURE = {
     "temporary_network": "temporary network failure",
     "rate_limited": "rate limited",
+    "deadline": "operation deadline exceeded",
     "authentication": "authentication failed",
     "permission": "permission denied",
     "hook_trust": "host hook trust required",
@@ -715,6 +734,13 @@ def _retry_delay(count, retry_after=None):
 
 def _failure_category(exc):
     category = getattr(exc, "category", None)
+    if isinstance(exc, CommandTimedOut) and category == "temporary_network":
+        # A bounded transport deadline is its own honest class: the
+        # operation ran out of time (e.g. a slow cold build), which is not
+        # evidence of a network fault. Specific output-classified causes
+        # (certificate, rate limit, authentication) are kept as classified,
+        # and an unclassified timeout stays an unknown, guarded outcome.
+        return "deadline"
     if category in _RETRYABLE or category in _ACTIONABLE or category in _QUARANTINE:
         return category
     return None
