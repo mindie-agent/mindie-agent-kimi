@@ -180,6 +180,50 @@ class UpdaterTests(unittest.TestCase):
         self.assertEqual(status["result"], "switched")
         self.assertNotIn("resolve_failure_class", status)
 
+    def test_unstamped_check_resolves_via_standard_dir_and_switches(self):
+        """The pre-fix-install scenario: no stamp, Session-0 PATH, and a
+        standard Git-for-Windows layout — the first stamp can now happen."""
+        import shutil as shutil_mod
+        import types
+
+        git = shutil_mod.which("git")
+        self.assertIsNotNone(git, "test requires git on PATH")
+        standard = self.tmp / "std-git" / ("git.exe" if os.name == "nt" else "git")
+        standard.parent.mkdir()
+        try:
+            os.symlink(git, standard)
+        except (OSError, NotImplementedError):
+            shutil_mod.copy2(git, standard)
+        self.assertNotIn("git_bin", self.adapter)
+        # Simulate the nt standard-dir branch with real paths: replace
+        # paths.os (the module uses only environ/path/name) instead of
+        # os.name, so pathlib never instantiates the wrong concrete class.
+        fake_os = types.SimpleNamespace(
+            name="nt", environ=os.environ, path=os.path
+        )
+        os.environ.pop("MINDIE_KIMI_GIT_BIN", None)
+        from unittest.mock import patch
+
+        import paths
+
+        with patch("paths.shutil.which", return_value=None), \
+             patch("paths.GIT_WINDOWS_LOCATIONS", (str(standard),)), \
+             patch.object(paths, "os", fake_os), \
+             patch.dict(updater.GIT_ENV, {"PATH": "/nonexistent-mindie"}):
+            self.assertEqual(updater._git_bin(), str(standard))
+            self.assertEqual(self.run_check(), 0)
+        status = genstate.read_status(self.adapter)
+        self.assertEqual(status["result"], "switched")
+
+    def test_git_bin_falls_back_to_bare_git_when_nothing_resolves(self):
+        from unittest.mock import patch
+
+        self.assertNotIn("git_bin", self.adapter)
+        os.environ.pop("MINDIE_KIMI_GIT_BIN", None)
+        with patch("paths.shutil.which", return_value=None), \
+             patch("paths.GIT_WINDOWS_LOCATIONS", (str(self.tmp / "no-std-git"),)):
+            self.assertEqual(updater._git_bin(), "git")
+
     def test_missing_git_is_an_honest_failure_not_a_network_one(self):
         from unittest.mock import patch
 
