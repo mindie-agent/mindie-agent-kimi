@@ -19,6 +19,7 @@ from support import (
     SCRIPTS,
     make_config,
     plugin_origin,
+    stop_real_services,
     turn_records,
     write_json,
     write_session,
@@ -66,6 +67,9 @@ class GenerationAuthorityTests(unittest.TestCase):
             else:
                 os.environ[key] = value
         _kill_wakes(self.tmp)
+        # A real spawned service outlives its fixture unless stopped
+        # explicitly; on Windows its open handles otherwise pin the store.
+        stop_real_services(self.tmp / "kimi.engine.json")
         self._scratch.cleanup()
 
     def _flipped(self, *, sharing=False):

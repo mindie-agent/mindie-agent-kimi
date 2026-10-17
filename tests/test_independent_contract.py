@@ -28,6 +28,7 @@ from support import (
     make_config,
     plugin_origin,
     run_bridge,
+    stop_real_services,
     turn_records,
     write_json,
     write_session,
@@ -396,6 +397,9 @@ class LaneIsolation(unittest.TestCase):
         import shutil
 
         _kill_wakes(self.tmp)
+        # A real spawned service outlives its fixture unless stopped
+        # explicitly; on Windows its open handles otherwise pin the store.
+        stop_real_services(self.tmp / "kimi.engine.json")
         if self._scratch is None:
             shutil.rmtree(self.tmp, ignore_errors=True)
         else:
@@ -1497,6 +1501,92 @@ class EntryBoundaryTests(LaneIsolation):
             saved.get("lane_marker"), "keep-me",
             "adopt wrote the pre-lock adapter snapshot and dropped a concurrent field",
         )
+
+
+class StopRealServicesTests(unittest.TestCase):
+    """The cleanup helper requests the core stop and waits for release."""
+
+    def _fixture(self, tmp: Path):
+        engine = tmp / "kimi.engine.json"
+        domain = tmp / "domain" / "vllm-ascend"
+        domain.mkdir(parents=True)
+        (domain / "consumer.lock").touch()
+        engine.write_text(json.dumps({
+            "root": str(tmp / "domain"),
+            "domain": "vllm-ascend",
+            "transcript_adapter": str(SCRIPTS / "transcript.py"),
+            "redactor_executable": str(SCRIPTS / "transcript.py"),
+        }))
+        return engine, domain / "consumer.lock"
+
+    def _patched_core(self, *, released_after):
+        from unittest.mock import patch
+
+        state = {"polls": 0, "stopped": 0, "sleeps": []}
+
+        def rpc(connection, method, arguments=None, *, timeout=None):
+            state["stopped"] += 1
+            self.assertEqual(method, "stop")
+            return {"status": "stopping"}
+
+        def lock_held(path):
+            state["polls"] += 1
+            return False if state["polls"] > released_after else True
+
+        def sleep(_seconds):
+            state["sleeps"].append(1)
+
+        return state, [
+            patch("mindie_knowledge.loop.cli.connect", return_value={"url": "x", "token": "y"}),
+            patch("mindie_knowledge.loop.cli.rpc", side_effect=rpc),
+            patch("mindie_knowledge.loop.locks.lock_held", side_effect=lock_held),
+        ], sleep
+
+    def test_stop_waits_for_lock_release_within_budget(self):
+        with tempfile.TemporaryDirectory() as raw:
+            engine, _consumer = self._fixture(Path(raw))
+            state, patches, sleep = self._patched_core(released_after=3)
+            for patcher in patches:
+                patcher.start()
+                self.addCleanup(patcher.stop)
+            stop_real_services(engine, timeout=5.0, sleep=sleep)
+            self.assertEqual(state["stopped"], 1)
+            self.assertEqual(state["polls"], 4)
+            self.assertEqual(len(state["sleeps"]), 3)
+
+    def test_unconfirmed_stop_fails_loudly(self):
+        with tempfile.TemporaryDirectory() as raw:
+            engine, _consumer = self._fixture(Path(raw))
+            from unittest.mock import patch
+
+            with patch("mindie_knowledge.loop.cli.connect",
+                       return_value={"url": "x", "token": "y"}), \
+                 patch("mindie_knowledge.loop.cli.rpc",
+                       side_effect=ConnectionError("gone")):
+                with self.assertRaises(AssertionError):
+                    stop_real_services(engine, timeout=1.0)
+
+    def test_service_outliving_the_budget_fails_loudly(self):
+        with tempfile.TemporaryDirectory() as raw:
+            engine, _consumer = self._fixture(Path(raw))
+            state, patches, sleep = self._patched_core(released_after=10**9)
+            for patcher in patches:
+                patcher.start()
+                self.addCleanup(patcher.stop)
+            with self.assertRaises(AssertionError):
+                stop_real_services(engine, timeout=0.01, sleep=sleep)
+
+    def test_no_endpoint_is_a_fast_noop(self):
+        with tempfile.TemporaryDirectory() as raw:
+            engine, _consumer = self._fixture(Path(raw))
+            from unittest.mock import patch
+
+            with patch("mindie_knowledge.loop.cli.connect",
+                       side_effect=FileNotFoundError("no connection")) as connect:
+                started = time.monotonic()
+                stop_real_services(engine, timeout=5.0)
+                self.assertLess(time.monotonic() - started, 1.0)
+            connect.assert_called_once()
 
 
 if __name__ == "__main__":

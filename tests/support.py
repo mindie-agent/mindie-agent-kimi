@@ -5,10 +5,53 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 FIXTURES = ROOT / "tests" / "fixtures"
+
+
+def stop_real_services(engine_config, *, timeout=8.0, sleep=time.sleep):
+    """Stop a real knowledge service spawned for this fixture's store, then
+    wait (bounded) for the store's owner lock to release.
+
+    The whole suite is one owner process, so nothing else makes a spawned
+    detached service exit mid-suite; on Windows its open catalog handle pins
+    the store files against TemporaryDirectory cleanup, and on POSIX a leak
+    pollutes later ports/locks. The stop uses the same core path the adapter
+    uses (connect + rpc stop over the fixture's own engine config; the
+    consumer.lock release is the core's own "listener and store closed"
+    evidence). Fast no-op when no endpoint was ever started. An unconfirmed
+    stop or a service that outlives the budget fails loudly — a process is
+    never silently leaked.
+    """
+    from mindie_knowledge.loop import cli as core_cli
+    from mindie_knowledge.loop.locks import lock_held
+
+    try:
+        config = core_cli.config_at(str(engine_config))
+    except (OSError, ValueError):
+        return
+    consumer = Path(config["root"]) / config["domain"] / "consumer.lock"
+    try:
+        connection = core_cli.connect(config)
+    except (FileNotFoundError, OSError, ValueError):
+        return
+    try:
+        core_cli.rpc(connection, "stop", timeout=2.0)
+    except Exception as exc:
+        raise AssertionError(
+            f"knowledge service stop was not confirmed: {type(exc).__name__}"
+        ) from None
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not consumer.exists() or lock_held(consumer) is False:
+            return
+        sleep(0.05)
+    raise AssertionError(
+        "knowledge service did not release the store within the cleanup budget"
+    )
 
 
 def deny_read(path):
