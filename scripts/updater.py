@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """MindIE Kimi automatic updater. One bounded check per invocation.
 
-Driven by the OS scheduler (launchd every 5 minutes on macOS; Windows
-task registration code is present but not natively verified). No daemon,
-no model, no SessionStart work.
+Driven by the OS scheduler (launchd every 5 minutes on macOS; a verified
+Task Scheduler registration on Windows). No daemon, no model, no
+SessionStart work.
 
 check: serialized by a nonblocking check.lock under one absolute
 deadline. Resolve remote main to one SHA -> stage an immutable
@@ -1318,6 +1318,67 @@ def recover() -> int:
     return check(adapter, force=True)
 
 
+def _wrapper_body(command) -> str:
+    """Batch body carrying the complete quoted call. %% doubling keeps
+    literal percent signs in paths intact through cmd expansion; ampersands
+    and carets are literal inside the double quotes."""
+    return (
+        "@echo off\r\n"
+        + " ".join(f'"{item}"' for item in command).replace("%", "%%")
+        + "\r\n"
+    )
+
+
+def _schedule_wrapper(adapter: dict, command) -> Path:
+    """Stable wrapper the Task Scheduler action references, so a long
+    launcher/config path can never be truncated by schtasks /TR (the
+    observed failure: the stored <Arguments> ended mid-word and every fire
+    exited 2 on 'updater che'). Owned by the adapter and rewritten
+    idempotently on each install-schedule."""
+    wrapper = update_dir(adapter) / "MindIEKimiUpdate.cmd"
+    update_dir(adapter).mkdir(parents=True, exist_ok=True)
+    body = _wrapper_body(command)
+    try:
+        raw = body.encode("mbcs" if os.name == "nt" else "utf-8")
+    except UnicodeEncodeError:
+        raise SystemExit(
+            "launcher or config path is not representable in the Windows "
+            "console codepage; the scheduled task was not registered"
+        ) from None
+    tmp = wrapper.with_name(wrapper.name + f".tmp-{os.getpid()}")
+    tmp.write_bytes(raw)
+    os.replace(tmp, wrapper)
+    return wrapper
+
+
+def _verify_scheduled_task(wrapper: Path) -> None:
+    """Read the registered task back: the action must reference the wrapper
+    and the wrapper must carry the complete command. A truncated or
+    mismatched registration is a loud setup failure, never silent."""
+    output = bounded_run(
+        ["schtasks", "/Query", "/TN", "MindIEKimiUpdate", "/XML"], "", timeout=30
+    )
+    needle = str(wrapper)
+    if needle not in output and needle.replace("&", "&amp;") not in output:
+        raise SystemExit(
+            "scheduled task readback does not reference the wrapper action; "
+            "the registration is not trusted"
+        )
+
+
+def _register_windows_schedule(adapter: dict, command) -> dict:
+    wrapper = _schedule_wrapper(adapter, command)
+    bounded_run(
+        ["schtasks", "/Create", "/F", "/TN", "MindIEKimiUpdate",
+         "/SC", "MINUTE", "/MO", "5", "/TR", f'"{wrapper}"'],
+        "",
+        timeout=30,
+    )
+    _verify_scheduled_task(wrapper)
+    return {"result": "scheduled", "task": "MindIEKimiUpdate",
+            "action": str(wrapper), "verified": True}
+
+
 def install_schedule(config_file=None) -> int:
     if config_file is not None:
         config_file = Path(config_file).expanduser().absolute()
@@ -1357,16 +1418,7 @@ def install_schedule(config_file=None) -> int:
                           "interval_seconds": INTERVAL_SECONDS}))
         return 0
     if os.name == "nt":
-        # Windows registration: explicit but NOT natively verified.
-        task = " ".join(f'"{item}"' for item in command)
-        bounded_run(
-            ["schtasks", "/Create", "/F", "/TN", "MindIEKimiUpdate",
-             "/SC", "MINUTE", "/MO", "5", "/TR", task],
-            "",
-            timeout=30,
-        )
-        print(json.dumps({"result": "scheduled", "task": "MindIEKimiUpdate",
-                          "verified": False}))
+        print(json.dumps(_register_windows_schedule(adapter, command)))
         return 0
     print(json.dumps({
         "result": "unsupported-platform",
