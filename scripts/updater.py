@@ -319,7 +319,7 @@ def build_host_package(generation: Path, adapter: dict, sha: str,
         shutil.rmtree(package)
     package.mkdir(parents=True)
     manifest = json.loads((generation / "kimi.plugin.json").read_text(encoding='utf-8'))
-    base = str(manifest.get("version") or "0.1.0").split("+")[0]
+    base = str(manifest.get("version") or "0.0.1").split("+")[0]
     manifest["version"] = f"{base}+mindie.{sha[:12]}"
     base_python = sys.executable
     if os.name == "nt":

@@ -1,3 +1,4 @@
-# Reviewed core and remote-dev revisions; publish these commits before adapter CI.
-mindie-knowledge @ git+https://github.com/mindie-agent/knowledge@82f7d7dd4c52637e1448e3747262a20453f4bcb4
-remote-dev @ git+https://github.com/mindie-agent/remote-dev@4d35c026084d780e1af99073e4d89e4c63bcb5be
+# Published component Releases: knowledge v0.11.0 and remote-dev v0.9.5.
+# Each pin is the exact commit the published Release tag resolves to.
+mindie-knowledge @ git+https://github.com/mindie-agent/knowledge@81fb4e222f0cba5cffe50824ffd55b33d312283d
+remote-dev @ git+https://github.com/mindie-agent/remote-dev@46a91a5b409506760ea530f7037a3f9f04d9a2d7
