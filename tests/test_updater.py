@@ -197,7 +197,16 @@ class UpdaterTests(unittest.TestCase):
         self.assertNotEqual(
             status.get("error"), updater._STATIC_FAILURE["temporary_network"]
         )
-        self.assertIn("mindie-no-such-git", status["error"])
+        # The missing-file evidence is platform-shaped: POSIX strerror
+        # includes the path; Windows FileNotFoundError reports only
+        # WinError 2 (the path lives on the exception's filename attribute
+        # and never reaches this string).
+        self.assertTrue(
+            "mindie-no-such-git" in status["error"]
+            or "WinError 2" in status["error"]
+            or "No such file or directory" in status["error"],
+            status["error"],
+        )
 
     def test_feed_sync_carries_stamped_git_bin_to_the_component(self):
         from unittest.mock import patch
