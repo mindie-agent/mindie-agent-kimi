@@ -372,10 +372,9 @@ def _project_root(session, cwd):
 
 def _adopt_install_state():
     """Explicit install/upgrade/entry adoption boundary: converge community
-    settings onto the profile-shared authority, then import a legacy consent
-    choice exactly once (evidence is read from the converged authority).
-    Reads elsewhere never perform these writes. Only meaningful results are
-    reported; conflicts stay diagnosable and unresolved."""
+    settings onto the profile-shared authority. Reads elsewhere never
+    perform these writes. Only meaningful results are reported; conflicts
+    stay diagnosable and unresolved."""
     import consent as consent_mod
 
     report = {}
@@ -385,12 +384,6 @@ def _adopt_install_state():
             report["community"] = community
     except Exception as exc:
         report["community"] = dict(action="error", error=type(exc).__name__)
-    try:
-        choice = consent_mod.adopt_legacy_choice()
-        if choice.get("action") not in {"already", "unchosen"}:
-            report["consent"] = choice
-    except Exception as exc:
-        report["consent"] = dict(action="error", error=type(exc).__name__)
     return report or None
 
 
@@ -766,7 +759,21 @@ def op_recover(session, _model_arguments=""):
             result[operation] = json.loads(output)
             result["actions"].append(operation)
         except Exception as exc:
-            result[operation + "_error"] = str(exc)[:200]
+            # The core prints a valid receipt on stdout and exits 2 for an
+            # incomplete or recovery-error outcome; that receipt is the
+            # evidence, not a crashed command.
+            receipt = None
+            if getattr(exc, "returncode", None) == 2:
+                try:
+                    receipt = json.loads(getattr(exc, "mindie_output", "") or "")
+                except ValueError:
+                    receipt = None
+            if isinstance(receipt, dict):
+                result[operation] = receipt
+                result[operation + "_exit"] = 2
+                result["actions"].append(operation)
+            else:
+                result[operation + "_error"] = str(exc)[:200]
     return result
 
 
