@@ -21,7 +21,13 @@ class KimiBinResolutionTests(unittest.TestCase):
     def setUp(self):
         self._saved = {
             key: os.environ.get(key)
-            for key in ("MINDIE_KIMI_BIN", "KIMI_CODE_HOME", "MINDIE_KIMI_CONFIG")
+            for key in (
+                "MINDIE_KIMI_BIN",
+                "KIMI_CODE_HOME",
+                "MINDIE_KIMI_CONFIG",
+                "MINDIE_GIT_BIN",
+                "MINDIE_KIMI_GIT_BIN",
+            )
         }
         for key in self._saved:
             os.environ.pop(key, None)
@@ -69,6 +75,30 @@ class KimiBinResolutionTests(unittest.TestCase):
             knowledge_service.prepare_service_env({"kimi_home": str(home)})
             expected = str(home / "bin" / ("kimi.exe" if os.name == "nt" else "kimi"))
             self.assertEqual(os.environ.get("MINDIE_KIMI_BIN"), expected)
+
+    def test_prepare_service_env_propagates_stamped_git_bin(self):
+        knowledge_service.prepare_service_env(
+            {"kimi_home": "/nonexistent-home", "git_bin": "/opt/git-stamped"}
+        )
+        self.assertEqual(os.environ.get("MINDIE_GIT_BIN"), "/opt/git-stamped")
+
+    def test_prepare_service_env_git_override_precedence(self):
+        os.environ["MINDIE_GIT_BIN"] = "/env/git-direct"
+        knowledge_service.prepare_service_env({"git_bin": "/opt/git-stamped"})
+        self.assertEqual(os.environ.get("MINDIE_GIT_BIN"), "/env/git-direct")
+        os.environ.pop("MINDIE_GIT_BIN", None)
+        os.environ["MINDIE_KIMI_GIT_BIN"] = "/env/git-adapter"
+        knowledge_service.prepare_service_env({"git_bin": "/opt/git-stamped"})
+        self.assertEqual(os.environ.get("MINDIE_GIT_BIN"), "/opt/git-stamped")
+        os.environ.pop("MINDIE_GIT_BIN", None)
+        knowledge_service.prepare_service_env({})
+        self.assertEqual(os.environ.get("MINDIE_GIT_BIN"), "/env/git-adapter")
+
+    def test_prepare_service_env_leaves_git_unset_when_unstamped(self):
+        with patch.object(paths.shutil, "which", return_value=None), \
+             patch.object(paths.os, "name", "posix"):
+            knowledge_service.prepare_service_env({})
+        self.assertNotIn("MINDIE_GIT_BIN", os.environ)
 
     def test_prepare_service_env_never_raises_or_guesses(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -139,7 +169,8 @@ class LaunchContextDeclarationTests(unittest.TestCase):
         prepared = capture_config.prepare(sys.executable, SCRIPTS)
         declaration = prepared["service_launch_context"]
         self.assertEqual(
-            declaration, {"paths": {}, "environment": ["MINDIE_KIMI_BIN"]}
+            declaration,
+            {"paths": {}, "environment": ["MINDIE_KIMI_BIN", "MINDIE_GIT_BIN"]},
         )
         engine = {
             "root": "/tmp/x",
@@ -153,7 +184,7 @@ class LaunchContextDeclarationTests(unittest.TestCase):
         validate_config(engine)
         self.assertEqual(
             service_context.validate(engine),
-            {"paths": {}, "environment": ["MINDIE_KIMI_BIN"]},
+            {"paths": {}, "environment": ["MINDIE_KIMI_BIN", "MINDIE_GIT_BIN"]},
         )
 
     def test_ensure_service_sets_env_before_core_start(self):
@@ -162,14 +193,17 @@ class LaunchContextDeclarationTests(unittest.TestCase):
             config = make_config(tmp)
             adapter = json.loads(config.read_text())
             adapter["kimi_bin"] = "/opt/kimi-stamped"
+            adapter["git_bin"] = "/opt/git-stamped"
             config.write_text(json.dumps(adapter, indent=2) + "\n")
             os.environ["MINDIE_KIMI_CONFIG"] = str(config)
             os.environ.pop("MINDIE_KIMI_BIN", None)
+            os.environ.pop("MINDIE_GIT_BIN", None)
             captured = {}
 
             def fake_ensure(path, **kwargs):
                 captured["path"] = path
                 captured["env"] = os.environ.get("MINDIE_KIMI_BIN")
+                captured["git_env"] = os.environ.get("MINDIE_GIT_BIN")
                 return "connection"
 
             try:
@@ -181,8 +215,10 @@ class LaunchContextDeclarationTests(unittest.TestCase):
             finally:
                 os.environ.pop("MINDIE_KIMI_CONFIG", None)
                 os.environ.pop("MINDIE_KIMI_BIN", None)
+                os.environ.pop("MINDIE_GIT_BIN", None)
             self.assertEqual(result, "connection")
             self.assertEqual(captured["env"], "/opt/kimi-stamped")
+            self.assertEqual(captured["git_env"], "/opt/git-stamped")
 
     def test_bridge_stop_sets_env_before_handoff(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -192,10 +228,12 @@ class LaunchContextDeclarationTests(unittest.TestCase):
             config = make_config(tmp, sharing=True, roots=[tmp])
             adapter = json.loads(config.read_text())
             adapter["kimi_bin"] = "/opt/kimi-hook"
+            adapter["git_bin"] = "/opt/git-hook"
             config.write_text(json.dumps(adapter, indent=2) + "\n")
             os.environ["MINDIE_KIMI_CONFIG"] = str(config)
             os.environ["KIMI_CODE_HOME"] = str(home)
             os.environ.pop("MINDIE_KIMI_BIN", None)
+            os.environ.pop("MINDIE_GIT_BIN", None)
             import admission as admission_mod
 
             admission_mod.activate("ses_env", project_root=str(tmp.resolve()))
@@ -206,6 +244,7 @@ class LaunchContextDeclarationTests(unittest.TestCase):
 
             def capture_hook(config_path, payload):
                 captured["env"] = os.environ.get("MINDIE_KIMI_BIN")
+                captured["git_env"] = os.environ.get("MINDIE_GIT_BIN")
                 return {"stage": "accepted-local", "wake": "not-requested"}
 
             fake.capture_hook = capture_hook
@@ -244,9 +283,11 @@ class LaunchContextDeclarationTests(unittest.TestCase):
                 os.environ.pop("MINDIE_KIMI_CONFIG", None)
                 os.environ.pop("KIMI_CODE_HOME", None)
                 os.environ.pop("MINDIE_KIMI_BIN", None)
+                os.environ.pop("MINDIE_GIT_BIN", None)
             self.assertEqual(rc, 0)
             self.assertEqual(printed, [{}])
             self.assertEqual(captured["env"], "/opt/kimi-hook")
+            self.assertEqual(captured["git_env"], "/opt/git-hook")
 
 
 if __name__ == "__main__":

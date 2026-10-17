@@ -193,6 +193,51 @@ class UpdaterTests(unittest.TestCase):
             status.get("error"), updater._STATIC_FAILURE["temporary_network"]
         )
 
+    def test_feed_sync_carries_stamped_git_bin_to_the_component(self):
+        from unittest.mock import patch
+
+        calls = []
+        run = lambda argv, stdin, **kw: calls.append((list(argv), kw)) or "[]"
+        genstate.update_dir(self.adapter).mkdir(parents=True, exist_ok=True)
+        with patch.object(updater, "bounded_run", side_effect=run):
+            self.assertTrue(self._sync(
+                dict(self.adapter, git_bin="/pinned/git"),
+                time.monotonic() + 240,
+            ))
+            self.assertTrue(self._sync(self.adapter, time.monotonic() + 240))
+        stamped = calls[0][1]["env"]["MINDIE_GIT_BIN"]
+        self.assertEqual(stamped, "/pinned/git")
+        self.assertIsNone(calls[1][1]["env"])
+
+    def test_restore_env_carries_git_bin_when_stamped(self):
+        from unittest.mock import patch
+
+        generation = self.tmp / "restored-gen"
+        generation.mkdir()
+        final = dict(
+            generation=str(generation),
+            python=str(Path(sys.executable)),
+            adapter_config=str(self.tmp / "restored-adapter.json"),
+            sha=self.sha,
+        )
+        write_json(
+            self.tmp / "restored-adapter.json",
+            dict(
+                engine_config=str(self.tmp / "restored-engine.json"),
+                git_bin="/pinned/git",
+            ),
+        )
+        genstate.write_current(final, self.adapter)
+        envs = []
+        run = lambda argv, stdin, **kw: envs.append(kw.get("env")) or '{"status": "restored"}'
+        with patch.object(updater, "bounded_run", side_effect=run):
+            updater._restore_stopped_service(
+                self.adapter, final, time.monotonic() + 240
+            )
+        self.assertEqual(len(envs), 1)
+        self.assertEqual(envs[0]["MINDIE_GIT_BIN"], "/pinned/git")
+        self.assertNotIn("MINDIE_KIMI_BIN", envs[0])
+
     def test_switch_commits_one_tuple_and_preserves_stable_state(self):
         # Default idle: REAL stop_if_idle subprocess through the committed
         # interpreter; no service endpoint exists here, so it is idle.

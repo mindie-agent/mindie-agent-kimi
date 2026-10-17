@@ -808,6 +808,9 @@ def _restore_stopped_service(adapter, final, deadline):
         kimi_bin = selected.get("kimi_bin")
         if isinstance(kimi_bin, str) and kimi_bin:
             env["MINDIE_KIMI_BIN"] = kimi_bin
+        git_bin = selected.get("git_bin")
+        if isinstance(git_bin, str) and git_bin:
+            env["MINDIE_GIT_BIN"] = git_bin
         output = bounded_run(
             [final["python"], str(HERE / "service_handoff.py"),
              "restore", selected["engine_config"]], "", env=env,
@@ -1239,11 +1242,18 @@ def _feed_sync(adapter: dict, deadline: float) -> bool:
         with OperationLock(adapter).shared(timeout=min(5, left)):
             current = read_current(adapter)
             engine = _generation_engine(current)
+            env = None
+            git_bin = adapter.get("git_bin")
+            if isinstance(git_bin, str) and git_bin:
+                # The component's sync shells out to git; the stamped value
+                # crosses even in the reduced scheduled environment.
+                env = dict(os.environ, MINDIE_GIT_BIN=git_bin)
             output = bounded_run(
                 [current["python"], "-m", "mindie_knowledge.loop.cli",
                  "sync", "--config", engine],
                 "",
                 timeout=min(FEED_BUDGET, deadline - time.monotonic()),
+                env=env,
             )
         aggregate, rows, summary = fold_feed_results(output)
         status["feed_sync"] = aggregate
