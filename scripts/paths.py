@@ -13,12 +13,56 @@ PLUGIN_ID = "mindie-agent"
 MCP_QUALIFIED_PREFIX = "mcp__plugin-mindie-agent_"
 
 
+def _default_config_path() -> Path:
+    return (Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+            / "mindie-agent" / "kimi.json").absolute()
+
+
 def config_path() -> Path:
     override = os.environ.get("MINDIE_KIMI_CONFIG")
     if override:
         return Path(override).expanduser().absolute()
-    return (Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
-            / "mindie-agent" / "kimi.json").absolute()
+    return _default_config_path()
+
+
+def _read_config_quiet(path: Path):
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def profile_config_path() -> Path:
+    """The stable profile adapter configuration.
+
+    Authority state (consent document, community settings, first-use
+    evidence) anchors at this file's directory, never at a per-generation
+    fork: update generations fork code and interpreter, never
+    authorization. A MINDIE_KIMI_CONFIG override that is not a generation
+    config (setup, tests, the bootstrap install) IS the profile config; a
+    config under <state_dir>/update/generations/ resolves to the default
+    profile path (generation configs carry an explicit profile_config key
+    once written by a fixed updater).
+    """
+    path = config_path()
+    data = _read_config_quiet(path) if path.is_file() else None
+    if data is not None:
+        profile = data.get("profile_config")
+        if isinstance(profile, str) and os.path.isabs(profile):
+            return Path(profile)
+        try:
+            generations = state_dir(data) / "update" / "generations"
+        except (OSError, ValueError, KeyError, FileNotFoundError):
+            generations = None
+        if generations is not None:
+            try:
+                path.relative_to(generations)
+            except ValueError:
+                pass
+            else:
+                return _default_config_path()
+    return path
 
 
 def load_adapter_config() -> dict:

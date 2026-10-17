@@ -254,12 +254,48 @@ def probe_runtime(python: Path, deadline: float, generation: Path) -> None:
         raise CheckFailed(f"generation runtime probe failed: {output.strip()[:300]}")
 
 
+def _profile_authority_sources(adapter: dict):
+    """(profile adapter config, profile engine config) for stable authority
+    path inheritance, or (None, None) when the profile config is
+    unreachable. Read-only; the caller's config may be a generation fork."""
+    from paths import engine_config_path as _engine_path, profile_config_path
+
+    profile = adapter.get("profile_config")
+    if not (isinstance(profile, str) and os.path.isabs(profile)):
+        profile = str(profile_config_path())
+    padapter = None
+    try:
+        candidate = json.loads(Path(profile).read_text(encoding="utf-8"))
+        if isinstance(candidate, dict):
+            padapter = candidate
+    except (OSError, ValueError):
+        pass
+    pengine = None
+    if padapter is not None:
+        try:
+            value = json.loads(
+                Path(_engine_path(padapter)).read_text(encoding="utf-8")
+            )
+            if isinstance(value, dict):
+                pengine = value
+        except (OSError, ValueError, FileNotFoundError):
+            pass
+    return padapter, pengine
+
+
 def write_generation_configs(generation: Path, python: Path, adapter: dict) -> Path:
     """Per-generation adapter+engine JSON. Admission/community/first-use
-    state paths stay stable; parser/organizer/interpreter move with the
-    generation. Returns the generation adapter config path."""
+    state paths stay stable (inherited from the PROFILE configs, even when
+    the current adapter is a generation fork); parser/organizer/interpreter
+    move with the generation. Returns the generation adapter config path."""
     engine = load_engine_config(adapter)
     engine.pop("agent_command", None)
+    padapter, pengine = _profile_authority_sources(adapter)
+    if pengine is not None:
+        for key in ("community_config", "admission_path"):
+            value = pengine.get(key)
+            if isinstance(value, str) and os.path.isabs(value):
+                engine[key] = value
     config_dir = generation / "config"
     gen_engine = config_dir / "kimi.engine.json"
     gen_adapter = config_dir / "kimi.adapter.json"
@@ -268,11 +304,20 @@ def write_generation_configs(generation: Path, python: Path, adapter: dict) -> P
         transcript_adapter=str(generation / "scripts" / "transcript.py"),
         **__import__("capture_config").prepare(python, generation / "scripts"),
     ))
-    atomic_write(gen_adapter, dict(
+    profile = (padapter or adapter).get("profile_config")
+    if not (isinstance(profile, str) and os.path.isabs(profile)):
+        from paths import profile_config_path
+
+        profile = str(profile_config_path())
+    gen_adapter_value = dict(
         adapter,
         python=str(python),
         engine_config=str(gen_engine),
-    ))
+        profile_config=profile,
+    )
+    if padapter is not None and isinstance(padapter.get("community_config"), str):
+        gen_adapter_value["community_config"] = padapter["community_config"]
+    atomic_write(gen_adapter, gen_adapter_value)
     return gen_adapter
 
 

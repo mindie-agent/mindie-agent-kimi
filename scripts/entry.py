@@ -372,9 +372,10 @@ def _project_root(session, cwd):
 
 def _adopt_install_state():
     """Explicit install/upgrade/entry adoption boundary: converge community
-    settings onto the profile-shared authority. Reads elsewhere never
-    perform these writes. Only meaningful results are reported; conflicts
-    stay diagnosable and unresolved."""
+    settings onto the profile-shared authority, then converge any consent
+    document a pre-fix generation fork stranded outside the profile. Reads
+    elsewhere never perform these writes. Only meaningful results are
+    reported; conflicts stay diagnosable and unresolved."""
     import consent as consent_mod
 
     report = {}
@@ -384,6 +385,12 @@ def _adopt_install_state():
             report["community"] = community
     except Exception as exc:
         report["community"] = dict(action="error", error=type(exc).__name__)
+    try:
+        stranded = consent_mod.adopt_stranded_consent()
+        if stranded.get("action") not in {"already"} or stranded.get("notes"):
+            report["consent"] = stranded
+    except Exception as exc:
+        report["consent"] = dict(action="error", error=type(exc).__name__)
     return report or None
 
 

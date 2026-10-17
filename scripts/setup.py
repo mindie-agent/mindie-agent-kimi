@@ -359,6 +359,9 @@ def main():
         engine_config=str(engine_config),
         community_config=str(community_config),
         state_dir=str(state_dir),
+        # Generations inherit this pointer: authority state anchors at the
+        # profile directory, never at a per-generation config fork.
+        profile_config=str(config),
     )
     if args.kimi_home:
         adapter_value["kimi_home"] = str(args.kimi_home.expanduser().absolute())

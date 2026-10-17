@@ -29,7 +29,13 @@ import os
 import tempfile
 from pathlib import Path
 
-from paths import community_config_path, config_path, first_use_path
+from paths import (
+    community_config_path,
+    config_path,
+    first_use_path,
+    profile_config_path,
+    state_dir,
+)
 
 
 def _store_mod():
@@ -58,13 +64,36 @@ class ConsentDamaged(RuntimeError):
 
 
 def consent_path() -> Path:
-    """The profile-shared consent document (sibling of the adapter config)."""
-    return config_path().parent / "mindie-consent.json"
+    """The profile-shared consent document (sibling of the PROFILE adapter
+    config — update generations fork code, never this authority)."""
+    return profile_config_path().parent / "mindie-consent.json"
 
 
 def shared_community_path() -> Path:
-    """The profile-shared community settings path."""
-    return config_path().parent / "mindie-community.json"
+    """The profile-shared community settings path (profile directory, never
+    a per-generation fork)."""
+    return profile_config_path().parent / "mindie-community.json"
+
+
+def _stranded_candidates(filename: str) -> list:
+    """Generation-private authority files stranded by the pre-fix config
+    fork, plus the active config sibling when it is not the profile file.
+    Read-only evidence, deterministic order; the profile file itself is
+    never a candidate."""
+    profile = profile_config_path().parent / filename
+    seen = []
+    try:
+        root = state_dir() / "update" / "generations"
+    except (OSError, ValueError, FileNotFoundError):
+        root = None
+    if root is not None and root.is_dir():
+        for path in sorted(root.glob("*/config/" + filename)):
+            if path != profile and path.is_file():
+                seen.append(path)
+    active = config_path().parent / filename
+    if active != profile and active.is_file() and active not in seen:
+        seen.append(active)
+    return seen
 
 
 def _read_json(path: Path):
@@ -197,6 +226,70 @@ def install_traces() -> bool:
     return bool(legacy is not None and legacy.exists())
 
 
+def adopt_stranded_consent() -> dict:
+    """Converge a consent document stranded in a generation-private config
+    dir (the pre-fix per-generation fork) onto the stable profile
+    authority, at an explicit install/upgrade/entry boundary.
+
+    An existing profile document (any state) always wins. Valid stranded
+    documents are explicit saved choices — never legacy evidence to guess
+    from: exactly one, or several that agree, is adopted once (bytes
+    preserved; stranded files kept as evidence); disagreeing documents are
+    a diagnosable conflict and a damaged one an honest fault, both without
+    a write.
+    """
+    profile = consent_path()
+    result = dict(action="already", notes=[])
+    with _shared_file_lock(profile):
+        if _store_mod().read(profile)["state"] != "missing":
+            return result
+        valid, damaged = [], []
+        for path in _stranded_candidates("mindie-consent.json"):
+            view = _store_mod().read(path)
+            if view["state"] == "ok" and (
+                view.get("choice") is not None or view.get("reporting") is not None
+            ):
+                valid.append((path, view))
+            elif view["state"] != "missing":
+                damaged.append((path, view["state"]))
+        if not valid:
+            if damaged:
+                result.update(action="fault")
+                result["notes"].append(
+                    f"generation-stranded consent is {damaged[0][1]}; left as evidence"
+                )
+            return result
+        choices = {view.get("choice") for _path, view in valid}
+        reportings = {view.get("reporting") for _path, view in valid}
+        if len(valid) > 1 and (len(choices) > 1 or len(reportings) > 1):
+            result.update(
+                action="conflict",
+                conflict="generation-stranded consent documents disagree: "
+                + ", ".join(str(path) for path, _view in valid),
+            )
+            return result
+        path, view = valid[0]
+        try:
+            _atomic_write_bytes(profile, _store_mod()._read_bytes(path))
+        except OSError as exc:
+            result.update(action="error")
+            result["notes"].append(
+                f"stranded consent adoption failed: {type(exc).__name__}"
+            )
+            return result
+        result.update(
+            action="adopted",
+            choice=view.get("choice"),
+            reporting=view.get("reporting"),
+            sources=[str(path) for path, _view in valid],
+        )
+        if damaged:
+            result["notes"].append(
+                f"damaged stranded consent left as evidence: {damaged[0][0]}"
+            )
+    return result
+
+
 def _divergence(shared: Path, legacy: Path):
     """Fields where a legacy community file disagrees with the shared
     authority (None when they converge). Read-only comparison."""
@@ -292,6 +385,24 @@ def adopt_community_settings() -> dict:
             result["notes"].append(
                 "adapter community_config was not an absolute path; repointed to the shared authority"
             )
+        if legacy is None:
+            stranded = _stranded_candidates("mindie-community.json")
+            if not shared.exists() and len(stranded) > 1:
+                result.update(
+                    action="conflict",
+                    conflict="multiple generation-stranded community files; none adopted",
+                )
+                result["notes"].append(
+                    "evidence: " + ", ".join(str(path) for path in stranded)
+                )
+                return result
+            if stranded:
+                legacy = stranded[0]
+                if len(stranded) > 1:
+                    result["notes"].append(
+                        "additional generation-stranded community files left as evidence: "
+                        + ", ".join(str(path) for path in stranded[1:])
+                    )
         if legacy is not None and legacy.is_file():
             if not shared.exists():
                 try:
