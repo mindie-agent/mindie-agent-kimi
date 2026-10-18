@@ -281,8 +281,8 @@ class RetryTests(unittest.TestCase):
             self.assertEqual(self._check(), 1)
             failed = genstate.read_json(genstate.failed_path(self.adapter))
             self.assertEqual(failed["count"], expected)
-            self.assertNotEqual(
-                genstate.read_status(self.adapter)["result"], "suppressed-known-failed"
+            self.assertEqual(
+                genstate.read_status(self.adapter)["result"], "failed"
             )
         self.clock.now += 8 * 3600
         self.assertEqual(self._check(), 0)
@@ -296,28 +296,6 @@ class RetryTests(unittest.TestCase):
         self.assertIn("first_failure_at", failed)
         self.assertNotIn("SENTINEL", json.dumps(failed))
         self.assertNotEqual(entry._updater_view().get("recovery"), "manual")
-
-    def test_legacy_record_stays_suppressed(self):
-        def stage(*args, **kwargs):
-            raise AssertionError("staged")
-
-        updater.resolve_main = lambda remote, deadline: SHA
-        updater.stage_generation = stage
-        genstate.atomic_write(genstate.failed_path(self.adapter), {
-            "sha": SHA, "error": "boom", "at": 1,
-        })
-        self.clock.now += 8 * 3600
-        self.assertEqual(self._check(), 0)
-        failed = genstate.read_json(genstate.failed_path(self.adapter))
-        self.assertEqual(failed["error"], "boom")
-        self.assertNotIn("failure_class", failed)
-        self.assertEqual(
-            genstate.read_status(self.adapter)["result"], "suppressed-known-failed"
-        )
-        view = entry._updater_view()
-        self.assertEqual(view["recovery"], "manual")
-        self.assertEqual(shlex.split(view["command"])[-1], "recover")
-        self.assertNotIn("scripts/updater.py", view["command"])
 
     def test_certificate_retries_after_backoff_without_quarantine(self):
         def stage(sha, remote, adapter, deadline, build=None):
@@ -385,30 +363,6 @@ class RetryTests(unittest.TestCase):
         view = entry._updater_view()
         self.assertLess(time.monotonic() - started, 0.5)
         self.assertEqual(view, {"status": "unavailable"})
-
-    def test_unknown_switch_timeout_stays_guarded(self):
-        def stage(sha, remote, adapter, deadline, build=None):
-            self.calls["stage"] += 1
-            return Path(adapter["state_dir"]), Path(sys.executable), self.config_path
-
-        def switch(*args, **kwargs):
-            self.calls["switch"] += 1
-            raise bounded.CommandTimedOut("command timed out after 5s")
-
-        updater.resolve_main = lambda remote, deadline: SHA
-        updater.stage_generation = stage
-        updater.switch = switch
-        self.assertEqual(self._check(), 1)
-        failed = genstate.read_json(genstate.failed_path(self.adapter))
-        self.assertNotIn("failure_class", failed)
-        self.assertNotIn("next_retry_at", failed)
-        self.assertNotIn("SENTINEL", json.dumps(failed))
-        self.clock.now += 8 * 3600
-        self.assertEqual(self._check(), 0)
-        self.assertEqual(self.calls["switch"], 1)
-        self.assertEqual(
-            genstate.read_status(self.adapter)["result"], "suppressed-known-failed"
-        )
 
     def test_resolve_failure_does_not_busy_loop(self):
         def resolve(remote, deadline):

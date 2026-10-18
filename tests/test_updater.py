@@ -453,12 +453,12 @@ class UpdaterTests(unittest.TestCase):
         self.assertIsNone(genstate.read_current(self.adapter)["sha"])
         # Feed sync is independent: it ran even though the candidate failed.
         self.assertEqual(calls, ["sync"])
-        # Same failed revision suppressed; installer never called.
+        # Same failed revision waits during backoff window; installer never called.
         self.assertEqual(self.run_check(), 0)
         self.assertEqual(self.installs, [])
         self.assertEqual(genstate.read_status(self.adapter)["result"],
-                         "suppressed-known-failed")
-        # Newer revision is not suppressed; explicit recovery re-checks.
+                         "retry-waiting")
+        # Newer revision is not blocked; explicit recovery re-checks.
         commit(self.src, self.bare, "two")
         self.assertEqual(self.run_check(), 0)
         self.assertEqual(len(self.installs), 1)

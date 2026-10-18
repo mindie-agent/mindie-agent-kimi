@@ -200,20 +200,16 @@ def _updater_view():
     if klass is None and isinstance(status.get("resolve_failure_class"), str):
         klass = status.get("resolve_failure_class")
     phase = failed.get("phase") if isinstance(failed.get("phase"), str) else None
-    retryable = klass in {"temporary_network", "rate_limited"} and phase != "package-refresh"
     certificate = klass == "certificate"
     actionable = klass in {"authentication", "permission", "hook_trust", "certificate"}
-    quarantined = klass in {"resolver", "bad_content"} or failed.get("quarantined") is True
-    unknown = bool(failed.get("error")) and not retryable and not actionable and not quarantined
     nxt = _number(failed.get("next_retry_at"))
     if nxt is None:
         nxt = _number(status.get("next_retry_at"))
     active = bool(
-        failed.get("error") or klass or failed.get("quarantined") or phase or nxt is not None
+        failed.get("error") or klass or phase or nxt is not None
         or status.get("error") or status.get("resolve_wait")
         or status.get("result") in {
-            "failed", "check-failed", "action-required",
-            "suppressed-known-failed", "retry-waiting",
+            "failed", "check-failed", "action-required", "retry-waiting",
         }
     )
     if not active:
@@ -243,11 +239,7 @@ def _updater_view():
         view["first_failure_at"] = failed["first_failure_at"]
     if phase:
         view["phase"] = phase[:40]
-    if retryable:
-        view["recovery"] = "automatic"
-        view["note"] = "scheduled checks retry this temporary failure"
-        operation = "status"
-    elif certificate:
+    if certificate:
         view["recovery"] = "action_required"
         view["note"] = "certificate trust needs repair; scheduled checks retry after backoff"
         operation = "status"
@@ -255,11 +247,9 @@ def _updater_view():
         view["recovery"] = "action_required"
         view["note"] = "credentials or host permission need attention"
         operation = "status"
-    elif quarantined or unknown or phase == "package-refresh":
-        view["recovery"] = "manual"
-        view["note"] = "manual recovery is required for this revision"
-        operation = "recover"
     else:
+        view["recovery"] = "automatic"
+        view["note"] = "scheduled checks retry this failure after backoff"
         operation = "status"
     command = _launcher_command(adapter, operation, current)
     if command:
@@ -440,18 +430,15 @@ def _enable_contribution(session, cwd, *, repository, account, branch="main", fo
 def _apply_choice(session, cwd, choice, *, repository=None, account=None,
                   branch="main", fork=None):
     """Record a verified choice and keep the sharing settings consistent
-    with it: contribution enables capture for the current project; any
-    other choice leaves sharing off, so a revoked contribution stops for
-    real. A damaged consent document surfaces as an honest fault — nothing
-    is rewritten automatically. Returns the sharing view (or None)."""
+    with it."""
     import consent as consent_mod
 
     if choice not in {"contribute", "disabled"}:
         raise ValueError("configure contribution or explicitly disable it; read-only/later are legacy data only")
     if choice == "contribute" and not _configured():
         raise ValueError("MindIE is not configured; run scripts/setup.py first")
-    if consent_mod.load()["state"] in {"corrupt", "unreadable"}:
-        raise ValueError("saved setup state is damaged; configuration was not changed")
+    if consent_mod.load()["state"] == "unreadable":
+        raise ValueError("saved setup state is unreadable; configuration was not changed")
     view = None
     if _configured():
         import sharing as sharing_mod
@@ -463,8 +450,6 @@ def _apply_choice(session, cwd, choice, *, repository=None, account=None,
             )
         else:
             view = sharing_mod.write_disabled()
-    # Only a successful configuration records completion. A failed target
-    # validation must leave the first configuration retryable.
     consent_mod.record_choice(choice)
     if choice == "contribute" and view is not None:
         from knowledge_service import ensure_service
@@ -479,41 +464,28 @@ def _apply_choice(session, cwd, choice, *, repository=None, account=None,
 
 
 def _apply_reporting(value):
-    """Persist the reporting choice and keep the real reporter consistent:
-    enable/disable reconfigure the actual service; ``later`` turns an
-    enabled reporter off and only then persists the preference. Enabling is
-    refused when the consent document is damaged (the preference could not
-    be persisted); turning off is always allowed, with the persistence gap
-    surfaced instead of silently rewritten."""
+    """Persist the reporting choice and keep the real reporter consistent."""
     import consent as consent_mod
     import diagnostic_support
 
     if value not in consent_mod.REPORTING:
         raise ValueError("reporting must be enabled, disabled or later")
-    damaged = consent_mod.load()["state"] in {"corrupt", "unreadable"}
-    if damaged and value == "enabled":
-        raise ValueError(
-            "the saved setup state is damaged; reporting was not enabled. "
-            "Move the damaged consent file aside and choose again."
-        )
+    unreadable = consent_mod.load()["state"] == "unreadable"
+    if unreadable and value == "enabled":
+        raise ValueError("the saved setup state is unreadable; reporting was not enabled")
     if not _configured():
         if value == "later":
-            if not damaged:
+            if not unreadable:
                 consent_mod.record_reporting("later")
-            return dict(reporting="later" if not damaged else "not-recorded")
+            return dict(reporting="later" if not unreadable else "not-recorded")
         raise ValueError("MindIE is not configured; run scripts/setup.py first")
     python = load_adapter_config()["python"]
-    # "later" means not-on: an enabled reporter is really turned off.
     expected = value == "enabled"
     result = diagnostic_support.configure_reporting(expected, python)
     if result.get("enabled") is not expected:
-        return result  # unconfirmed service state: nothing is recorded
-    if damaged:
-        return dict(
-            result,
-            preference="not-recorded: the saved setup state is damaged; "
-            "the reporter is off, the preference was not persisted",
-        )
+        return result
+    if unreadable:
+        return dict(result, preference="not-recorded: the saved setup state is unreadable")
     consent_mod.record_reporting(value)
     return result
 

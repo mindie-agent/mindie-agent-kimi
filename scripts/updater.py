@@ -867,9 +867,8 @@ def _record(adapter, **fields) -> dict:
     return status
 
 
-_RETRYABLE = frozenset({"temporary_network", "rate_limited", "deadline"})
+_RETRYABLE = frozenset({"temporary_network", "rate_limited", "deadline", "resolver", "bad_content"})
 _ACTIONABLE = frozenset({"authentication", "permission", "hook_trust", "certificate"})
-_QUARANTINE = frozenset({"resolver", "bad_content"})
 _STATIC_FAILURE = {
     "temporary_network": "temporary network failure",
     "rate_limited": "rate limited",
@@ -899,13 +898,8 @@ def _retry_delay(count, retry_after=None):
 def _failure_category(exc):
     category = getattr(exc, "category", None)
     if isinstance(exc, CommandTimedOut) and category == "temporary_network":
-        # A bounded transport deadline is its own honest class: the
-        # operation ran out of time (e.g. a slow cold build), which is not
-        # evidence of a network fault. Specific output-classified causes
-        # (certificate, rate limit, authentication) are kept as classified,
-        # and an unclassified timeout stays an unknown, guarded outcome.
         return "deadline"
-    if category in _RETRYABLE or category in _ACTIONABLE or category in _QUARANTINE:
+    if category in _RETRYABLE or category in _ACTIONABLE:
         return category
     return None
 
@@ -921,7 +915,7 @@ def _failure_history(previous, category):
 
 
 def _remember_failure(adapter, sha, exc):
-    """Persist a same-SHA failure without storing command output."""
+    """Persist a same-SHA failure with backoff retry window without storing command output."""
     previous = read_json(failed_path(adapter)) or {}
     if not isinstance(previous, dict) or previous.get("sha") != sha or previous.get("phase"):
         previous = {}
@@ -930,10 +924,7 @@ def _remember_failure(adapter, sha, exc):
     if not isinstance(first, (int, float)) or isinstance(first, bool):
         first = time.time()
     category = _failure_category(exc)
-    if category:
-        error = _STATIC_FAILURE[category]
-    else:
-        error = str(exc).replace("\n", " ")[:500]
+    error = _STATIC_FAILURE[category] if category else str(exc).replace("\n", " ")[:500]
     record = {
         "sha": sha,
         "at": time.time(),
@@ -941,15 +932,12 @@ def _remember_failure(adapter, sha, exc):
         "count": count,
         "error": error,
         "history": _failure_history(previous, category),
+        "next_retry_at": time.time() + _retry_delay(
+            count, getattr(exc, "retry_after", None)
+        ),
     }
     if category:
         record["failure_class"] = category
-        if category in _RETRYABLE or category in _ACTIONABLE:
-            record["next_retry_at"] = time.time() + _retry_delay(
-                count, getattr(exc, "retry_after", None)
-            )
-        else:
-            record["quarantined"] = True
     atomic_write(failed_path(adapter), record)
     return record
 
@@ -972,17 +960,12 @@ def _clear_active_failure(adapter, sha):
 
 
 def _failure_gate(failed):
-    """'wait', 'suppress', or None. Legacy records without a class stay suppressed."""
+    """Return 'wait' during the backoff window, else None to allow retry."""
     if not isinstance(failed, dict) or failed.get("phase"):
         return None
-    klass = failed.get("failure_class")
-    if klass in _RETRYABLE or klass in _ACTIONABLE:
-        due = failed.get("next_retry_at")
-        if isinstance(due, (int, float)) and not isinstance(due, bool) and due > time.time():
-            return "wait"
-        return None
-    if klass in _QUARANTINE or failed.get("quarantined") or failed.get("error"):
-        return "suppress"
+    due = failed.get("next_retry_at")
+    if isinstance(due, (int, float)) and not isinstance(due, bool) and due > time.time():
+        return "wait"
     return None
 
 
@@ -1080,8 +1063,7 @@ def _check_once(adapter: dict, deadline: float, *, force, build, idle,
     failed = read_json(failed_path(adapter))
     if not force and isinstance(failed, dict) and failed.get("sha") == sha \
             and current.get("sha") != sha:
-        gate = _failure_gate(failed)
-        if gate == "wait":
+        if _failure_gate(failed) == "wait":
             result_name = (
                 "action-required" if failed.get("failure_class") in _ACTIONABLE
                 else "retry-waiting"
@@ -1096,12 +1078,6 @@ def _check_once(adapter: dict, deadline: float, *, force, build, idle,
                 "next_retry_at": failed.get("next_retry_at"),
                 "error": failed.get("error"),
             }))
-            return 0
-        if gate == "suppress":
-            _record(adapter, current_sha=current.get("sha"), candidate_sha=sha,
-                    result="suppressed-known-failed", error=failed.get("error"),
-                    failure_class=failed.get("failure_class"))
-            print(json.dumps({"result": "suppressed-known-failed", "sha": sha}))
             return 0
     if sha == current.get("sha"):
         _clear_active_failure(adapter, sha)

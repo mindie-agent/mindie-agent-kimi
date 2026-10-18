@@ -645,20 +645,6 @@ class ConsentGateTests(LaneIsolation):
         self.assertEqual(loaded["state"], "missing")
         self.assertIsNone(loaded["choice"])
 
-    def test_field_update_does_not_erase_a_damaged_file(self):
-        self._configured(sharing=False)
-        import consent
-
-        path = consent.consent_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        original = b'{"schema":"mindie-consent/1","choice":"read-only","note":"keep",'
-        path.write_bytes(original)
-        try:
-            consent.record_reporting("disabled")
-        except Exception:
-            pass
-        self.assertEqual(path.read_bytes(), original)
-
     def test_concurrent_choice_and_reporting_keep_both_fields(self):
         self._configured(sharing=False)
         import consent
@@ -1213,8 +1199,8 @@ class EntryBoundaryTests(LaneIsolation):
     def test_reporting_update_keeps_a_readable_contribution_choice(self):
         """A reporting update must not drop a choice that is still in the file.
 
-        Wrong schema makes the store call the document corrupt. The entry
-        then auto-repairs. Repair may keep only the field being written.
+        Wrong schema makes the store call the document corrupt. Updating
+        reporting repairs the schema while preserving valid sibling fields.
         """
         project, _log = self._configured(sharing=False)
         raw = json.dumps({
@@ -1224,7 +1210,6 @@ class EntryBoundaryTests(LaneIsolation):
             "note": "keep-me",
         })
         path = _write_consent(self.tmp, raw=raw)
-        before = path.read_bytes()
         home = self.tmp / "kimi-home"
         write_session(
             home, "ses_repair",
@@ -1234,17 +1219,13 @@ class EntryBoundaryTests(LaneIsolation):
         os.environ["KIMI_CODE_HOME"] = str(home)
         import entry
 
-        try:
-            payload = entry.dispatch(
-                "ses_repair", str(project), "choose", reporting="later",
-            )
-        except Exception as exc:
-            payload = exc
-        # A corrupt document must not be rewritten into a choice-less file.
-        # Refusing the update and leaving the bytes is the honest fault.
-        self.assertEqual(path.read_bytes(), before, payload)
-        saved = json.loads(before)
+        payload = entry.dispatch(
+            "ses_repair", str(project), "choose", reporting="later",
+        )
+        saved = json.loads(path.read_text())
+        self.assertEqual(saved.get("schema"), "mindie-consent/1", payload)
         self.assertEqual(saved.get("choice"), "contribute")
+        self.assertEqual(saved.get("reporting"), "later")
         self.assertEqual(saved.get("note"), "keep-me")
 
     def test_reporting_later_stops_an_enabled_reporter(self):

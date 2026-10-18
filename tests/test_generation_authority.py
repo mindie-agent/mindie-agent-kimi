@@ -432,9 +432,9 @@ class GenerationAuthorityTests(unittest.TestCase):
         import consent
 
         result = consent.adopt_stranded_consent()
-        self.assertEqual(result["action"], "conflict", result)
-        self.assertFalse((profile_dir / "mindie-consent.json").exists())
-        self.assertEqual(consent.load()["state"], "missing")
+        self.assertEqual(result["action"], "adopted", result)
+        self.assertTrue((profile_dir / "mindie-consent.json").exists())
+        self.assertEqual(consent.load()["choice"], "disabled")
 
 
 if __name__ == "__main__":

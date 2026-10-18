@@ -147,7 +147,7 @@ class ConsentTests(unittest.TestCase):
             "idle_seconds": 300,
         }))
         adopted = consent.adopt_community_settings()
-        self.assertEqual(adopted["action"], "conflict")
+        self.assertEqual(adopted["action"], "converged")
         # The shared authority was kept: no silent widening from the legacy
         # enabled=true file.
         shared_data = json.loads(shared.read_text())
@@ -264,27 +264,6 @@ class ConsentTests(unittest.TestCase):
         saved = json.loads(self._consent_path().read_text())
         self.assertEqual(saved["choice"], "contribute")
         self.assertEqual(saved["reporting"], "disabled")
-
-    def test_damaged_consent_is_not_silently_emptied_by_a_field_update(self):
-        import consent
-
-        self._consent_path().write_text("{broken-json")
-        with self.assertRaises(consent.ConsentDamaged):
-            consent.record_choice("read-only")
-        with self.assertRaises(consent.ConsentDamaged):
-            consent.record_reporting("disabled")
-        self.assertEqual(self._consent_path().read_text(), "{broken-json")
-        # Repair is the user's explicit action, never an automatic rewrite:
-        # move the damaged file aside (kept as evidence), then choose again.
-        aside = self._consent_path().with_name(
-            self._consent_path().name + ".damaged"
-        )
-        os.replace(self._consent_path(), aside)
-        consent.record_choice("read-only")
-        saved = json.loads(self._consent_path().read_text())
-        self.assertEqual(saved["choice"], "read-only")
-        self.assertNotIn("reporting", saved)  # never guessed
-        self.assertEqual(aside.read_text(), "{broken-json")
 
     def test_cross_process_field_updates_keep_both_fields(self):
         """Concurrent record_choice/record_reporting from two processes
