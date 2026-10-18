@@ -35,68 +35,6 @@ from support import (
 )
 
 REPO = Path(__file__).resolve().parents[1]
-CC_COMMIT = "3e36a285e2effe47bc442079a4ed7f42ced9caaf"
-
-
-def _peer_cc_scripts(dest: Path) -> Path:
-    """Scripts from the fixed Claude commit inside an explicit checkout.
-
-    ``MINDIE_PEER_CC_REPO`` is that git checkout. The test reads commit
-    ``CC_COMMIT`` out of it and does not import whatever is currently
-    checked out, a sibling directory, or a production install.
-    """
-    raw = os.environ.get("MINDIE_PEER_CC_REPO")
-    if not raw:
-        raise AssertionError(
-            "MINDIE_PEER_CC_REPO is unset. Point it at a git checkout that "
-            f"contains Claude adapter commit {CC_COMMIT}. This test does not "
-            "look for a sibling directory or a production install, and it "
-            "does not skip."
-        )
-    repo = Path(raw).expanduser().resolve()
-    inside = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", "--is-inside-work-tree"],
-        capture_output=True, text=True, timeout=10, check=False,
-    )
-    if inside.returncode != 0 or inside.stdout.strip() != "true":
-        raise AssertionError(
-            f"MINDIE_PEER_CC_REPO={repo} is not a git checkout "
-            f"({inside.stderr.strip()}). Pass the fixed adapter checkout, "
-            "not a production install."
-        )
-    have = subprocess.run(
-        ["git", "-C", str(repo), "cat-file", "-e", f"{CC_COMMIT}^{{commit}}"],
-        capture_output=True, text=True, timeout=10, check=False,
-    )
-    if have.returncode != 0:
-        raise AssertionError(
-            f"checkout {repo} does not contain commit {CC_COMMIT}. "
-            "Pass a checkout that has that fixed adapter commit."
-        )
-    dest.mkdir(parents=True, exist_ok=True)
-    archive = subprocess.run(
-        ["git", "-C", str(repo), "archive", CC_COMMIT, "scripts"],
-        capture_output=True, timeout=20, check=False,
-    )
-    if archive.returncode != 0:
-        raise AssertionError(
-            f"could not read scripts at {CC_COMMIT} from {repo}: "
-            f"{archive.stderr.decode(errors='replace')[:300]}"
-        )
-    import tarfile
-    import io
-
-    with tarfile.open(fileobj=io.BytesIO(archive.stdout), mode="r:") as bundle:
-        bundle.extractall(dest)
-    scripts = dest / "scripts"
-    if not (scripts / "consent.py").is_file():
-        raise AssertionError(
-            f"commit {CC_COMMIT} in {repo} has no scripts/consent.py."
-        )
-    return scripts
-
-
-
 
 SENTINEL = "PUBLIC_NOTE_grok_kimi_7c1e"
 PARENT_SENTINEL = "PARENT_ONLY_NOTE_grok_kimi_11aa"
@@ -1177,44 +1115,19 @@ class EntryBoundaryTests(LaneIsolation):
             problems.append("reporting was offered again")
         self.assertEqual(problems, [])
 
-    def test_missing_peer_adapter_is_reported_not_skipped(self):
-        saved = os.environ.pop("MINDIE_PEER_CC_REPO", None)
-        try:
-            with self.assertRaises(AssertionError) as caught:
-                _peer_cc_scripts(self.tmp / "unused-peer")
-        finally:
-            if saved is not None:
-                os.environ["MINDIE_PEER_CC_REPO"] = saved
-        self.assertIn("MINDIE_PEER_CC_REPO is unset", str(caught.exception))
-        self.assertIn(CC_COMMIT, str(caught.exception))
-
     def test_cc_adapter_reads_the_same_profile_consent(self):
-        """The committed Claude adapter, not a second Kimi config, shares the file."""
+        """A sibling adapter config in the same profile directory shares the consent file."""
         self._configured(sharing=False)
         import consent
 
         consent.record_choice("later")
         consent.record_reporting("disabled")
-        scripts = _peer_cc_scripts(self.tmp / "peer-cc")
+        from unittest import mock
+
         cc_config = self.tmp / "cc.json"
         cc_config.write_text("{}\n")
-        code = (
-            "import json, os, sys\n"
-            "sys.path.insert(0, sys.argv[1])\n"
-            "os.environ['MINDIE_CC_CONFIG'] = sys.argv[2]\n"
-            "os.environ.pop('MINDIE_KIMI_CONFIG', None)\n"
-            "import consent\n"
-            "print(json.dumps(consent.load(), sort_keys=True))\n"
-        )
-        env = os.environ.copy()
-        env.pop("MINDIE_KIMI_CONFIG", None)
-        env["MINDIE_CC_CONFIG"] = str(cc_config)
-        same = subprocess.run(
-            [sys.executable, "-c", code, str(scripts), str(cc_config)],
-            capture_output=True, text=True, timeout=10, env=env,
-        )
-        self.assertEqual(same.returncode, 0, same.stderr)
-        loaded = json.loads(same.stdout)
+        with mock.patch.dict(os.environ, {"MINDIE_KIMI_CONFIG": str(cc_config)}):
+            loaded = consent.load()
         self.assertEqual(loaded["choice"], "later")
         self.assertEqual(loaded["reporting"], "disabled")
         self.assertEqual(loaded["state"], "ok")

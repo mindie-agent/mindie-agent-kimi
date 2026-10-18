@@ -86,8 +86,9 @@ import bounded
 
 diagnostic_support = _load_diagnostic_support()
 
-HOOK_TOTAL = 1.5
-HOOK_LOCK_BUDGET = 0.3
+HOOK_TOTAL = float(os.environ.get("MINDIE_HOOK_TOTAL_SECONDS") or 10.0)
+HOOK_LOCK_BUDGET = float(os.environ.get("MINDIE_HOOK_LOCK_BUDGET_SECONDS") or 2.0)
+BOOTSTRAP_TOTAL = float(os.environ.get("MINDIE_BOOTSTRAP_TOTAL_SECONDS") or 540.0)
 CALL_LOCK_BUDGET = 5.0
 CALL_CHILD_BUDGET = 60.0
 # Knowledge stdout only. A legal maximum page measured 817407 bytes.

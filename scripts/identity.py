@@ -535,7 +535,8 @@ def _connect(path: Path, *, create: bool):
     if not path.exists() and not create:
         raise FileNotFoundError(str(path))
     path.parent.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(path, timeout=0.4)
+    db = sqlite3.connect(path, timeout=5.0)
+    db.execute("PRAGMA busy_timeout=5000;")
     try:
         os.chmod(path, 0o600)
     except OSError:

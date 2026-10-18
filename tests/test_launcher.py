@@ -180,7 +180,10 @@ class LauncherTests(unittest.TestCase):
             )
             write_current(config, generation)
             started = time.monotonic()
-            proc = self._popen_hook(["hook", "stop"], env_for(config))
+            proc = self._popen_hook(
+                ["hook", "stop"],
+                env_for(config, extra={"MINDIE_HOOK_TOTAL_SECONDS": "1.5"}),
+            )
             try:
                 proc.stdin.write("x")
                 proc.stdin.flush()
@@ -281,7 +284,7 @@ class LauncherTests(unittest.TestCase):
             result = run_launch(
                 ["hook", "stop"],
                 STOP_EVENT + "x" * 8000,
-                env=env_for(config),
+                env=env_for(config, extra={"MINDIE_HOOK_TOTAL_SECONDS": "1.5"}),
                 timeout=4,
             )
             elapsed = time.monotonic() - started
@@ -320,7 +323,9 @@ class LauncherTests(unittest.TestCase):
                 self.assertEqual(holder.stdout.readline().strip(), "held")
                 started = time.monotonic()
                 result = run_launch(
-                    ["hook", "stop"], STOP_EVENT, env=env_for(config)
+                    ["hook", "stop"],
+                    STOP_EVENT,
+                    env=env_for(config, extra={"MINDIE_HOOK_LOCK_BUDGET_SECONDS": "0.3"}),
                 )
                 self.assertLess(time.monotonic() - started, 2)
                 self.assertEqual(result.returncode, 0, result.stderr)

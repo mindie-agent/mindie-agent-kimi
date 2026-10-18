@@ -546,6 +546,10 @@ def _configured_init_activation(session, cwd, activation_id):
         project_root=lease["project_root"],
         service=service,
     )
+    if str(service).startswith("not-started:"):
+        payload["status"] = "degraded"
+        payload["experience"] = "unavailable"
+        payload["warning"] = f"knowledge capture service could not be started ({service})"
     return payload
 
 
@@ -561,7 +565,9 @@ def _apply_entry_choice(payload, session, cwd, native):
     if view is not None:
         payload["sharing"] = view
         if str(view.get("service", "")).startswith("not-started:"):
+            payload["status"] = "degraded"
             payload["experience"] = "unavailable"
+            payload["warning"] = f"knowledge capture service could not be started ({view.get('service')})"
     return payload
 
 
@@ -647,7 +653,9 @@ def op_choose(session, choice, cwd=None, *, repository=None, account=None,
     if view is not None:
         payload["sharing"] = view
         if str(view.get("service", "")).startswith("not-started:"):
+            payload["status"] = "degraded"
             payload["experience"] = "unavailable"
+            payload["warning"] = f"knowledge capture service could not be started ({view.get('service')})"
     if reporting_view is not None:
         payload["reporting_result"] = reporting_view
     if migration:

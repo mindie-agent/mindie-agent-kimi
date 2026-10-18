@@ -487,11 +487,11 @@ def _run_posix(process, timeout, max_output, pgid, check, cancel, transport=Fals
     finally:
         _kill_tree(process, pgid)
         try:
-            process.wait(timeout=1)
+            process.wait(timeout=2.0)
         except subprocess.TimeoutExpired:
             _kill_tree(process, pgid)
             try:
-                process.wait(timeout=1)
+                process.wait(timeout=2.0)
             except subprocess.TimeoutExpired:
                 pass
         selector.close()
@@ -560,11 +560,11 @@ def _run_windows(process, timeout, max_output, pgid, check, cancel, transport=Fa
     finally:
         _kill_tree(process, pgid)
         try:
-            process.wait(timeout=1)
+            process.wait(timeout=2.0)
         except subprocess.TimeoutExpired:
             pass
         for thread in threads:
-            thread.join(timeout=1)
+            thread.join(timeout=2.0)
         process.stdout.close()
         process.stderr.close()
 
