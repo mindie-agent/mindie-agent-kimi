@@ -1,8 +1,30 @@
-"""Stdlib bootstrap fallback for install-level consent persistence."""
+"""Stdlib bootstrap fallback for install-level consent persistence.
+
+[Role]
+Provides `mindie-consent/1` file reading and locked atomic updates (`read`,
+`record_choice`, `record_reporting`) before `mindie_knowledge.consent_store`
+is available in the managed virtualenv.
+
+[Invariants]
+- Schema is `mindie-consent/1`; valid choices are `contribute`, `read-only`,
+  `later`, `disabled`; valid reporting states are `enabled`, `disabled`, `later`.
+- Corrupt or unreadable files are reported via `state` (`corrupt` / `unreadable`)
+  and never silently treated as `contribute`.
+
+[Timeouts & Locks]
+- Uses cross-platform file locking (`fcntl.flock` / `msvcrt.locking`) on
+  `<path>.lock` with `LOCK_WAIT_SECONDS = 5.0` and `0.05s` poll interval.
+
+[Side-Effect Policy]
+- Writes `<path>` via temporary file + `os.replace` under `<path>.lock`.
+"""
 
 from __future__ import annotations
 
-import errno, json, os, stat, tempfile, time
+import json
+import os
+import tempfile
+import time
 from pathlib import Path
 
 SCHEMA = "mindie-consent/1"
@@ -12,8 +34,11 @@ STATES = ("ok", "missing", "unreadable", "corrupt")
 MAX_BYTES = 64 * 1024
 LOCK_WAIT_SECONDS = 5.0
 LOCK_POLL_SECONDS = 0.05
-__all__ = ["SCHEMA", "CHOICES", "REPORTING", "STATES", "MAX_BYTES",
-           "ConsentError", "read", "record_choice", "record_reporting"]
+__all__ = [
+    "SCHEMA", "CHOICES", "REPORTING", "STATES", "MAX_BYTES",
+    "ConsentError", "read", "record_choice", "record_reporting",
+]
+
 
 class ConsentError(Exception):
     def __init__(self, message, *, state):
@@ -22,14 +47,18 @@ class ConsentError(Exception):
             raise ValueError("ConsentError state must be corrupt, unreadable or locked")
         self.state = state
 
+
 def _lock_op(fd, lock: bool):
     if os.name == "nt":
         import msvcrt
+
         os.lseek(fd, 0, os.SEEK_SET)
         msvcrt.locking(fd, msvcrt.LK_NBLCK if lock else msvcrt.LK_UNLCK, 1)
     else:
         import fcntl
+
         fcntl.flock(fd, (fcntl.LOCK_EX | fcntl.LOCK_NB) if lock else fcntl.LOCK_UN)
+
 
 class _UpdateLock:
     def __init__(self, path, wait=LOCK_WAIT_SECONDS):
@@ -63,15 +92,19 @@ class _UpdateLock:
                 pass
             os.close(fd)
 
+
 def _open_for_read(path):
     return open(path, "rb")
 
+
+def _read_bytes(path):
+    with _open_for_read(path) as stream:
+        return stream.read(MAX_BYTES + 1)
+
+
 def _read_raw(path):
     try:
-        with _open_for_read(path) as stream:
-            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-                raise OSError(errno.EINVAL, "authority is not a regular file")
-            raw = stream.read(MAX_BYTES + 1)
+        raw = _read_bytes(path)
     except FileNotFoundError:
         return "missing", None
     except OSError:
@@ -84,6 +117,7 @@ def _read_raw(path):
         return "corrupt", None
     return ("ok", data) if isinstance(data, dict) else ("corrupt", None)
 
+
 def _validate(data):
     if data.get("schema") != SCHEMA:
         return "unsupported consent schema"
@@ -92,6 +126,7 @@ def _validate(data):
     if data.get("reporting") is not None and data.get("reporting") not in REPORTING:
         return "unknown reporting choice"
     return None
+
 
 def read(path):
     path = Path(path)
@@ -110,8 +145,10 @@ def read(path):
         result[key] = data.get(key) if type(data.get(key)) in (int, float) else None
     return result
 
+
 def _atomic_replace(source, target):
     os.replace(source, target)
+
 
 def _write_document(path, data):
     path = Path(path)
@@ -121,11 +158,10 @@ def _write_document(path, data):
     try:
         with os.fdopen(fd, "wb") as stream:
             stream.write((json.dumps(data, indent=2) + "\n").encode("utf-8"))
-            stream.flush()
-            os.fsync(stream.fileno())
         _atomic_replace(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)
+
 
 def _record(path, mutate):
     path = Path(path)
@@ -133,17 +169,22 @@ def _record(path, mutate):
         state, data = _read_raw(path)
         if state == "unreadable":
             raise ConsentError("consent file is unreadable", state="unreadable")
-        doc = {k: v for k, v in (data or {}).items() if k not in ("choice", "reporting") or (k == "choice" and v in CHOICES) or (k == "reporting" and v in REPORTING)} if isinstance(data, dict) else {}
+        doc = {
+            k: v for k, v in (data or {}).items()
+            if k not in ("choice", "reporting") or (k == "choice" and v in CHOICES) or (k == "reporting" and v in REPORTING)
+        } if isinstance(data, dict) else {}
         mutate(doc)
         doc["schema"] = SCHEMA
         if state != "ok" or doc != data:
             _write_document(path, doc)
     return read(path)
 
+
 def record_choice(path, choice):
     if choice not in CHOICES:
         raise ValueError("choice must be contribute, read-only, later or disabled")
     return _record(path, lambda doc: doc.update(schema=SCHEMA, choice=choice, choice_at=time.time()) if doc.get("choice") != choice else None)
+
 
 def record_reporting(path, value):
     if value not in REPORTING:

@@ -1,15 +1,7 @@
-"""Generation registry and operation locks for update dispatch.
-
-current.json is ONE atomic committed tuple:
-  {generation: absolute code root, python: pinned interpreter,
-   adapter_config: absolute generation-specific adapter JSON, sha: exact commit}
-The launcher sets MINDIE_KIMI_CONFIG=current.adapter_config per child, so
-code, interpreter, and config always come from the same committed
-generation. Base adapter config retains the stable state_dir.
-
-Locks: the per-call shared operation lock (hooks/MCP dispatch/feed sync),
-the exclusive switch lock (updater), and a nonblocking check.lock
-serializing scheduled checks. Never writes ~/.kimi-code.
+"""[Role] Generation registry, atomic JSON persistence, and cross-process operation locks for Kimi update dispatch.
+[Invariants] current.json commits an atomic tuple {generation, python, adapter_config, sha}; refuses invalid tuples.
+[Timeouts & Locks] OperationLock.shared defaults to 5.0s, OperationLock.exclusive defaults to 30.0s, check_lock is nonblocking (0.0s).
+[Side-Effect Policy] Writes current.json/status.json/failed.json via os.replace and acquires flock/msvcrt locks under state_dir()/update.
 """
 
 from __future__ import annotations
@@ -76,18 +68,16 @@ def atomic_write(path: Path, value) -> None:
 
 def read_json(path: Path):
     try:
-        data = json.loads(path.read_text(encoding='utf-8'))
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
     except (OSError, ValueError):
         return None
-    return data if isinstance(data, dict) else None
 
 
 def _valid_tuple(data) -> dict | None:
     if not isinstance(data, dict):
         return None
-    generation = data.get("generation")
-    python = data.get("python")
-    adapter_config = data.get("adapter_config")
+    generation, python, adapter_config = data.get("generation"), data.get("python"), data.get("adapter_config")
     if not (
         isinstance(generation, str)
         and isinstance(python, str)
@@ -106,10 +96,7 @@ def _valid_tuple(data) -> dict | None:
 
 
 def read_current(config=None) -> dict:
-    """Current committed generation tuple. Bootstrap: the source tree with
-    the base adapter config."""
-    data = _valid_tuple(read_json(current_path(config)))
-    if data is not None:
+    if (data := _valid_tuple(read_json(current_path(config)))) is not None:
         return data
     try:
         python = configured_python(config)
@@ -147,8 +134,7 @@ def _lock_once(descriptor, exclusive: bool) -> bool:
             os.lseek(descriptor, 0, os.SEEK_SET)
             msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
         else:
-            flag = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
-            fcntl.flock(descriptor, flag | fcntl.LOCK_NB)
+            fcntl.flock(descriptor, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB)
         return True
     except OSError:
         return False
@@ -194,8 +180,6 @@ class _Held:
 
 
 class OperationLock:
-    """Per-call shared lock / exclusive switch lock with bounded wait."""
-
     def __init__(self, config=None):
         self._path = lock_path(config)
 
@@ -207,7 +191,4 @@ class OperationLock:
 
 
 def check_lock(config=None):
-    """Nonblocking whole-check serialization: raises LockTimeout if another
-    check is running."""
-    config_path_ = check_lock_path(config)
-    return _Held(config_path_, True, 0.0)
+    return _Held(check_lock_path(config), True, 0.0)

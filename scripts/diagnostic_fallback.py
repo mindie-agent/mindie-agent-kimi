@@ -1,8 +1,33 @@
-"""Standalone local diagnostics fallback. Stdlib only."""
+"""Stdlib-only local diagnostics fallback for Kimi plugin scripts.
+
+[Role]
+Provides local JSONL fault recording (`record_failure`) and reporting consent
+policy queries when `mindie_diagnostics` is not yet installed in the runtime.
+
+[Invariants]
+- Never records prompts, transcripts, commands, environment variables, or
+  credentials; only bounded static labels (`component`, `operation`, `stage`,
+  `category`) are persisted.
+- Categories in `_NEVER_REPORTABLE` always force `reportable=False`.
+
+[Timeouts & Locks]
+- Uses an in-process `threading.Lock` and atomic `O_APPEND` writes bounded by
+  `_MAX_EVENT_BYTES` (16 KiB) and `_MAX_FILE_BYTES` (1 MiB).
+
+[Side-Effect Policy]
+- Appends sanitized JSONL failure events under `<diagnostics_root>/events/<component>/`.
+"""
 
 from __future__ import annotations
 
-import hashlib, json, math, os, re, threading, time, uuid
+import hashlib
+import json
+import math
+import os
+import re
+import threading
+import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -67,8 +92,10 @@ def read_policy(config=None):
             return None
         if not all(isinstance(r, str) and Path(r).is_absolute() for r in roots):
             return None
-        return {"schema": _POLICY_SCHEMA, "purpose": _POLICY_PURPOSE, "decision": decision,
-                "repository": repo, "revision": rev, "roots": list(roots)}
+        return {
+            "schema": _POLICY_SCHEMA, "purpose": _POLICY_PURPOSE, "decision": decision,
+            "repository": repo, "revision": rev, "roots": list(roots),
+        }
     except Exception:
         return None
 
@@ -77,8 +104,10 @@ def current_consent(config=None):
     policy = read_policy(config)
     if not policy or policy.get("decision") != "enabled":
         return None
-    return {"config_file": str(policy_path(config)), "revision": policy["revision"],
-            "repository": policy["repository"], "purpose": policy["purpose"]}
+    return {
+        "config_file": str(policy_path(config)), "revision": policy["revision"],
+        "repository": policy["repository"], "purpose": policy["purpose"],
+    }
 
 
 def consent_status(config=None) -> dict:
@@ -97,8 +126,10 @@ def consent_allowed(reference) -> bool:
         if not isinstance(reference, dict) or set(reference.keys()) != _CONSENT_KEYS:
             return False
         policy = read_policy(reference["config_file"])
-        return bool(policy and policy.get("decision") == "enabled"
-                    and all(policy[k] == reference[k] for k in ("purpose", "repository", "revision")))
+        return bool(
+            policy and policy.get("decision") == "enabled"
+            and all(policy[k] == reference[k] for k in ("purpose", "repository", "revision"))
+        )
     except Exception:
         return False
 
@@ -112,7 +143,9 @@ def scope_key(public_fingerprint, reference) -> str:
         if not isinstance(reference, dict) or set(reference.keys()) != _CONSENT_KEYS:
             return ""
         purpose, repo, rev = reference["purpose"], reference["repository"], reference["revision"]
-        if purpose != _POLICY_PURPOSE or not (isinstance(repo, str) and _REPO_RE.fullmatch(repo) and isinstance(rev, str) and _INCIDENT_RE.fullmatch(rev)):
+        if purpose != _POLICY_PURPOSE or not (
+            isinstance(repo, str) and _REPO_RE.fullmatch(repo) and isinstance(rev, str) and _INCIDENT_RE.fullmatch(rev)
+        ):
             return ""
         canonical = json.dumps([purpose, repo, rev, public_fingerprint], ensure_ascii=True, separators=(",", ":"), allow_nan=False)
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -148,10 +181,14 @@ def record_failure(
             if isinstance(exit_code, bool) or not isinstance(exit_code, int) or not (-2147483648 <= exit_code <= 2147483647):
                 return inv
             attrs["exit_code"] = exit_code
-        if elapsed_ms is not None and (isinstance(elapsed_ms, bool) or not isinstance(elapsed_ms, (int, float)) or not math.isfinite(elapsed_ms) or not (0 <= elapsed_ms < 10**30)):
+        if elapsed_ms is not None and (
+            isinstance(elapsed_ms, bool) or not isinstance(elapsed_ms, (int, float))
+            or not math.isfinite(elapsed_ms) or not (0 <= elapsed_ms < 10**30)
+        ):
             return inv
         if (revision is not None and not (isinstance(revision, str) and _REVISION_RE.fullmatch(revision))) or (
-            version is not None and not (isinstance(version, str) and _VERSION_RE.fullmatch(version))):
+            version is not None and not (isinstance(version, str) and _VERSION_RE.fullmatch(version))
+        ):
             return inv
         fresh, effective = uuid.uuid4().hex, (False if category in _NEVER_REPORTABLE else reportable)
         event = {

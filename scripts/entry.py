@@ -1,7 +1,27 @@
-"""Slash-command operations invoked from MCP mindie_entry after nonce bind.
+"""Slash-command and unified-entry operations for `mindie_entry` MCP tool.
 
-Unconfigured init/status/choose stay stdlib: no knowledge import, no service.
-Sharing-enable destination is the native commandArgs, not model arguments.
+[Role]
+Implements `dispatch` (`init`, `choose`, `status`, `deactivate`,
+`sharing-enable`, `sharing-disable`, `sharing-status`, `recover`,
+`reporting-status`, `reporting-enable`, `reporting-disable`) after `mcp_server`
+claims the native `PreToolUse` nonce.
+
+[Invariants]
+- Unconfigured `init`/`status`/`choose` execute with stdlib only (no runtime
+  knowledge imports or background service starts).
+- Public contribution destination (`owner/repo` and `account`) must originate
+  from the user's current turn reply or native slash arguments, never model-only
+  tool arguments.
+- `status_payload` is strictly read-only and never mutates consent or community
+  files; install-state convergence runs only on explicit entry/sharing mutations.
+
+[Timeouts & Locks]
+- `op_recover` runs each `mindie_knowledge.loop.cli` recovery subcommand with a
+  `20s` timeout via `bounded.run`.
+
+[Side-Effect Policy]
+- Mutates task admission leases, install-level consent/community settings, and
+  starts the background knowledge service when `allows_capture()` is true.
 """
 
 from __future__ import annotations
@@ -9,10 +29,9 @@ from __future__ import annotations
 import json
 import os
 import shlex
-import stat
 from pathlib import Path
 
-from entry_state import consume_activation_id, configuration_required
+from entry_state import configuration_required, consume_activation_id
 from identity import (
     _entry_from_openings,
     current_entry_scan,
@@ -28,9 +47,6 @@ def _configured() -> bool:
 
 
 def _parse_sharing(text):
-    """Native sharing-enable arguments. The project root may be repeated
-    for backward compatibility but is validated against the native session
-    cwd by the caller — the scope is always the current project."""
     try:
         argv = shlex.split(text or "")
     except ValueError:
@@ -92,7 +108,6 @@ def consume_slash(session, command):
 
 
 def _diagnostics(session):
-    """One bounded read of existing state; never activate or repair."""
     try:
         from mindie_knowledge.loop.diagnostics import snapshot
 
@@ -101,58 +116,34 @@ def _diagnostics(session):
         return dict(
             status="unavailable",
             error=dict(stage="runtime_diagnostics", type=type(exc).__name__),
-            hints=["Inspect the selected MindIE runtime. Native tools and independent SSH remain available; no recovery or retry was started."],
+            hints=[
+                "Inspect the selected MindIE runtime. Native tools and independent SSH remain available; no recovery or retry was started."
+            ],
         )
 
 
 def _bounded_text(value, limit):
-    if not isinstance(value, str) or not value:
-        return None
-    return value[:limit]
-
-
+    return value[:limit] if isinstance(value, str) and value else None
 
 
 def _read_regular_json(path):
-    """Small JSON object from a regular file.
-
-    Missing is "missing". FIFO, socket, device, and malformed files are
-    "unavailable" and are not read as a blocking stream. A symlink is
-    followed only when its target is a regular file.
-    """
-    try:
-        descriptor = os.open(str(path), os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
-    except FileNotFoundError:
+    p = Path(path)
+    if not p.exists():
         return "missing", None
-    except OSError:
+    if not p.is_file():
         return "unavailable", None
     try:
-        info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode):
-            return "unavailable", None
-        with os.fdopen(os.dup(descriptor), "rb") as stream:
-            blob = stream.read()
-    except OSError:
+        value = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
         return "unavailable", None
-    finally:
-        os.close(descriptor)
-    try:
-        value = json.loads(blob.decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError, ValueError):
-        return "unavailable", None
-    if not isinstance(value, dict):
-        return "unavailable", None
-    return None, value
+    return (None, value) if isinstance(value, dict) else ("unavailable", None)
 
 
 def _number(value):
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    return value
+    return None if isinstance(value, bool) or not isinstance(value, (int, float)) else value
 
 
 def _launcher_command(adapter, operation, current):
-    """Absolute retained launcher command from an already-read current tuple."""
     try:
         from genstate import launch_dir
 
@@ -163,19 +154,16 @@ def _launcher_command(adapter, operation, current):
         if not isinstance(python, str) or not python:
             return None
         launcher = launch_dir(adapter) / sha / "mindie_launch.py"
-        if not stat.S_ISREG(launcher.stat().st_mode):
+        if not launcher.is_file():
             return None
         config_value = adapter.get("base_config") if isinstance(adapter.get("base_config"), str) else str(config_path())
         config_file = str(Path(config_value).expanduser().resolve())
         return shlex.join([python, str(launcher.resolve()), "--config", config_file, "updater", operation])
-    except OSError:
-        return None
     except Exception:
         return None
 
 
 def _updater_view():
-    """Read updater failure state. Does not check the network or mutate it."""
     try:
         from genstate import current_path, failed_path, status_path
 
@@ -189,13 +177,9 @@ def _updater_view():
         return {"status": "unavailable"}
     if "unavailable" in {failed_state, status_state, current_state}:
         return {"status": "unavailable"}
-    failed = failed or {}
-    status = status or {}
-    current = current or {}
-    if not isinstance(failed, dict):
-        failed = {}
-    if not isinstance(status, dict):
-        status = {}
+    failed = failed if isinstance(failed, dict) else {}
+    status = status if isinstance(status, dict) else {}
+    current = current if isinstance(current, dict) else {}
     klass = failed.get("failure_class") if isinstance(failed.get("failure_class"), str) else None
     if klass is None and isinstance(status.get("resolve_failure_class"), str):
         klass = status.get("resolve_failure_class")
@@ -208,9 +192,7 @@ def _updater_view():
     active = bool(
         failed.get("error") or klass or phase or nxt is not None
         or status.get("error") or status.get("resolve_wait")
-        or status.get("result") in {
-            "failed", "check-failed", "action-required", "retry-waiting",
-        }
+        or status.get("result") in {"failed", "check-failed", "action-required", "retry-waiting"}
     )
     if not active:
         if isinstance(failed.get("sha"), str) or failed.get("history") or failed.get("count"):
@@ -226,8 +208,7 @@ def _updater_view():
         view["result"] = status["result"][:80]
     if isinstance(failed.get("sha"), str):
         view["failed_sha"] = failed["sha"][:64]
-    error = _bounded_text(failed.get("error"), 200) or _bounded_text(status.get("error"), 200)
-    if error:
+    if error := _bounded_text(failed.get("error"), 200) or _bounded_text(status.get("error"), 200):
         view["error"] = error
     if klass:
         view["failure_class"] = klass[:40]
@@ -242,17 +223,13 @@ def _updater_view():
     if certificate:
         view["recovery"] = "action_required"
         view["note"] = "certificate trust needs repair; scheduled checks retry after backoff"
-        operation = "status"
     elif actionable:
         view["recovery"] = "action_required"
         view["note"] = "credentials or host permission need attention"
-        operation = "status"
     else:
         view["recovery"] = "automatic"
         view["note"] = "scheduled checks retry this failure after backoff"
-        operation = "status"
-    command = _launcher_command(adapter, operation, current)
-    if command:
+    if command := _launcher_command(adapter, "status", current):
         view["command"] = command
     return view
 
@@ -279,8 +256,7 @@ def _knowledge_status_payload(session=None):
             hint="Inspect the existing adapter and community configuration. Native tools and independent SSH remain available; no setup or retry was started.",
         )
     choice = saved["choice"] if saved["state"] == "ok" else None
-    payload = dict(configured=True, sharing=sharing_view, first_use=choice,
-                   consent_state=saved["state"])
+    payload = dict(configured=True, sharing=sharing_view, first_use=choice, consent_state=saved["state"])
     diagnostics = _diagnostics(session)
     payload["diagnostics"] = diagnostics
     if session:
@@ -294,11 +270,11 @@ def _knowledge_status_payload(session=None):
             project_root=admission.get("project_root"),
         )
     payload["choices"] = []
-    payload["repeat"] = bool(choice or saved["state"] in {"corrupt", "unreadable"}
-                             or sharing_view.get("state") in {"corrupt", "unreadable"}
-                             or consent_mod.marker_exists())
-    # Saved preferences and runtime configuration are distinct facts. A prior
-    # marker/choice must not hide an incomplete or failed experience loop.
+    payload["repeat"] = bool(
+        choice or saved["state"] in {"corrupt", "unreadable"}
+        or sharing_view.get("state") in {"corrupt", "unreadable"}
+        or consent_mod.marker_exists()
+    )
     if saved["state"] in {"corrupt", "unreadable"}:
         payload["experience"] = "unavailable"
         payload["consent_error"] = dict(state=saved["state"], error=saved["error"])
@@ -316,6 +292,7 @@ def _knowledge_status_payload(session=None):
         payload["hint"] = "Configure the missing destination and scope through the native mindie-agent entry."
     else:
         from sharing import load
+
         settings = load()
         task = payload.get("this_session") or {}
         if not settings.allows_capture():
@@ -327,21 +304,18 @@ def _knowledge_status_payload(session=None):
         else:
             payload["experience"] = "configured"
         payload["hint"] = "Configuration and task binding are prerequisites; inspect captures and contributions for actual processing receipts."
-    update = _updater_view()
-    if update:
+    if update := _updater_view():
         payload["update"] = update
     return payload
 
 
 def status_payload(session=None):
-    """Read-only. Reporting is independent of knowledge setup and binding."""
     import consent as consent_mod
     import diagnostic_support
 
     payload = dict(_knowledge_status_payload(session))
     payload["reporting"] = diagnostic_support.reporting_status()
     saved = consent_mod.load()
-    # Reporting is offered once, inside the first setup, never repeatedly.
     if (
         payload["reporting"].get("status") == "not_configured"
         and saved["state"] == "missing"
@@ -361,11 +335,6 @@ def _project_root(session, cwd):
 
 
 def _adopt_install_state():
-    """Explicit install/upgrade/entry adoption boundary: converge community
-    settings onto the profile-shared authority, then converge any consent
-    document a pre-fix generation fork stranded outside the profile. Reads
-    elsewhere never perform these writes. Only meaningful results are
-    reported; conflicts stay diagnosable and unresolved."""
     import consent as consent_mod
 
     report = {}
@@ -385,9 +354,6 @@ def _adopt_install_state():
 
 
 def _parse_native_setup(arguments):
-    """Native entry arguments: empty, ``read-only``/``later``, or
-    ``contribute <owner/repo> <account>``. Values come from the native
-    commandArgs/skillArgs — never from model arguments."""
     text = (arguments or "").strip()
     if not text:
         return None
@@ -398,19 +364,12 @@ def _parse_native_setup(arguments):
         return dict(choice=tokens[0])
     if tokens[0] == "contribute":
         if len(tokens) != 3:
-            raise ValueError(
-                "contribute uses native arguments: /mindie-agent contribute owner/repo account"
-            )
+            raise ValueError("contribute uses native arguments: /mindie-agent contribute owner/repo account")
         return dict(choice="contribute", repository=tokens[1], account=tokens[2])
     return None
 
 
 def _enable_contribution(session, cwd, *, repository, account, branch="main", fork=None):
-    """The explicit public opt-in: enable sharing for the current project.
-    The project root is the native session cwd (host-derived — never a
-    command or model argument). An existing scope for the SAME destination
-    is preserved and the current project is added — never silently widened
-    to another repository."""
     import sharing as sharing_mod
     from mindie_knowledge.community.common import check_account
     from mindie_knowledge.loop.settings import check_branch, check_repository
@@ -424,13 +383,11 @@ def _enable_contribution(session, cwd, *, repository, account, branch="main", fo
     root = _project_root(session, cwd)
     return sharing_mod.write_enabled(
         repository=repository, project_roots=[root], branch=branch,
-        visibility="public", account=account, fork=fork, extend_scope=True)
+        visibility="public", account=account, fork=fork, extend_scope=True,
+    )
 
 
-def _apply_choice(session, cwd, choice, *, repository=None, account=None,
-                  branch="main", fork=None):
-    """Record a verified choice and keep the sharing settings consistent
-    with it."""
+def _apply_choice(session, cwd, choice, *, repository=None, account=None, branch="main", fork=None):
     import consent as consent_mod
 
     if choice not in {"contribute", "disabled"}:
@@ -452,8 +409,9 @@ def _apply_choice(session, cwd, choice, *, repository=None, account=None,
             view = sharing_mod.write_disabled()
     consent_mod.record_choice(choice)
     if choice == "contribute" and view is not None:
-        from knowledge_service import ensure_service
         from admission import gate
+        from knowledge_service import ensure_service
+
         if gate().inspect(session).get("status") == "active":
             try:
                 ensure_service(engine_config_path())
@@ -464,7 +422,6 @@ def _apply_choice(session, cwd, choice, *, repository=None, account=None,
 
 
 def _apply_reporting(value):
-    """Persist the reporting choice and keep the real reporter consistent."""
     import consent as consent_mod
     import diagnostic_support
 
@@ -491,8 +448,6 @@ def _apply_reporting(value):
 
 
 def _configured_init_activation(session, cwd, activation_id):
-    """Entry binding for a configured task: automatic, idempotent, and never
-    a consent prompt. The persistent install-level choice is untouched."""
     from admission import activate, gate
     from knowledge_service import ensure_service
 
@@ -504,6 +459,7 @@ def _configured_init_activation(session, cwd, activation_id):
         return payload
     try:
         from sharing import load
+
         if load().allows_capture():
             ensure_service(engine_config_path())
             service = "started"
@@ -555,8 +511,7 @@ def op_init(session, cwd):
             return status_payload(session)
         if native["choice"] == "contribute":
             raise ValueError("MindIE is not configured; run scripts/setup.py first")
-        payload = status_payload(session)
-        return _apply_entry_choice(payload, session, cwd, native)
+        return _apply_entry_choice(status_payload(session), session, cwd, native)
     migration = _adopt_install_state()
     payload = _configured_init_activation(session, cwd, found["activation_id"])
     if migration:
@@ -566,17 +521,7 @@ def op_init(session, cwd):
     return payload
 
 
-def op_choose(session, choice, cwd=None, *, repository=None, account=None,
-              reporting=None):
-    """Store a setup choice from the unified-entry conversation.
-
-    An ordinary user reply (kind=user) may make the FIRST choice; changing
-    an existing saved choice requires the verified entry itself (the user
-    explicitly changing settings). A conversational contribution
-    destination must appear in the user's own current reply; via the entry
-    it comes from the native arguments only. A damaged consent document is
-    an honest fault — nothing is rewritten automatically.
-    """
+def op_choose(session, choice, cwd=None, *, repository=None, account=None, reporting=None):
     import consent as consent_mod
 
     migration = _adopt_install_state() if _configured() else None
@@ -595,14 +540,9 @@ def op_choose(session, choice, cwd=None, *, repository=None, account=None,
     if choice == "contribute":
         if user_text is not None:
             if not repository or not account:
-                raise ValueError(
-                    "contribute requires the repository and account the user stated"
-                )
+                raise ValueError("contribute requires the repository and account the user stated")
             if repository not in user_text or account not in user_text:
-                raise ValueError(
-                    "the public contribution destination must appear in the "
-                    "user's current reply"
-                )
+                raise ValueError("the public contribution destination must appear in the user's current reply")
         else:
             native = _parse_native_setup(found.get("arguments"))
             if native is None or native.get("choice") != "contribute":
@@ -611,11 +551,7 @@ def op_choose(session, choice, cwd=None, *, repository=None, account=None,
                     "/mindie-agent contribute owner/repo account"
                 )
             repository, account = native["repository"], native["account"]
-    view = None
-    if choice is not None:
-        view = _apply_choice(
-            session, cwd, choice, repository=repository, account=account
-        )
+    view = _apply_choice(session, cwd, choice, repository=repository, account=account) if choice is not None else None
     reporting_view = _apply_reporting(reporting) if reporting is not None else None
     payload = status_payload(session)
     if choice is not None:
@@ -636,9 +572,6 @@ def op_choose(session, choice, cwd=None, *, repository=None, account=None,
 
 
 def op_status(session):
-    # A bound task that explicitly enabled MindIE can diagnose a later failure
-    # without another user slash command. This read does not consume an
-    # attempt or grant/rebind anything.
     admitted = False
     if _configured():
         from admission import gate
@@ -689,12 +622,11 @@ def op_sharing_disable(session):
     consume_slash(session, "sharing-disable")
     if not _configured():
         return dict(configured=False, enabled=False)
+    import consent as consent_mod
     import sharing as sharing_mod
 
     _adopt_install_state()
     result = sharing_mod.write_disabled()
-    import consent as consent_mod
-
     consent_mod.record_choice("disabled")
     return result
 
@@ -732,23 +664,12 @@ def op_recover(session, _model_arguments=""):
             diagnostics=_diagnostics(session), **result,
         )
     extra = ["--batch", batch]
-    for operation in (
-        "contribution-inspect",
-        "contribution-reconcile",
-        "contribution-compact",
-    ):
+    for operation in ("contribution-inspect", "contribution-reconcile", "contribution-compact"):
         try:
-            output = run(
-                [python, "-m", "mindie_knowledge.loop.cli", operation, "--config", engine, *extra],
-                "",
-                timeout=20,
-            )
+            output = run([python, "-m", "mindie_knowledge.loop.cli", operation, "--config", engine, *extra], "", timeout=20)
             result[operation] = json.loads(output)
             result["actions"].append(operation)
         except Exception as exc:
-            # The core prints a valid receipt on stdout and exits 2 for an
-            # incomplete or recovery-error outcome; that receipt is the
-            # evidence, not a crashed command.
             receipt = None
             if getattr(exc, "returncode", None) == 2:
                 try:
@@ -765,9 +686,7 @@ def op_recover(session, _model_arguments=""):
 
 
 def op_reporting(session, command):
-    """Native command only. Does not ensure the reporter or change knowledge."""
-    found, first = consume_slash(session, command)
-    del found
+    _found, first = consume_slash(session, command)
     import diagnostic_support
 
     if command == "reporting-status":
@@ -779,21 +698,15 @@ def op_reporting(session, command):
     return _apply_reporting("enabled" if command == "reporting-enable" else "disabled")
 
 
-def dispatch(session, cwd, op, arguments="", choice=None, *, repository=None,
-             account=None, reporting=None):
+def dispatch(session, cwd, op, arguments="", choice=None, *, repository=None, account=None, reporting=None):
     if op == "init":
         return op_init(session, cwd)
     if op == "choose":
         if choice is None and reporting is None:
             raise ValueError("choose requires a choice or a reporting value")
         if choice is not None and choice not in {"contribute", "read-only", "later", "disabled"}:
-            raise ValueError(
-                "choose requires choice=contribute, read-only, later or disabled"
-            )
-        return op_choose(
-            session, choice, cwd, repository=repository, account=account,
-            reporting=reporting,
-        )
+            raise ValueError("choose requires choice=contribute, read-only, later or disabled")
+        return op_choose(session, choice, cwd, repository=repository, account=account, reporting=reporting)
     if op == "status":
         return op_status(session)
     if op == "deactivate":

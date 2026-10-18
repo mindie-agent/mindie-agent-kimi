@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Stdlib trampoline: configured interpreter, or this python if unconfigured.
-
-Unconfigured entry/status must still run offline. Sharing stays off and no
-service/model is started by this launcher.
+"""[Role] Stdlib interpreter trampoline dispatching plugin scripts to the configured runtime Python.
+[Invariants] Falls back to sys.executable when unconfigured so offline entry/status still work; strips PYTHONPATH before os.execv.
+[Timeouts & Locks] Zero locks, zero waits; replaces current process image immediately via os.execv.
+[Side-Effect Policy] Mutates process environment (removes PYTHONPATH) and execs target script.
 """
 
 from __future__ import annotations
@@ -14,11 +14,9 @@ from pathlib import Path
 
 
 def _config_path() -> Path:
-    override = os.environ.get("MINDIE_KIMI_CONFIG")
-    if override:
+    if override := os.environ.get("MINDIE_KIMI_CONFIG"):
         return Path(override).expanduser()
-    base = os.environ.get("XDG_CONFIG_HOME")
-    root = Path(base) if base else Path.home() / ".config"
+    root = Path(base) if (base := os.environ.get("XDG_CONFIG_HOME")) else Path.home() / ".config"
     return root / "mindie-agent" / "kimi.json"
 
 
@@ -26,22 +24,20 @@ def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
         raise SystemExit("with_runtime.py <script> [args...]")
-    here = Path(__file__).resolve().parent
     script = Path(argv[0])
     if not script.is_absolute():
-        script = here / script
-    rest = argv[1:]
+        script = Path(__file__).resolve().parent / script
     path = _config_path()
     python = sys.executable
     if path.is_file():
         try:
-            configured = json.loads(path.read_text(encoding='utf-8')).get("python")
+            configured = json.loads(path.read_text(encoding="utf-8")).get("python")
+            if isinstance(configured, str) and configured:
+                python = configured
         except (OSError, ValueError, TypeError):
-            configured = None
-        if isinstance(configured, str) and configured:
-            python = configured
+            pass
     os.environ.pop("PYTHONPATH", None)
-    os.execv(python, [python, str(script), *rest])
+    os.execv(python, [python, str(script), *argv[1:]])
 
 
 if __name__ == "__main__":

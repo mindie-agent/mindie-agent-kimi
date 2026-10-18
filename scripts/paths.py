@@ -1,4 +1,8 @@
-"""MindIE-owned paths for the Kimi adapter. Never writes ~/.kimi-code."""
+"""[Role] Canonical path and binary resolution authority for the Kimi adapter.
+[Invariants] Profile authority paths anchor at profile_config_path() (never per-generation forks); never mutates ~/.kimi.
+[Timeouts & Locks] Pure filesystem metadata and JSON config reads; zero locks or subprocesses.
+[Side-Effect Policy] Strictly read-only path and configuration resolution.
+"""
 
 from __future__ import annotations
 
@@ -12,16 +16,18 @@ IDENTITY = r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}\Z"
 NONCE = r"[A-Za-z0-9][A-Za-z0-9._-]{7,127}\Z"
 PLUGIN_ID = "mindie-agent"
 MCP_QUALIFIED_PREFIX = "mcp__plugin-mindie-agent_"
+GIT_WINDOWS_LOCATIONS = (
+    r"C:\Program Files\Git\cmd\git.exe",
+    r"C:\Program Files (x86)\Git\cmd\git.exe",
+)
 
 
 def _default_config_path() -> Path:
-    return (Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
-            / "mindie-agent" / "kimi.json").absolute()
+    return (Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "mindie-agent" / "kimi.json").absolute()
 
 
 def config_path() -> Path:
-    override = os.environ.get("MINDIE_KIMI_CONFIG")
-    if override:
+    if override := os.environ.get("MINDIE_KIMI_CONFIG"):
         return Path(override).expanduser().absolute()
     return _default_config_path()
 
@@ -29,23 +35,12 @@ def config_path() -> Path:
 def _read_config_quiet(path: Path):
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
     except (OSError, ValueError):
         return None
-    return data if isinstance(data, dict) else None
 
 
 def profile_config_path() -> Path:
-    """The stable profile adapter configuration.
-
-    Authority state (consent document, community settings, first-use
-    evidence) anchors at this file's directory, never at a per-generation
-    fork: update generations fork code and interpreter, never
-    authorization. A MINDIE_KIMI_CONFIG override that is not a generation
-    config (setup, tests, the bootstrap install) IS the profile config; a
-    config under <state_dir>/update/generations/ resolves to the default
-    profile path (generation configs carry an explicit profile_config key
-    once written by a fixed updater).
-    """
     path = config_path()
     data = _read_config_quiet(path) if path.is_file() else None
     if data is not None:
@@ -54,15 +49,10 @@ def profile_config_path() -> Path:
             return Path(profile)
         try:
             generations = state_dir(data) / "update" / "generations"
+            path.relative_to(generations)
+            return _default_config_path()
         except (OSError, ValueError, KeyError, FileNotFoundError):
-            generations = None
-        if generations is not None:
-            try:
-                path.relative_to(generations)
-            except ValueError:
-                pass
-            else:
-                return _default_config_path()
+            pass
     return path
 
 
@@ -70,7 +60,7 @@ def load_adapter_config() -> dict:
     path = config_path()
     if not path.is_file():
         raise FileNotFoundError("MindIE Kimi adapter configuration is missing")
-    data = json.loads(path.read_text(encoding='utf-8'))
+    data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError("adapter configuration must be one JSON object")
     return data
@@ -85,8 +75,7 @@ def engine_config_path(config=None) -> Path:
 
 
 def load_engine_config(config=None) -> dict:
-    path = engine_config_path(config)
-    data = json.loads(path.read_text(encoding='utf-8'))
+    data = json.loads(engine_config_path(config).read_text(encoding="utf-8"))
     if not isinstance(data, dict) or not {"root", "domain"} <= set(data):
         raise ValueError("engine configuration requires root and domain")
     if "session_activation" in data:
@@ -114,11 +103,7 @@ def community_config_path(config=None) -> Path:
 
 
 def default_state_dir() -> Path:
-    return (
-        Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
-        / "mindie-agent"
-        / "state"
-    )
+    return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "mindie-agent" / "state"
 
 
 def state_dir(config=None) -> Path:
@@ -129,29 +114,21 @@ def state_dir(config=None) -> Path:
     value = config.get("state_dir")
     if isinstance(value, str) and os.path.isabs(value):
         return Path(value)
-    engine = load_engine_config(config)
-    return Path(engine["root"]) / "kimi-adapter"
+    return Path(load_engine_config(config)["root"]) / "kimi-adapter"
 
 
 def first_use_path() -> Path:
-    """Stable first-use state. Lives under state_dir, NOT beside the
-    (possibly generation-specific) adapter config, so it survives
-    generation switches."""
     return state_dir() / "kimi.first-use.json"
 
 
 def kimi_home_from_env() -> Path | None:
     value = os.environ.get("KIMI_CODE_HOME")
-    if not isinstance(value, str) or not value.strip():
-        return None
-    return Path(value).expanduser()
+    return Path(value).expanduser() if isinstance(value, str) and value.strip() else None
 
 
 def plugin_root_from_env() -> Path:
     value = os.environ.get("KIMI_PLUGIN_ROOT")
-    if isinstance(value, str) and value.strip():
-        return Path(value)
-    return PLUGIN_ROOT
+    return Path(value) if isinstance(value, str) and value.strip() else PLUGIN_ROOT
 
 
 def configured_python(config=None) -> str:
@@ -163,14 +140,7 @@ def configured_python(config=None) -> str:
 
 
 def resolve_kimi_bin(config=None):
-    """The deterministic absolute native kimi binary for service launch
-    contexts whose PATH differs from the login shell (systemd --user has no
-    ~/.local/bin; Task Scheduler differs). MINDIE_KIMI_BIN wins, then
-    <kimi_home>/bin/kimi (the native install layout), then PATH. Returns
-    None when none exists — a configuration fault to surface honestly,
-    never a guessed path."""
-    explicit = os.environ.get("MINDIE_KIMI_BIN")
-    if explicit:
+    if explicit := os.environ.get("MINDIE_KIMI_BIN"):
         return explicit
     config = config if config is not None else load_adapter_config()
     home = config.get("kimi_home") or os.environ.get("KIMI_CODE_HOME")
@@ -181,23 +151,10 @@ def resolve_kimi_bin(config=None):
     return shutil.which("kimi")
 
 
-GIT_WINDOWS_LOCATIONS = (
-    r"C:\Program Files\Git\cmd\git.exe",
-    r"C:\Program Files (x86)\Git\cmd\git.exe",
-)
-
-
 def resolve_git_bin():
-    """The deterministic git executable for reduced-PATH launch contexts
-    (Task Scheduler Session 0 has System32 only). MINDIE_KIMI_GIT_BIN wins,
-    then PATH, then the standard Git-for-Windows locations. Returns None
-    when none exists — an honest configuration fault, never a guessed
-    path."""
-    explicit = os.environ.get("MINDIE_KIMI_GIT_BIN")
-    if explicit:
+    if explicit := os.environ.get("MINDIE_KIMI_GIT_BIN"):
         return explicit
-    found = shutil.which("git")
-    if found:
+    if found := shutil.which("git"):
         return found
     if os.name == "nt":
         for candidate in GIT_WINDOWS_LOCATIONS:

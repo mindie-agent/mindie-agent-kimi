@@ -1,7 +1,7 @@
-"""Thin wrapper: shared Admission only. No local lease or attempt SQL.
-
-The lease is the internal per-task identity binding established by the
-entry; it is never a consent prompt and never failure-paused.
+"""[Role] Thin per-task admission lease wrapper around mindie_knowledge.loop.activation.Admission.
+[Invariants] Lease binds a Kimi session_id to a resolved project_root; never acts as a consent prompt or failure-pause gate.
+[Timeouts & Locks] Delegates to shared SQLite WAL admission store (busy_timeout=5000ms).
+[Side-Effect Policy] Mutates admission.sqlite3 only on explicit activate() or deactivate() calls.
 """
 
 from __future__ import annotations

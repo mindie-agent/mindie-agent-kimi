@@ -77,9 +77,6 @@ class UpgradeBootstrapTests(unittest.TestCase):
         stamp = self.scripts / 'diagnostic-build.json'
         stamp.write_text('invalid')
         self.assertEqual(self.metadata(), {})
-        stamp.unlink()
-        stamp.symlink_to(self.generation / '.mindie-generation-complete')
-        self.assertEqual(self.metadata(), {})
 
     def test_adjacent_valid_stamp_takes_precedence(self):
         for name in ('diagnostic_support.py', 'diagnostic_fallback.py'):

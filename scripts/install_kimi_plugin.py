@@ -1,8 +1,23 @@
 #!/usr/bin/env python3
-"""Install this plugin through Kimi's native plugin API in an explicit home.
+"""Native Kimi plugin installer and readback verifier.
 
-Never fabricates plugins/installed.json and never deletes a managed root.
-Requires --kimi-home so ~/.kimi-code is not the implicit target.
+[Role]
+Installs or inspects this plugin through Kimi's native HTTP plugin API
+(`kimi web --no-open`) inside an explicit `--kimi-home` directory and verifies
+that expected MCP servers, hooks, and slash commands are enabled.
+
+[Invariants]
+- Never fabricates `plugins/installed.json` directly or deletes a managed root.
+- Requires explicit `--kimi-home` so `~/.kimi-code` is never mutated implicitly.
+- Rejects native records where MCP servers, hooks, or commands were skipped.
+
+[Timeouts & Locks]
+- Server readiness poll: 20s (`0.4s` interval); HTTP request timeout: 15s;
+  child termination grace: 3s (`terminate` then `kill`).
+
+[Side-Effect Policy]
+- Starts a temporary local `kimi web` child process in `--kimi-home`, posts
+  `/api/v1/plugins` when installing, and always terminates the child process.
 """
 
 from __future__ import annotations
@@ -26,9 +41,7 @@ EXPECTED_MCP_SURFACES = ("knowledge", "remote")
 
 def _command_files(package: Path) -> int:
     commands = package / "commands"
-    if not commands.is_dir():
-        return 0
-    return sum(1 for path in commands.rglob("*.md") if path.is_file())
+    return sum(1 for p in commands.rglob("*.md") if p.is_file()) if commands.is_dir() else 0
 
 
 def expected_native_resources(package: Path, manifest: dict) -> dict:
@@ -45,36 +58,27 @@ def expected_native_resources(package: Path, manifest: dict) -> dict:
 
 
 def _diagnostics_skipped_expected(diagnostics, expected: dict) -> list:
-    problems = []
     if not isinstance(diagnostics, list):
-        return problems
+        return []
+    problems = []
     for item in diagnostics:
-        if not isinstance(item, dict):
-            continue
-        message = str(item.get("message") or "")
+        message = str(item.get("message") or "") if isinstance(item, dict) else ""
         if not message:
             continue
-        for name in expected["mcp"]:
-            if f"mcpServers.{name}" in message:
-                problems.append(message)
-                break
-        else:
-            lowered = message.lower()
-            if "skipped" in lowered or "must be a path command" in lowered:
-                problems.append(message)
+        if any(f"mcpServers.{name}" in message for name in expected["mcp"]) or (
+            "skipped" in message.lower() or "must be a path command" in message.lower()
+        ):
+            problems.append(message)
     return problems
 
 
-def native_record_resource_problems(record: dict, expected: dict,
-                                    install_data: dict | None = None) -> list:
-    """Reject enabled/ok records that did not actually load MCP/hook/commands."""
+def native_record_resource_problems(record: dict, expected: dict, install_data: dict | None = None) -> list:
     problems = []
     mcp_n = expected["mcp_count"]
     if record.get("mcpServerCount") != mcp_n:
         problems.append(f"mcpServerCount={record.get('mcpServerCount')!r}")
     if record.get("enabledMcpServerCount") != mcp_n:
-        problems.append(
-            f"enabledMcpServerCount={record.get('enabledMcpServerCount')!r}")
+        problems.append(f"enabledMcpServerCount={record.get('enabledMcpServerCount')!r}")
     if expected["hooks"] and record.get("hookCount") != expected["hooks"]:
         problems.append(f"hookCount={record.get('hookCount')!r}")
     if expected["commands"] and record.get("commandCount") != expected["commands"]:
@@ -86,34 +90,24 @@ def native_record_resource_problems(record: dict, expected: dict,
                 problems.append("install mcpServers missing or empty")
             else:
                 names = {item.get("name") for item in servers if isinstance(item, dict)}
-                missing = [name for name in expected["mcp"] if name not in names]
-                if missing:
+                if missing := [name for name in expected["mcp"] if name not in names]:
                     problems.append(f"install mcpServers missing {missing}")
-                disabled = [
+                if disabled := [
                     item.get("name") for item in servers
-                    if isinstance(item, dict) and item.get("enabled") is False
-                    and item.get("name") in expected["mcp"]
-                ]
-                if disabled:
+                    if isinstance(item, dict) and item.get("enabled") is False and item.get("name") in expected["mcp"]
+                ]:
                     problems.append(f"install mcpServers disabled {disabled}")
-        skipped = _diagnostics_skipped_expected(
-            install_data.get("diagnostics") or [], expected)
-        if skipped:
-            problems.append(
-                "diagnostics skipped expected resources: " + "; ".join(skipped[:4]))
+        if skipped := _diagnostics_skipped_expected(install_data.get("diagnostics") or [], expected):
+            problems.append("diagnostics skipped expected resources: " + "; ".join(skipped[:4]))
     return problems
 
 
-def native_after_inventory_problems(report: dict, package: Path, manifest: dict,
-                                    expected: dict) -> list:
-    """Require after.plugins and the selected id/version/enabled/state/source."""
-    plugins = (((report.get("after") or {}).get("body") or {})
-               .get("data") or {}).get("plugins")
+def native_after_inventory_problems(report: dict, package: Path, manifest: dict, expected: dict) -> list:
+    plugins = (((report.get("after") or {}).get("body") or {}).get("data") or {}).get("plugins")
     if not isinstance(plugins, list):
         return ["after inventory missing or not a list"]
     ident = manifest.get("name", "mindie-agent")
-    records = [p for p in plugins
-               if isinstance(p, dict) and p.get("id") == ident]
+    records = [p for p in plugins if isinstance(p, dict) and p.get("id") == ident]
     if len(records) != 1:
         return [f"after inventory holds {len(records)} records"]
     record = records[0]
@@ -131,19 +125,16 @@ def native_after_inventory_problems(report: dict, package: Path, manifest: dict,
 
 
 def verify_install_report(report: dict, package: Path, manifest: dict) -> None:
-    install = (report.get("install") or {}).get("body") or {}
-    data = install.get("data") or {}
+    data = ((report.get("install") or {}).get("body") or {}).get("data") or {}
     if data.get("id") != manifest.get("name", "mindie-agent") or data.get("hasErrors"):
         raise SystemExit(json.dumps(report, indent=2)[:2000])
     expected = expected_native_resources(package, manifest)
     problems = native_record_resource_problems(data, expected, data)
-    problems.extend(
-        native_after_inventory_problems(report, package, manifest, expected))
+    problems.extend(native_after_inventory_problems(report, package, manifest, expected))
     if problems:
         raise SystemExit(
             "native install did not enable expected MCP/hook/command resources: "
-            + ", ".join(problems)
-            + "\n" + json.dumps(report, indent=2)[:1500]
+            + ", ".join(problems) + "\n" + json.dumps(report, indent=2)[:1500]
         )
 
 
@@ -152,10 +143,7 @@ def call(port, token, method, path, data=None):
         f"http://127.0.0.1:{port}{path}",
         data=None if data is None else json.dumps(data).encode(),
         method=method,
-        headers={
-            "Authorization": "Bearer " + token,
-            "Content-Type": "application/json",
-        },
+        headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
     )
     try:
         with urllib.request.urlopen(req, timeout=15) as res:
@@ -168,8 +156,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--kimi-home", type=Path, required=True)
     parser.add_argument("--plugin-root", type=Path, default=PLUGIN_ROOT)
-    parser.add_argument("--readback", action="store_true",
-                        help="only GET the native plugin registry, no install")
+    parser.add_argument("--readback", action="store_true", help="only GET the native plugin registry, no install")
     args = parser.parse_args()
     home = args.kimi_home.expanduser().resolve()
     home.mkdir(parents=True, exist_ok=True)
@@ -179,16 +166,12 @@ def main():
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
-    env = dict(os.environ)
-    env["KIMI_CODE_HOME"] = str(home)
+    env = {**os.environ, "KIMI_CODE_HOME": str(home)}
     env.pop("CODEX_THREAD_ID", None)
     started = time.monotonic()
     process = None
     report = {}
     try:
-        # No start_new_session: the owned web server stays in THIS
-        # helper's process group, so an outer supervised kill (e.g.
-        # bounded.run deadline) terminates helper and server together.
         process = subprocess.Popen(
             [KIMI, "web", "--no-open", "--port", str(port)],
             cwd=str(home),
@@ -202,7 +185,7 @@ def main():
         while time.monotonic() < deadline and process.poll() is None:
             if token_path.exists():
                 try:
-                    token = token_path.read_text(encoding='utf-8').strip()
+                    token = token_path.read_text(encoding="utf-8").strip()
                     report["before"] = call(port, token, "GET", "/api/v1/plugins")
                     ready = True
                     break
@@ -211,29 +194,29 @@ def main():
             time.sleep(0.4)
         if not ready:
             from diagnostic_support import failure
-            failure("native_install", "native_api_start", "native_unavailable",
-                    elapsed_ms=(time.monotonic() - started) * 1000,
-                    exit_code=process.poll(), reportable=False)
-            raise SystemExit("native Kimi plugin API did not become ready")
-        token = token_path.read_text(encoding='utf-8').strip()
-        if not args.readback:
-            report["install"] = call(
-                port, token, "POST", "/api/v1/plugins", {"source": source}
+
+            failure(
+                "native_install", "native_api_start", "native_unavailable",
+                elapsed_ms=(time.monotonic() - started) * 1000,
+                exit_code=process.poll(), reportable=False,
             )
+            raise SystemExit("native Kimi plugin API did not become ready")
+        token = token_path.read_text(encoding="utf-8").strip()
+        if not args.readback:
+            report["install"] = call(port, token, "POST", "/api/v1/plugins", {"source": source})
         report["after"] = call(port, token, "GET", "/api/v1/plugins")
     except Exception as exc:
         from diagnostic_support import failure
-        diagnostic = failure("native_install", "native_api", "native_unavailable",
-                             exception=exc, reportable=False,
-                             elapsed_ms=(time.monotonic() - started) * 1000)
+
+        diagnostic = failure(
+            "native_install", "native_api", "native_unavailable",
+            exception=exc, reportable=False,
+            elapsed_ms=(time.monotonic() - started) * 1000,
+        )
         incident = diagnostic.get("incident_id")
-        suffix = f"; incident {incident}" if incident else ""
-        raise SystemExit(f"native Kimi plugin API failed ({type(exc).__name__}){suffix}") from None
+        raise SystemExit(f"native Kimi plugin API failed ({type(exc).__name__})" + (f"; incident {incident}" if incident else "")) from None
     finally:
         if process is not None:
-            # Clean up ONLY our own direct server child. No killpg: the
-            # helper's group may contain unrelated processes, and
-            # os.killpg is unavailable on Windows.
             try:
                 process.terminate()
             except OSError:
@@ -249,17 +232,18 @@ def main():
     if args.readback:
         print(json.dumps(report, indent=2))
         return
-    manifest = json.loads((args.plugin_root.expanduser().resolve() / "kimi.plugin.json").read_text(encoding='utf-8'))
+    manifest = json.loads((args.plugin_root.expanduser().resolve() / "kimi.plugin.json").read_text(encoding="utf-8"))
     try:
         verify_install_report(report, Path(source), manifest)
     except Exception as exc:
         from diagnostic_support import failure
-        diagnostic = failure("native_install", "readback", "contract_mismatch",
-                             exception=exc,
-                             elapsed_ms=(time.monotonic() - started) * 1000)
+
+        diagnostic = failure(
+            "native_install", "readback", "contract_mismatch",
+            exception=exc, elapsed_ms=(time.monotonic() - started) * 1000,
+        )
         incident = diagnostic.get("incident_id")
-        suffix = f"; incident {incident}" if incident else ""
-        raise SystemExit(f"native Kimi installation readback failed ({type(exc).__name__}){suffix}") from None
+        raise SystemExit(f"native Kimi installation readback failed ({type(exc).__name__})" + (f"; incident {incident}" if incident else "")) from None
     print(json.dumps(report, indent=2))
 
 

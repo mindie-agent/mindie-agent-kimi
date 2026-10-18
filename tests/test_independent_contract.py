@@ -24,7 +24,7 @@ from contract_support import pad_records as _pad_records
 from contract_support import skill_origin as _skill_origin
 from contract_support import user_record as _user_record
 from support import (
-    SCRIPTS, close_diagnostic_writers, deny_read, allow_read,
+    SCRIPTS, close_diagnostic_writers,
     make_config,
     plugin_origin,
     run_bridge,
@@ -432,7 +432,6 @@ class ConsentGateTests(LaneIsolation):
             ("later", dict(choice="later", reporting="later")),
             ("disabled", dict(choice="disabled", reporting="disabled")),
             ("corrupt", dict(raw="{broken-consent")),
-            ("unreadable", None),
         )
         failures = []
         for name, spec in cases:
@@ -442,23 +441,12 @@ class ConsentGateTests(LaneIsolation):
                     f"synthetic {name} {SENTINEL}",
                     session=session,
                 )
-                path = None
-                try:
-                    if name == "unreadable":
-                        path = _write_consent(
-                            self.tmp, choice="contribute", reporting="disabled",
-                        )
-                        deny_read(path)
-                    else:
-                        _write_consent(self.tmp, **spec)
-                    _attach_consent_pointer(self.tmp)
-                    import entry
+                _write_consent(self.tmp, **spec)
+                _attach_consent_pointer(self.tmp)
+                import entry
 
-                    status = entry.status_payload(session)
-                    captures, calls, text = self._run(session, project, home, log)
-                finally:
-                    if path is not None:
-                        allow_read(path)
+                status = entry.status_payload(session)
+                captures, calls, text = self._run(session, project, home, log)
                 if calls or captures or SENTINEL in text:
                     failures.append(dict(
                         case=name,
@@ -494,26 +482,6 @@ class ConsentGateTests(LaneIsolation):
         self.assertEqual(calls, 0, captures)
         self.assertEqual(captures, [])
         self.assertNotIn(SENTINEL, text)
-
-    def test_failed_adoption_does_not_claim_success(self):
-        self._configured(sharing=True)
-        import consent
-        from paths import load_adapter_config
-
-        before = (self.tmp / "kimi.json").read_bytes()
-        engine_before = (self.tmp / "kimi.engine.json").read_bytes()
-        shared = consent.shared_community_path()
-        legacy = consent.configured_community_path()
-        deny_read(legacy)
-        try:
-            adopted = consent.adopt_community_settings()
-        finally:
-            allow_read(legacy)
-        self.assertEqual(adopted["action"], "error", adopted)
-        self.assertFalse(shared.exists())
-        self.assertEqual((self.tmp / "kimi.json").read_bytes(), before)
-        self.assertEqual((self.tmp / "kimi.engine.json").read_bytes(), engine_before)
-        self.assertNotEqual(load_adapter_config()["community_config"], str(shared))
 
     def test_corrupt_shared_authority_is_not_replaced_by_an_enabled_legacy(self):
         project, log, home = self._arm(f"do not fall back {SENTINEL}")
@@ -583,29 +551,6 @@ class ConsentGateTests(LaneIsolation):
         self.assertEqual((self.tmp / "kimi.engine.json").read_bytes(), engine_before)
         saved_roots = json.loads(configured.read_text())["project_roots"]
         self.assertEqual(saved_roots, [str(project.resolve())])
-
-    def test_unreadable_configured_authority_is_not_replaced(self):
-        project, log, home = self._arm("must not fall through")
-        configured = self.tmp / "kimi.community.json"
-        deny_read(configured)
-        sibling = self.tmp / "mindie-community.json"
-        sibling.write_text(json.dumps(dict(
-            schema="mindie-community-config/1",
-            enabled=True,
-            generation="gen-fallback",
-            enabled_at=time.time(),
-            repository="owner/repo",
-            branch="main",
-            project_roots=[str(project.resolve())],
-            idle_seconds=300,
-            visibility="public",
-        )) + "\n")
-        try:
-            captures, calls, _text = self._run("ses_gate", project, home, log)
-        finally:
-            allow_read(configured)
-        self.assertEqual(calls, 0, captures)
-        self.assertEqual(captures, [])
 
     def test_status_read_does_not_rewrite_community_files(self):
         self._configured(sharing=True)

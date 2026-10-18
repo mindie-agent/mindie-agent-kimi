@@ -1,4 +1,26 @@
-"""Install-level one-time choices: the adapter's path and convergence layer."""
+"""Install-level consent and community-settings path convergence for Kimi.
+
+[Role]
+Resolves the profile-shared `mindie-consent.json` and `mindie-community.json`
+paths, records user consent choices, and converges generation-stranded files
+onto the profile authority without one-way fault lockouts.
+
+[Invariants]
+- Authority files live alongside `profile_config_path()` (`mindie-consent.json`
+  and `mindie-community.json`).
+- Stranded generation files are adopted by latest timestamp when the profile
+  authority is missing; an existing shared authority is never overwritten by a
+  legacy generation file.
+
+[Timeouts & Locks]
+- Uses `_UpdateLock` (`5.0s` wait) for consent writes and `CommunityWriteContext`
+  for community-settings convergence.
+
+[Side-Effect Policy]
+- Writes `mindie-consent.json`, `mindie-community.json`, `kimi.json`, and
+  `kimi.engine.json` atomically via `os.replace` only during explicit record or
+  adoption operations (`load()` and status queries never mutate files).
+"""
 
 from __future__ import annotations
 
@@ -88,10 +110,6 @@ def _atomic_write_bytes(path: Path, raw: bytes) -> None:
         except OSError:
             pass
         raise
-    try:
-        path.chmod(0o600)
-    except OSError:
-        pass
 
 
 def _store(path: Path, data: dict) -> None:
@@ -117,14 +135,12 @@ def _repair_corrupt_and_update(path: Path, **updates) -> None:
     with _shared_file_lock(path):
         doc = {}
         try:
-             parsed = json.loads(path.read_text(encoding="utf-8"))
-             if isinstance(parsed, dict):
-                 for k, v in parsed.items():
-                     if k == "choice" and v not in CHOICES:
-                         continue
-                     if k == "reporting" and v not in REPORTING:
-                         continue
-                     doc[k] = v
+            parsed = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(parsed, dict):
+                doc = {
+                    k: v for k, v in parsed.items()
+                    if (k != "choice" or v in CHOICES) and (k != "reporting" or v in REPORTING)
+                }
         except Exception:
             doc = {}
         doc["schema"] = SCHEMA
@@ -193,8 +209,6 @@ def _consent_rank(path: Path, view: dict) -> tuple[float, float]:
 
 
 def adopt_stranded_consent() -> dict:
-    """Converge generation-stranded consent onto the profile authority using
-    the latest timestamp when multiple files exist."""
     profile = consent_path()
     result = dict(action="already", notes=[])
     with _shared_file_lock(profile):
@@ -286,8 +300,6 @@ def _select_latest_community(candidates: list[Path]) -> Path | None:
 
 
 def adopt_community_settings() -> dict:
-    """Converge community-settings paths onto the profile-shared authority without
-    conflict or fault lockouts."""
     from mindie_knowledge.loop.settings import CommunityWriteContext
     from paths import load_adapter_config
 
@@ -311,8 +323,7 @@ def adopt_community_settings() -> dict:
         elif legacy_value is not None:
             result["notes"].append("adapter community_config repointed to the shared authority")
         if legacy is None:
-            stranded = _stranded_candidates("mindie-community.json")
-            if stranded:
+            if stranded := _stranded_candidates("mindie-community.json"):
                 legacy = _select_latest_community(stranded)
                 if len(stranded) > 1:
                     result["notes"].append("converged multiple stranded community files to latest: " + str(legacy))
