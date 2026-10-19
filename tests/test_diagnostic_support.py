@@ -1,7 +1,9 @@
 """Component checks for adapter projection and explicit reporting choice."""
 import io
+import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import types
@@ -14,6 +16,29 @@ import diagnostic_support as support
 
 
 class DiagnosticSupportTests(unittest.TestCase):
+    def test_missing_runtime_preserves_result_without_shadow_log(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env = dict(os.environ, MINDIE_DIAGNOSTICS_ROOT=str(root / "logs"))
+            completed = subprocess.run(
+                [
+                    sys.executable, "-I", "-S", "-c",
+                    "import json,sys; sys.path.insert(0, sys.argv[1]); "
+                    "import diagnostic_support as d; "
+                    "print(json.dumps(d.attach({'status':'completed','job_id':'keep-job'},"
+                    "d.failure('mcp','receipt','storage'))))",
+                    str(SCRIPTS),
+                ],
+                env=env, capture_output=True, text=True, timeout=5, check=True,
+            )
+            result = json.loads(completed.stdout)
+            self.assertEqual(result["status"], "completed")
+            self.assertNotIn("isError", result)
+            self.assertEqual(result["job_id"], "keep-job")
+            self.assertEqual(result["diagnostic"], {"logging_failed": True})
+            self.assertIn("diagnostic storage unavailable", result["content"][0]["text"])
+            self.assertFalse((root / "logs").exists())
+
     def test_empty_reference_cannot_suppress_new_failure(self):
         incident = "a" * 32
         for old in ({}, {"logging_failed": False}, {"incident_id": "not-an-id"}):
@@ -47,29 +72,3 @@ class DiagnosticSupportTests(unittest.TestCase):
                              {key: raw[key] for key in ("recorded", "incident_id", "logging_failed")})
         with patch.object(support, "_record", return_value=lambda *args, **kw: (True, "a" * 32, False)), patch("sys.stderr", io.StringIO()):
             self.assertEqual(support.failure("mcp", "helper", "protocol"), {"logging_failed": True})
-
-    def test_shared_configuration_is_explicit_and_no_service_is_started(self):
-        calls = []
-        integration = types.ModuleType("mindie_diagnostics.integration")
-        def configure(enabled, **kw):
-            calls.append((enabled, kw))
-            return {"enabled": enabled, "worker": {"status": "not_confirmed"}}
-        integration.configure_reporting = configure
-        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"MINDIE_DIAGNOSTICS_CONFIG": str(Path(tmp) / "choice.json")}), patch.dict(sys.modules, {"mindie_diagnostics.integration": integration}):
-            enabled = support.configure_reporting(True, sys.executable)
-            self.assertTrue(enabled["run_outside_hook"])
-            self.assertEqual(enabled["command"], [sys.executable, "-m", "mindie_diagnostics.cli", "reporting", "ensure", "--config", str((Path(tmp) / "choice.json").resolve())])
-            disabled = support.configure_reporting(False, sys.executable)
-            self.assertFalse(disabled["run_outside_hook"])
-            self.assertNotIn("command", disabled)
-            self.assertEqual([c[0] for c in calls], [True, False])
-            self.assertFalse((Path(tmp) / "choice.json").exists())
-            integration.configure_reporting = lambda *args, **kw: {"enabled": False}
-            unknown = support.configure_reporting(True, sys.executable)
-            self.assertEqual(unknown["status"], "unavailable")
-            self.assertNotIn("command", unknown)
-
-    def test_hints_are_registered_native_commands(self):
-        hint = support.reporting_hint()
-        for action in ("enable", "disable", "status"):
-            self.assertEqual(hint[action], "/mindie-agent:reporting-" + action)

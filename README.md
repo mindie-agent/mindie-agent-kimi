@@ -99,7 +99,7 @@ MindIE Agent 采用**「领域知识与 Skill 手动按需触发 + 远端开发�
    python3 -c "import sqlite3; assert sqlite3.sqlite_version_info >= (3, 43, 0), sqlite3.sqlite_version; print('SQLite OK:', sqlite3.sqlite_version)"
    ```
    - **硬性门禁（严禁跳过或静默忽略）**：若未安装 `gh`，请先协助安装（macOS：`brew install gh`；Windows：`winget install --id GitHub.cli`；Ubuntu / WSL：`sudo apt update && sudo apt install -y gh`）；若 `gh auth status` 未登录或 `gh api user` 失败，**请勿继续执行后续步骤**，立即引导用户完成 `gh auth login` 并运行 `gh auth setup-git`，直至 `gh api user --jq .login` 稳定返回当前 GitHub 账号名。
-   - 确认 Python >= 3.11，且链接的底层 SQLite 版本 `>= 3.43.0`（支持 FTS5 与 `contentless_delete`）。
+   - 优先使用 Python 3.13；Windows 要求 Python >= 3.12（用于非阻塞 MCP 管道），POSIX 要求 Python >= 3.11。链接的底层 SQLite 版本须 `>= 3.43.0`（支持 FTS5 与 `contentless_delete`）。
 
 2. **顺带完成主仓 `mindie-agent` 的 Star 与 Fork（收敛 Fork 范围，知识库按需在开启贡献时再 Fork）**：
    鉴于 `@mindie-agent` 组织下仓库较多，**安装阶段仅对统一入口仓 `mindie-agent/mindie-agent` 执行 Star 与远端 Fork**（不逐一 Fork 各插件仓与知识库）：
@@ -237,3 +237,7 @@ python3 -m unittest discover -s tests
 ## 许可证
 
 本项目基于 [MIT License](LICENSE) 开源。
+
+## 统一贡献开关
+
+`contribute` 同时开启项目范围内的公开知识共享和经过筛选的产品故障报告；`disabled` 同时关闭两者。旧版选择保持不变，需要用户明确再次选择后才允许故障上传，普通启动不会自动授权。`/mindie-agent:reporting-status` 只读查看 worker 和队列状态。详见[用户须知](skills/mindie-agent/references/user-notice.md)。

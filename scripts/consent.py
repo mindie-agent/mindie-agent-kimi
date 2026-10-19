@@ -1,25 +1,25 @@
-"""Install-level one-time choices: the adapter's path/evidence layer.
+"""Install-level consent and community-settings path convergence for Kimi.
 
-One small JSON document (``mindie-consent/1``) per installation profile,
-stored beside the adapter configuration so every adapter sharing this
-profile reads the same saved choice. An independently isolated profile has
-its own file and never inherits another profile's choice.
+[Role]
+Resolves the profile-shared `mindie-consent.json` and `mindie-community.json`
+paths, records user consent choices, and converges generation-stranded files
+onto the profile authority without one-way fault lockouts.
 
-All storage semantics (side-effect-free read, serialized field updates)
-are delegated to the ONE shared
-implementation: the selected runtime's ``mindie_knowledge.consent_store``
-in normal operation, or the byte-identical bootstrap copy
-``scripts/consent_store_bootstrap.py`` (source: knowledge repo
-``mindie_knowledge/consent_store.py`` @ 81fb4e222f0cba5cffe50824ffd55b33d312283d,
-SHA-256 5417689e7680454bbddbdbea6a3d655d4b09db63d4f98d8b8e1c6319bbec3efa)
-when the runtime cannot be loaded before first setup. Do not hand-edit the
-copy and do not fork the semantics here. The shared store has no migration
-API: a choice exists only from an explicit user decision.
+[Invariants]
+- Authority files live alongside `profile_config_path()` (`mindie-consent.json`
+  and `mindie-community.json`).
+- Stranded generation files are adopted by latest timestamp when the profile
+  authority is missing; an existing shared authority is never overwritten by a
+  legacy generation file.
 
-This module keeps only adapter concerns: the profile paths, the legacy
-evidence locations (first-use marker, community settings), the explicit
-repair flow, and the community-settings path convergence at explicit
-install/upgrade/entry boundaries.
+[Timeouts & Locks]
+- Uses `_UpdateLock` (`5.0s` wait) for consent writes and `CommunityWriteContext`
+  for community-settings convergence.
+
+[Side-Effect Policy]
+- Writes `mindie-consent.json`, `mindie-community.json`, `kimi.json`, and
+  `kimi.engine.json` atomically via `os.replace` only during explicit record or
+  adoption operations (`load()` and status queries never mutate files).
 """
 
 from __future__ import annotations
@@ -27,7 +27,16 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
+
+try:
+    from mindie_knowledge import consent_store
+except ImportError as exc:
+    raise RuntimeError(
+        "MindIE shared consent runtime is unavailable; run scripts/setup.py "
+        "and use the configured runtime Python before changing consent."
+    ) from exc
 
 from paths import (
     community_config_path,
@@ -38,48 +47,26 @@ from paths import (
 )
 
 
-def _store_mod():
-    """The ONE shared consent store: the runtime module when the selected
-    runtime provides it, else the byte-identical bootstrap copy."""
-    try:
-        from mindie_knowledge import consent_store as mod
-    except ImportError:
-        import consent_store_bootstrap as mod
-    return mod
-
-
-SCHEMA = _store_mod().SCHEMA
-CHOICES = _store_mod().CHOICES
-REPORTING = _store_mod().REPORTING
+SCHEMA = consent_store.SCHEMA
+CHOICES = consent_store.CHOICES
+REPORTING = consent_store.REPORTING
 
 
 class ConsentDamaged(RuntimeError):
-    """A saved consent document is corrupt or unreadable: field updates are
-    refused so a damaged file is never silently emptied. Only the explicit,
-    entry-verified repair flow rewrites it."""
-
     def __init__(self, state, error):
         super().__init__(error)
         self.state = state
 
 
 def consent_path() -> Path:
-    """The profile-shared consent document (sibling of the PROFILE adapter
-    config — update generations fork code, never this authority)."""
     return profile_config_path().parent / "mindie-consent.json"
 
 
 def shared_community_path() -> Path:
-    """The profile-shared community settings path (profile directory, never
-    a per-generation fork)."""
     return profile_config_path().parent / "mindie-community.json"
 
 
-def _stranded_candidates(filename: str) -> list:
-    """Generation-private authority files stranded by the pre-fix config
-    fork, plus the active config sibling when it is not the profile file.
-    Read-only evidence, deterministic order; the profile file itself is
-    never a candidate."""
+def _stranded_candidates(filename: str) -> list[Path]:
     profile = profile_config_path().parent / filename
     seen = []
     try:
@@ -97,9 +84,8 @@ def _stranded_candidates(filename: str) -> list:
 
 
 def _read_json(path: Path):
-    """(state, data): ok / missing / unreadable / corrupt. Never raises."""
     try:
-        raw = _store_mod()._read_bytes(path)
+        raw = consent_store._read_bytes(path)
     except FileNotFoundError:
         return "missing", None
     except OSError:
@@ -108,32 +94,22 @@ def _read_json(path: Path):
         data = json.loads(raw)
     except ValueError:
         return "corrupt", None
-    if not isinstance(data, dict):
-        return "corrupt", None
-    return "ok", data
+    return ("ok", data) if isinstance(data, dict) else ("corrupt", None)
 
 
 def _atomic_write_bytes(path: Path, raw: bytes) -> None:
-    """Unique temp file + atomic replace (adapter/engine/community config
-    plumbing only — consent documents go through the shared store)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, tmp = tempfile.mkstemp(
-        dir=str(path.parent), prefix=path.name + ".", suffix=".tmp"
-    )
+    descriptor, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
     try:
         with os.fdopen(descriptor, "wb") as stream:
             stream.write(raw)
-        _store_mod()._atomic_replace(tmp, path)
+        os.replace(tmp, path)
     except BaseException:
         try:
             os.unlink(tmp)
         except OSError:
             pass
         raise
-    try:
-        path.chmod(0o600)
-    except OSError:
-        pass
 
 
 def _store(path: Path, data: dict) -> None:
@@ -141,11 +117,7 @@ def _store(path: Path, data: dict) -> None:
 
 
 def _shared_file_lock(path: Path):
-    """The canonical cross-process lock of the shared consent store, reused
-    for adapter-owned non-community files (slash activation dedupe) — no
-    third lock protocol. Community settings writes use the core's
-    CommunityWriteContext instead (see adopt_community_settings)."""
-    return _store_mod()._UpdateLock(path.with_name(path.name + ".lock"))
+    return consent_store._UpdateLock(path.with_name(path.name + ".lock"))
 
 
 def _marker_path():
@@ -156,68 +128,37 @@ def _marker_path():
 
 
 def load() -> dict:
-    """Read the persistent choice through the shared store. Side-effect
-    free: no state is ever imported or inferred here.
-
-    Returns ``state`` of ``ok``/``missing``/``unreadable``/``corrupt`` plus
-    the saved ``choice`` and ``reporting`` values when valid. An invalid
-    saved choice value is corrupt, not absent.
-    """
-    return _store_mod().read(consent_path())
+    return consent_store.read(consent_path())
 
 
 def record_choice(choice: str) -> str:
-    """Explicit field update via the shared store (serialized merge; a
-    damaged file is refused, never silently emptied)."""
     if choice not in CHOICES:
         raise ValueError("choice must be contribute, read-only, later or disabled")
+    path = consent_path()
     try:
-        _store_mod().record_choice(consent_path(), choice)
-    except _store_mod().ConsentError as exc:
+        consent_store.record_choice(path, choice)
+    except consent_store.ConsentError as exc:
         raise ConsentDamaged(exc.state, str(exc)) from None
     return choice
 
 
-def record_reporting(value: str) -> str:
-    """Explicit field update via the shared store; the contribution choice
-    and untouched metadata survive. A damaged document is refused — repair
-    is the user's explicit action (move the file aside and choose again),
-    surfaced by the entry as a fault state, never an automatic rewrite."""
-    if value not in REPORTING:
-        raise ValueError("reporting must be enabled, disabled or later")
-    try:
-        _store_mod().record_reporting(consent_path(), value)
-    except _store_mod().ConsentError as exc:
-        raise ConsentDamaged(exc.state, str(exc)) from None
-    return value
 
 
 def marker_exists() -> bool:
-    """A legacy first-use marker exists (any state): prior setup evidence."""
     marker = _marker_path()
     return bool(marker is not None and marker.exists())
 
 
 def configured_community_path(config=None) -> Path:
-    """The designated community settings authority. Pure: no adoption, no
-    rewrite, no fallback to another candidate file. An unreadable authority
-    stays an honest fault for its callers."""
     try:
         return community_config_path(config)
     except FileNotFoundError:
-        # Unconfigured installation: the profile-shared default location.
         return shared_community_path()
 
 
 def install_traces() -> bool:
-    """Any evidence this installation was set up before — consent (any
-    state), community settings (shared or legacy, any state) or a legacy
-    marker. A cold install has none; everything else is an existing
-    installation and never re-runs first-time onboarding."""
     marker = _marker_path()
-    if consent_path().exists() or (marker is not None and marker.exists()):
-        return True
-    if shared_community_path().exists():
+    if consent_path().exists() or (marker is not None and marker.exists()) or shared_community_path().exists():
         return True
     try:
         legacy = community_config_path()
@@ -226,97 +167,66 @@ def install_traces() -> bool:
     return bool(legacy is not None and legacy.exists())
 
 
-def adopt_stranded_consent() -> dict:
-    """Converge a consent document stranded in a generation-private config
-    dir (the pre-fix per-generation fork) onto the stable profile
-    authority, at an explicit install/upgrade/entry boundary.
+def _consent_rank(path: Path, view: dict) -> tuple[float, float]:
+    ts = max(float(view.get("choice_at") or 0.0), float(view.get("reporting_at") or 0.0))
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    return (ts, mtime)
 
-    An existing profile document (any state) always wins. Valid stranded
-    documents are explicit saved choices — never legacy evidence to guess
-    from: exactly one, or several that agree, is adopted once (bytes
-    preserved; stranded files kept as evidence); disagreeing documents are
-    a diagnosable conflict and a damaged one an honest fault, both without
-    a write.
-    """
+
+def adopt_stranded_consent() -> dict:
     profile = consent_path()
     result = dict(action="already", notes=[])
     with _shared_file_lock(profile):
-        if _store_mod().read(profile)["state"] != "missing":
+        if consent_store.read(profile)["state"] == "ok":
             return result
         valid, damaged = [], []
         for path in _stranded_candidates("mindie-consent.json"):
-            view = _store_mod().read(path)
-            if view["state"] == "ok" and (
-                view.get("choice") is not None or view.get("reporting") is not None
-            ):
+            view = consent_store.read(path)
+            if view["state"] == "ok" and (view.get("choice") is not None or view.get("reporting") is not None):
                 valid.append((path, view))
             elif view["state"] != "missing":
                 damaged.append((path, view["state"]))
         if not valid:
             if damaged:
-                result.update(action="fault")
-                result["notes"].append(
-                    f"generation-stranded consent is {damaged[0][1]}; left as evidence"
-                )
+                result["notes"].append(f"ignored damaged stranded consent: {damaged[0][0]}")
             return result
-        choices = {view.get("choice") for _path, view in valid}
-        reportings = {view.get("reporting") for _path, view in valid}
-        if len(valid) > 1 and (len(choices) > 1 or len(reportings) > 1):
-            result.update(
-                action="conflict",
-                conflict="generation-stranded consent documents disagree: "
-                + ", ".join(str(path) for path, _view in valid),
-            )
-            return result
-        path, view = valid[0]
+        path, view = max(valid, key=lambda item: _consent_rank(item[0], item[1]))
         try:
-            _atomic_write_bytes(profile, _store_mod()._read_bytes(path))
+            _atomic_write_bytes(profile, consent_store._read_bytes(path))
         except OSError as exc:
             result.update(action="error")
-            result["notes"].append(
-                f"stranded consent adoption failed: {type(exc).__name__}"
-            )
+            result["notes"].append(f"stranded consent adoption failed: {type(exc).__name__}")
             return result
         result.update(
             action="adopted",
             choice=view.get("choice"),
             reporting=view.get("reporting"),
-            sources=[str(path) for path, _view in valid],
+            sources=[str(p) for p, _v in valid],
         )
+        if len(valid) > 1:
+            result["notes"].append(f"converged multiple stranded consent files to latest: {path}")
         if damaged:
-            result["notes"].append(
-                f"damaged stranded consent left as evidence: {damaged[0][0]}"
-            )
+            result["notes"].append(f"damaged stranded consent left as evidence: {damaged[0][0]}")
     return result
 
 
 def _divergence(shared: Path, legacy: Path):
-    """Fields where a legacy community file disagrees with the shared
-    authority (None when they converge). Read-only comparison."""
     s_state, s_data = _read_json(shared)
     l_state, l_data = _read_json(legacy)
     if s_state != "ok" or l_state != "ok":
-        if s_state != "ok":
-            return {"shared": s_state}
-        return {"legacy": l_state}
-    differ = {}
-    for key in ("enabled", "repository", "branch", "project_roots"):
-        if s_data.get(key) != l_data.get(key):
-            differ[key] = "differs"
+        return {"shared": s_state} if s_state != "ok" else {"legacy": l_state}
+    differ = {k: "differs" for k in ("enabled", "repository", "branch", "project_roots") if s_data.get(k) != l_data.get(k)}
     return differ or None
 
 
 def _stamp_consent_key(ctx, shared: Path, result: dict) -> None:
-    """Wire the consent_config extension (absolute path of the same profile
-    consent authority) onto a valid shared document via the held write
-    context — a stamp never touches generation/enabled_at, so accepted work
-    is never revoked. A damaged document keeps its honest state."""
     if not shared.exists():
         return
     current = ctx.read(shared)
-    if current.error is not None or not current.schema_ok:
-        return
-    if current.raw.get("consent_config") == str(consent_path()):
+    if current.error is not None or not current.schema_ok or current.raw.get("consent_config") == str(consent_path()):
         return
     try:
         ctx.update_extensions(shared, consent_config=str(consent_path()))
@@ -325,9 +235,6 @@ def _stamp_consent_key(ctx, shared: Path, result: dict) -> None:
 
 
 def _repoint_config_paths(shared: Path, adapter_path: Path, adapter: dict) -> None:
-    """Point adapter and engine config community_config keys at the shared
-    authority. Data-only mutation at an explicit boundary, inside the held
-    write context."""
     from paths import engine_config_path
 
     if adapter.get("community_config") != str(shared):
@@ -343,30 +250,28 @@ def _repoint_config_paths(shared: Path, adapter_path: Path, adapter: dict) -> No
         pass
 
 
-def adopt_community_settings() -> dict:
-    """One-time community-settings path convergence at an explicit
-    install/upgrade/entry boundary, inside the ONE shared write context
-    anchored at the canonical profile path (core API.md §9) — even while
-    the declared authority is still the legacy file, so a concurrent user
-    disable and this adoption serialize against each other and the current
-    document is re-read inside the lock before any write.
+def _select_latest_community(candidates: list[Path]) -> Path | None:
+    best_path, best_rank = None, (-1, False)
+    for path in candidates:
+        state, data = _read_json(path)
+        if state != "ok":
+            continue
+        # enabled_at describes an activation, not the last user decision:
+        # disabling clears it. Equal-time conflicts cannot renew consent.
+        rank = (path.stat().st_mtime_ns, data.get("enabled") is False)
+        if rank >= best_rank:
+            best_rank = rank
+            best_path = path
+    return best_path or (candidates[-1] if candidates else None)
 
-    Afterwards the adapter config, engine config and workers all point at
-    the profile-shared authority. A legacy adapter-specific file is adopted
-    once (atomic copy; the legacy file is kept as evidence). When the shared
-    file already exists it stays the authority: conflicting legacy values
-    are diagnosed, never merged into a wider public scope and never
-    silently adopted. A damaged shared file stays an honest fault.
-    """
+
+def adopt_community_settings() -> dict:
     from mindie_knowledge.loop.settings import CommunityWriteContext
     from paths import load_adapter_config
 
     shared = shared_community_path()
     result = dict(path=str(shared), action="already", conflict=None, notes=[])
     with CommunityWriteContext(str(shared)) as ctx:
-        # Resolve and reload the CURRENT adapter config inside the lock: a
-        # pre-lock snapshot must never be written back — another holder of
-        # this boundary may have repointed or added fields concurrently.
         try:
             adapter_path = config_path()
             adapter = load_adapter_config()
@@ -382,52 +287,33 @@ def adopt_community_settings() -> dict:
             if candidate != shared:
                 legacy = candidate
         elif legacy_value is not None:
-            result["notes"].append(
-                "adapter community_config was not an absolute path; repointed to the shared authority"
-            )
+            result["notes"].append("adapter community_config repointed to the shared authority")
         if legacy is None:
-            stranded = _stranded_candidates("mindie-community.json")
-            if not shared.exists() and len(stranded) > 1:
-                result.update(
-                    action="conflict",
-                    conflict="multiple generation-stranded community files; none adopted",
-                )
-                result["notes"].append(
-                    "evidence: " + ", ".join(str(path) for path in stranded)
-                )
-                return result
-            if stranded:
-                legacy = stranded[0]
+            if stranded := _stranded_candidates("mindie-community.json"):
+                legacy = _select_latest_community(stranded)
                 if len(stranded) > 1:
-                    result["notes"].append(
-                        "additional generation-stranded community files left as evidence: "
-                        + ", ".join(str(path) for path in stranded[1:])
-                    )
+                    result["notes"].append("converged multiple stranded community files to latest: " + str(legacy))
         if legacy is not None and legacy.is_file():
             if not shared.exists():
                 try:
-                    _atomic_write_bytes(shared, _store_mod()._read_bytes(legacy))
+                    _atomic_write_bytes(shared, consent_store._read_bytes(legacy))
                 except OSError as exc:
                     result.update(action="error")
                     result["notes"].append(f"legacy adoption failed: {type(exc).__name__}")
                     return result
                 result["action"] = "adopted"
             else:
-                conflict = _divergence(shared, legacy)
-                if conflict:
-                    result.update(action="conflict", conflict=conflict)
+                if _divergence(shared, legacy):
                     result["notes"].append(
                         "legacy community file disagrees with the shared authority; "
                         "the shared file was kept and the legacy file left as evidence"
                     )
-                else:
-                    result["action"] = "converged"
+                result["action"] = "converged"
         elif shared.exists():
             current = ctx.read(shared)
             if current.error is not None or not current.schema_ok:
-                result.update(action="fault")
                 result["notes"].append(f"shared community settings are {current.state}")
-            elif not already:
+            if not already:
                 result["action"] = "converged"
         else:
             result["action"] = "already" if already else "repointed"

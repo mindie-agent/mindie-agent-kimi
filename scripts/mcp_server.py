@@ -1,10 +1,27 @@
 #!/usr/bin/env python3
-"""Adapter-owned MCP: knowledge tools and general remote-dev.
+"""Adapter-owned MCP server for `knowledge` and `remote` surfaces in Kimi.
 
-Identity is never taken from tool arguments. A fresh request_nonce is bound
-by native PreToolUse to the hook session_id, then consumed here. Attempts
-are persisted before dispatch. Missing, ambiguous, or replayed nonces fail
-closed. Remote-dev does not require knowledge activation.
+[Role]
+Serves JSON-RPC 2.0 MCP requests (`initialize`, `ping`, `tools/list`,
+`tools/call`) for `mindie_entry`, `knowledge_query`, `knowledge_explain`,
+`knowledge_feedback`, and `remote-dev` tools.
+
+[Invariants]
+- Native task identity is never accepted from tool arguments (`sessionId`,
+  `thread_id`, or `session_id` on the `knowledge` surface are rejected).
+- Every `tools/call` requires a fresh `request_nonce` bound by native
+  `PreToolUse` and claimed atomically before execution (`claim_nonce`).
+- Remote failures preserve `submission_state` (`not_sent`, `uncertain`,
+  `acknowledged`) and job references so callers never blindly replay writes.
+
+[Timeouts & Locks]
+- Clamps `remote-dev` `yield_time_ms` to `MAX_YIELD_TIME_MS = 30000` (30s).
+- Nonce claim uses SQLite `BEGIN IMMEDIATE` (`busy_timeout=5000`).
+
+[Side-Effect Policy]
+- Persists nonce claim/completion in `mcp-binds.sqlite3`, dispatches knowledge
+  RPCs to the local knowledge service, and creates `<state_dir>/remote/<session>`
+  directories for `remote-dev` calls.
 """
 
 from __future__ import annotations
@@ -20,7 +37,7 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 from identity import claim_nonce, finish_nonce, require_nonce
-from paths import load_adapter_config, load_engine_config, state_dir
+from paths import load_engine_config, state_dir
 
 MAX_YIELD_TIME_MS = 30000
 REMOTE_ERROR_CATEGORIES = frozenset({
@@ -48,13 +65,13 @@ KNOWLEDGE_TOOLS = [
             "Requires a fresh request_nonce. Never pass a session id. "
             "op=init binds this task internally and reports missing configuration "
             "or status; op=choose configures contribution or explicit disable "
-            "(contribute/disabled) and optionally the "
-            "independent reporting choice. A conversational contribution "
+            "(contribute/disabled) for knowledge sharing and sanitized fault reporting. A conversational contribution "
             "naming the public repository and account enables sharing for the "
             "current project; via the entry itself the destination comes from "
             "the native arguments (/mindie-agent contribute owner/repo "
             "account). A saved choice persists across sessions, "
-            "restarts, upgrades and failures and is never re-asked. "
+            "restarts, upgrades and failures. Legacy choices require explicit "
+            "confirmation before fault uploads; ordinary startup never grants consent. "
             "Status includes safe task failure categories and contribution batch IDs for recover inspection; it never retries work."
         ),
         inputSchema=dict(
@@ -63,30 +80,15 @@ KNOWLEDGE_TOOLS = [
                 op={
                     "type": "string",
                     "enum": [
-                        "init",
-                        "choose",
-                        "status",
-                        "deactivate",
-                        "sharing-enable",
-                        "sharing-disable",
-                        "sharing-status",
-                        "recover",
-                        "reporting-status",
-                        "reporting-enable",
-                        "reporting-disable",
+                        "init", "choose", "status", "deactivate",
+                        "sharing-enable", "sharing-disable", "sharing-status",
+                        "recover", "reporting-status",
                     ],
                 },
                 request_nonce=NONCE_PROP,
                 choice={"type": "string", "enum": ["contribute", "disabled"]},
-                repository={
-                    "type": "string",
-                    "description": "Public owner/repo the user stated for contribution.",
-                },
-                account={
-                    "type": "string",
-                    "description": "Public account name the user stated for contribution.",
-                },
-                reporting={"type": "string", "enum": ["enabled", "disabled", "later"]},
+                repository={"type": "string", "description": "Public owner/repo the user stated for contribution."},
+                account={"type": "string", "description": "Public account name the user stated for contribution."},
                 arguments={"type": "string"},
             ),
             required=["op", "request_nonce"],
@@ -155,17 +157,15 @@ def canonical(value):
 
 
 def send(message):
-    # MCP is UTF-8 JSON Lines even when Windows redirects a cp1252 console.
     sys.stdout.buffer.write((canonical(message) + "\n").encode("utf-8"))
     sys.stdout.buffer.flush()
 
 
 def failure(exc):
-    text = f"Unavailable: {exc}. Continue independently."[:500]
     from diagnostic_support import attach
 
-    result = dict(content=[dict(type="text", text=text)], isError=True)
-    return attach(result, getattr(exc, "mindie_diagnostic", None))
+    text = f"Unavailable: {exc}. Continue independently."[:500]
+    return attach(dict(content=[dict(type="text", text=text)], isError=True), getattr(exc, "mindie_diagnostic", None))
 
 
 def _validated_job_ref(args):
@@ -185,10 +185,7 @@ def remote_stage_failure(args, name, stage, exc=None):
 
         details = error_details(exc)
         category = details.get("category")
-        structured["category"] = (
-            category if isinstance(category, str) and category in REMOTE_ERROR_CATEGORIES
-            else "internal"
-        )
+        structured["category"] = category if isinstance(category, str) and category in REMOTE_ERROR_CATEGORIES else "internal"
         certainty = details.get("submission_state")
         if isinstance(certainty, str) and certainty in {"not_sent", "uncertain", "acknowledged"}:
             structured["submission_state"] = certainty
@@ -197,32 +194,21 @@ def remote_stage_failure(args, name, stage, exc=None):
     key, value = _validated_job_ref(args)
     if key:
         structured[key] = value
-        text = (
-            f"Remote outcome unconfirmed ({stage}). "
-            f"Inspect or stop original {key} {value} before a deliberate repeat."
-        )
+        text = f"Remote outcome unconfirmed ({stage}). Inspect or stop original {key} {value} before a deliberate repeat."
     elif name == "remote_bash":
         if structured.get("submission_state") == "not_sent":
             structured["remote_outcome"] = "not_sent"
             text = f"Remote request was not sent ({stage})."
         else:
-            text = (
-                f"Remote submission unconfirmed ({stage}). "
-                "Inspect local remote-dev job records before a deliberate repeat."
-            )
+            text = f"Remote submission unconfirmed ({stage}). Inspect local remote-dev job records before a deliberate repeat."
     else:
         text = f"Unavailable ({stage}). Continue independently."
-    for key in ("category", "submission_state"):
-        if key in structured:
-            text += f" {key}={structured[key]}."
+    for k in ("category", "submission_state"):
+        if k in structured:
+            text += f" {k}={structured[k]}."
     from diagnostic_support import attach
 
-    result = dict(
-        content=[dict(type="text", text=text[:500])],
-        isError=True,
-        structuredContent=structured,
-    )
-
+    result = dict(content=[dict(type="text", text=text[:500])], isError=True, structuredContent=structured)
     return attach(result, getattr(exc, "mindie_diagnostic", None))
 
 
@@ -237,15 +223,7 @@ def clamp_remote_args(args):
 
 
 def reject_native_identity_args(args, surface):
-    """Native task ownership is never taken from tool arguments.
-
-    Knowledge rejects session_id/sessionId/thread_id. Remote-dev keeps
-    session_id as a job_id alias for status/stop/write_stdin; sessionId
-    and thread_id stay disallowed on every surface.
-    """
-    if "sessionId" in args or "thread_id" in args:
-        raise ValueError("tool arguments must not include native session identity")
-    if "session_id" in args and surface != "remote":
+    if "sessionId" in args or "thread_id" in args or ("session_id" in args and surface != "remote"):
         raise ValueError("tool arguments must not include native session identity")
 
 
@@ -257,18 +235,15 @@ def strip_nonce(args, surface=None):
 
 
 def knowledge_call(name, args, session):
-    from knowledge_service import existing_service, ensure_service
-    from mindie_knowledge.loop.cli import rpc
+    from knowledge_service import ensure_service, existing_service
     from mindie_knowledge.loop.activation import Admission
+    from mindie_knowledge.loop.cli import rpc
     from paths import admission_path, engine_config_path
 
     if name == "knowledge_query":
-        # Keep the native schema a plain object; enforce the shared argument
-        # contract before any service/storage operation.
         from mindie_knowledge.materials.provenance import query_request
 
-        query_request(args.get("query"), args.get("limit", 5),
-                      args.get("conditions"), args.get("continuation"))
+        query_request(args.get("query"), args.get("limit", 5), args.get("conditions"), args.get("continuation"))
     engine = load_engine_config()
     if Admission(admission_path(engine)).active_lease(session) is None:
         raise ValueError(
@@ -276,17 +251,11 @@ def knowledge_call(name, args, session):
             "task — the saved install-level choice is reused, nothing is re-asked"
         )
     method = name.removeprefix("knowledge_")
-
     try:
         connection = existing_service(engine_config_path())
     except (OSError, ValueError, RuntimeError):
         connection = ensure_service(engine_config_path())
-    return rpc(
-        connection,
-        method,
-        dict(args, _session_id=session, _session_verified=True),
-        timeout=None,
-    )
+    return rpc(connection, method, dict(args, _session_id=session, _session_verified=True), timeout=None)
 
 
 def remote_tools():
@@ -295,8 +264,7 @@ def remote_tools():
     tools = []
     for item in list_tools():
         schema = dict(item.get("inputSchema") or {"type": "object", "properties": {}})
-        properties = dict(schema.get("properties") or {})
-        properties["request_nonce"] = NONCE_PROP
+        properties = {**(schema.get("properties") or {}), "request_nonce": NONCE_PROP}
         required = list(schema.get("required") or [])
         if "request_nonce" not in required:
             required.append("request_nonce")
@@ -311,6 +279,9 @@ def remote_tools():
 
 
 def remote_call(name, args, session):
+    import diagnostic_support
+
+    diagnostic_support.bind_environment()
     from remote_dev.mcp.schemas import ALIASES
     from remote_dev.mcp.tools import call_tool
 
@@ -318,8 +289,7 @@ def remote_call(name, args, session):
     root.mkdir(parents=True, exist_ok=True)
     os.environ["REMOTE_DEV_SESSION_ID"] = session
     os.environ["REMOTE_DEV_STATE_DIR"] = str(root)
-    canonical_name = ALIASES.get(name, name)
-    return call_tool(canonical_name, clamp_remote_args(args))
+    return call_tool(ALIASES.get(name, name), clamp_remote_args(args))
 
 
 def handle(surface, message):
@@ -329,12 +299,11 @@ def handle(surface, message):
     ident = message["id"]
     if method == "initialize":
         return dict(
-            jsonrpc="2.0",
-            id=ident,
+            jsonrpc="2.0", id=ident,
             result=dict(
                 protocolVersion="2025-11-25",
                 capabilities={"tools": {}},
-                serverInfo={"name": f"mindie-kimi-{surface}", "version": "0.0.1"},
+                serverInfo={"name": f"mindie-kimi-{surface}", "version": "0.0.2"},
             ),
         )
     if method == "ping":
@@ -345,11 +314,7 @@ def handle(surface, message):
         tools = KNOWLEDGE_TOOLS if surface == "knowledge" else remote_tools()
         return dict(jsonrpc="2.0", id=ident, result=dict(tools=tools))
     if method != "tools/call":
-        return dict(
-            jsonrpc="2.0",
-            id=ident,
-            error=dict(code=-32601, message="Method not found"),
-        )
+        return dict(jsonrpc="2.0", id=ident, error=dict(code=-32601, message="Method not found"))
     params = message.get("params") or {}
     name = params.get("name")
     args = params.get("arguments") or {}
@@ -366,48 +331,29 @@ def handle(surface, message):
             from entry import dispatch
             from identity import session_cwd
 
-            cwd = None
             try:
                 cwd = session_cwd(session)
             except Exception:
                 cwd = None
             payload = dispatch(
-                session,
-                cwd,
-                body.get("op"),
-                body.get("arguments") or "",
-                body.get("choice"),
-                repository=body.get("repository"),
+                session, cwd, body.get("op"), body.get("arguments") or "",
+                body.get("choice"), repository=body.get("repository"),
                 account=body.get("account"),
-                reporting=body.get("reporting"),
             )
-            result = dict(
-                content=[dict(type="text", text=canonical(payload))],
-                structuredContent=payload,
-                isError=False,
-            )
+            result = dict(content=[dict(type="text", text=canonical(payload))], structuredContent=payload, isError=False)
         elif surface == "knowledge":
             payload = knowledge_call(name, body, session)
-            result = dict(
-                content=[dict(type="text", text=canonical(payload))],
-                structuredContent=payload,
-                isError=False,
-            )
+            result = dict(content=[dict(type="text", text=canonical(payload))], structuredContent=payload, isError=False)
         else:
             try:
                 payload = remote_call(name, body, session)
             except (ValueError, OSError, RuntimeError, KeyError, TypeError) as exc:
-                return dict(
-                    jsonrpc="2.0",
-                    id=ident,
-                    result=remote_stage_failure(body, name, "helper_failed", exc),
-                )
+                return dict(jsonrpc="2.0", id=ident, result=remote_stage_failure(body, name, "helper_failed", exc))
             text = payload.get("text") if isinstance(payload, dict) else canonical(payload)
             result = dict(
                 content=[dict(type="text", text=text if isinstance(text, str) else canonical(payload))],
                 structuredContent=payload.get("result", payload) if isinstance(payload, dict) else payload,
-                isError=isinstance(payload, dict)
-                and payload.get("result", {}).get("outcome") not in {None, "success", "cancelled"},
+                isError=isinstance(payload, dict) and payload.get("result", {}).get("outcome") not in {None, "success", "cancelled"},
             )
         succeeded = result.get("isError") is not True
         return dict(jsonrpc="2.0", id=ident, result=result)
@@ -421,35 +367,25 @@ def handle(surface, message):
                 pass
 
 
-def _read_line(stdin):
-    line = stdin.readline()
-    return line.rstrip(b"\r\n") if line else False
-
-
 def serve(surface):
     stdin = sys.stdin.buffer
     while True:
-        line = _read_line(stdin)
-        if line is False:
+        raw = stdin.readline()
+        if not raw:
             return
-        if line is None or not line.strip():
+        line = raw.rstrip(b"\r\n")
+        if not line.strip():
             continue
         try:
             message = json.loads(line)
         except ValueError:
             continue
-        if not isinstance(message, dict):
-            continue
-        response = handle(surface, message)
-        if response is not None:
+        if isinstance(message, dict) and (response := handle(surface, message)) is not None:
             send(response)
 
 
 def serve_once(surface):
-    """One request, no initialize requirement, no extra stdout."""
     raw = sys.stdin.buffer.read()
-    if not raw:
-        return
     line, _, _ = raw.partition(b"\n")
     if not line.strip():
         return
@@ -457,14 +393,14 @@ def serve_once(surface):
         message = json.loads(line)
     except ValueError:
         return
-    if not isinstance(message, dict):
-        return
-    response = handle(surface, message)
-    if response is not None:
+    if isinstance(message, dict) and (response := handle(surface, message)) is not None:
         send(response)
 
 
 def main(argv=None):
+    import diagnostic_support
+
+    diagnostic_support.bind_environment()
     argv = list(sys.argv[1:] if argv is None else argv)
     once = "--once" in argv
     args = [item for item in argv if item != "--once"]
@@ -473,8 +409,8 @@ def main(argv=None):
         raise SystemExit("surface must be knowledge or remote")
     if once:
         serve_once(surface)
-        return
-    serve(surface)
+    else:
+        serve(surface)
 
 
 if __name__ == "__main__":

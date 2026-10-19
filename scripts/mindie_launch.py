@@ -1,32 +1,35 @@
 #!/usr/bin/env python3
-"""Stable MindIE launcher living outside any committed generation.
+"""Stable MindIE launcher outside committed generations for Kimi Hook/MCP/Updater.
 
-Installed Kimi manifest entries point absolute command/args here.
+[Role]
+Serves as the stable command entrypoint referenced by installed Kimi plugin
+manifests (`hook <pretool|stop>`, `mcp <knowledge|remote>`, `updater <op>`).
+Selects the active committed generation from `<state_dir>/update/current.json`
+under the shared `operation.lock` and dispatches one-shot children.
 
-current.json is the atomic generation tuple
-{generation, python, adapter_config, sha}. Every tools/list and tools/call
-selects under the shared operation lock and holds it for the complete child.
-The child gets MINDIE_KIMI_CONFIG=current.adapter_config and no PYTHONPATH.
+[Invariants]
+- `current.json` holds the atomic generation tuple `{generation, python,
+  adapter_config, sha}`.
+- Unconfigured or sharing-off `stop` hooks return `{}` immediately before reading
+  stdin or taking locks.
+- `mcp` handles `initialize`/`ping` locally and dispatches each `tools/list` and
+  `tools/call` as a single `--once` subprocess under the shared operation lock.
 
-- hook <op>: Sharing-off / unconfigured Stop returns {} before waiting for
-  stdin and before any update.lock, state, help, or service. Otherwise read
-  bounded stdin under the remaining whole-hook budget (never block until EOF
-  past the deadline), forward it exactly. Whole budget is under the native 2s
-  including lock, stdin, child, and cleanup. Failures print {} and exit 0;
-  never exit 2 (continuation). No automatic retries.
-- mcp <surface>: long-lived thin stdlib front. initialize/ping locally;
-  every tools/list and tools/call is one bounded --once dispatch. Never replay.
-- updater <op>: read the current tuple without the shared lock (updater owns
-  its locks) and exec that generation's updater.py.
+[Timeouts & Locks]
+- `HOOK_TOTAL = 10.0s`, `HOOK_LOCK_BUDGET = 2.0s`, `BOOTSTRAP_TOTAL = 540.0s`,
+  `CALL_LOCK_BUDGET = 5.0s`, `CALL_CHILD_BUDGET = 60.0s` (180s for explicit entry activation/configuration including 75s reporter startup), `EOF_JOIN = 3.0s`,
+  `OUTPUT_BUDGET = 1.0s`.
+- Acquires shared `operation.lock` (`fcntl.flock` / `msvcrt.locking`) before
+  reading `current.json` and holds it across child execution.
 
-Windows uses a real msvcrt byte lock; if no real lock can be taken the call
-fails closed — unprotected dispatch is never executed. Windows process-tree
-protection lives in bounded.py (suspended start and owned Job); native process
-tests cover normal exit and timeout after the leader exits.
+[Side-Effect Policy]
+- Spawns `bridge.py` (`hook`), `mcp_server.py --once` (`mcp`), or execs
+  `updater.py` (`updater`) in the committed generation's interpreter.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
@@ -35,35 +38,21 @@ import threading
 import time
 from pathlib import Path
 
+
 def _load_diagnostic_support():
-    """Use adjacent modules, or this old-packed launcher's exact generation.
-
-    Never search PYTHONPATH or select modules through current.json. The old
-    packer copies only launcher/bounded; the complete source remains beside it
-    in update/generations/<the launcher's own revision>/scripts.
-    """
-    import importlib.util
-    import stat
-
     directory = Path(__file__).resolve().parent
-
-    def regular(path):
-        try:
-            return stat.S_ISREG(path.lstat().st_mode)
-        except OSError:
-            return False
-
-    if not regular(directory / "diagnostic_support.py"):
-        if (directory.parent.name != "launch" or directory.parent.parent.name != "update"
-                or not (directory.name == "bootstrap" or re.fullmatch(r"[0-9a-f]{40}", directory.name))):
+    if not (directory / "diagnostic_support.py").is_file():
+        if (
+            directory.parent.name != "launch"
+            or directory.parent.parent.name != "update"
+            or not (directory.name == "bootstrap" or re.fullmatch(r"[0-9a-f]{40}", directory.name))
+        ):
             raise ModuleNotFoundError("MindIE launcher diagnostics are missing")
         directory = directory.parent.parent / "generations" / directory.name / "scripts"
-        if directory.resolve() != directory:
-            raise ModuleNotFoundError("MindIE generation diagnostics path is invalid")
 
     def load(name):
         path = directory / (name + ".py")
-        if not regular(path):
+        if not path.is_file():
             raise ModuleNotFoundError("MindIE generation diagnostics are missing")
         existing = sys.modules.get(name)
         if existing is not None and getattr(existing, "__file__", None) == str(path):
@@ -78,7 +67,7 @@ def _load_diagnostic_support():
             raise
         return module
 
-    load("diagnostic_fallback")
+    load("paths")
     return load("diagnostic_support")
 
 
@@ -86,11 +75,11 @@ import bounded
 
 diagnostic_support = _load_diagnostic_support()
 
-HOOK_TOTAL = 1.5
-HOOK_LOCK_BUDGET = 0.3
+HOOK_TOTAL = float(os.environ.get("MINDIE_HOOK_TOTAL_SECONDS") or 10.0)
+HOOK_LOCK_BUDGET = float(os.environ.get("MINDIE_HOOK_LOCK_BUDGET_SECONDS") or 2.0)
+BOOTSTRAP_TOTAL = float(os.environ.get("MINDIE_BOOTSTRAP_TOTAL_SECONDS") or 540.0)
 CALL_LOCK_BUDGET = 5.0
 CALL_CHILD_BUDGET = 60.0
-# Knowledge stdout only. A legal maximum page measured 817407 bytes.
 KNOWLEDGE_MAX_OUTPUT = 1024 * 1024
 MAX_RPC_ID = 256
 WORK_LIMIT = 3
@@ -100,24 +89,21 @@ OUTPUT_BUDGET = 1.0
 CONTROL_TOOLS = {"remote_job_status", "remote_job_stop", "remote_job_tail"}
 JOB_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{2,95}$")
 
-
 _CONFIG_FILE = None
 
 
 def _config_path() -> Path:
     if _CONFIG_FILE:
         return Path(_CONFIG_FILE).expanduser()
-    override = os.environ.get("MINDIE_KIMI_CONFIG")
-    if override:
+    if override := os.environ.get("MINDIE_KIMI_CONFIG"):
         return Path(override).expanduser()
     base = os.environ.get("XDG_CONFIG_HOME")
-    root = Path(base) if base else Path.home() / ".config"
-    return root / "mindie-agent" / "kimi.json"
+    return (Path(base) if base else Path.home() / ".config") / "mindie-agent" / "kimi.json"
 
 
 def _load_config():
     try:
-        data = json.loads(_config_path().read_text(encoding='utf-8'))
+        data = json.loads(_config_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None
@@ -133,29 +119,21 @@ def _state_dir(config=None) -> Path:
         engine = config.get("engine_config")
         if isinstance(engine, str):
             try:
-                root = json.loads(Path(engine).read_text(encoding='utf-8')).get("root")
+                root = json.loads(Path(engine).read_text(encoding="utf-8")).get("root")
                 if isinstance(root, str):
                     return Path(root) / "kimi-adapter"
             except (OSError, ValueError):
                 pass
     base = os.environ.get("XDG_CONFIG_HOME")
-    root = Path(base) if base else Path.home() / ".config"
-    return root / "mindie-agent" / "state"
+    return (Path(base) if base else Path.home() / ".config") / "mindie-agent" / "state"
 
 
 def _sharing_enabled() -> bool:
-    """True only when community sharing is explicitly enabled.
-
-    A missing adapter/community config or an explicit off is quiet off. An
-    existing but unreadable or malformed config is a recorded configuration
-    failure, never mistaken for off. Reads existing files only; never
-    creates update.lock, state, or a service.
-    """
     path = _config_path()
     if not path.is_file():
         return False
     try:
-        data = json.loads(path.read_text(encoding='utf-8'))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         _record_hook("sharing-probe", "configuration")
         return False
@@ -169,7 +147,7 @@ def _sharing_enabled() -> bool:
     if not community_path.is_file():
         return False
     try:
-        raw = json.loads(community_path.read_text(encoding='utf-8'))
+        raw = json.loads(community_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         _record_hook("sharing-probe", "configuration")
         return False
@@ -181,8 +159,6 @@ class LockUnavailable(RuntimeError):
 
 
 class DispatchFailure(RuntimeError):
-    """Known frontend contract failure. Only a safe stage and diagnostic."""
-
     def __init__(self, diagnostic, stage):
         super().__init__(stage)
         self.diagnostic = diagnostic
@@ -192,11 +168,7 @@ class DispatchFailure(RuntimeError):
 def _dispatch_failure(current, stage, category, exc, started):
     elapsed_ms = max(0, int((time.monotonic() - started) * 1000))
     diagnostic = diagnostic_support.failure(
-        "mcp_dispatch",
-        stage,
-        category,
-        exception=exc,
-        elapsed_ms=elapsed_ms,
+        "mcp_dispatch", stage, category, exception=exc, elapsed_ms=elapsed_ms
     )
     return DispatchFailure(diagnostic, stage)
 
@@ -205,9 +177,6 @@ def _try_lock_shared(descriptor) -> None:
     if os.name == "nt":
         import msvcrt
 
-        # Real Windows byte lock (not verified on real hardware). LK_NBLCK is
-        # exclusive; that is fail-closed relative to POSIX LOCK_SH.
-        # Byte-range locks may extend beyond EOF; never write before owning it.
         os.lseek(descriptor, 0, os.SEEK_SET)
         msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
         return
@@ -232,7 +201,6 @@ def _unlock(descriptor) -> None:
 
 
 def _shared_lock(state: Path, deadline: float, cancel=None):
-    """Bounded nonblocking shared lock. Never executes unprotected."""
     lock_path = state / "update" / "operation.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
@@ -262,7 +230,7 @@ def _release(descriptor) -> None:
 
 def _current(state: Path) -> dict:
     try:
-        data = json.loads((state / "update" / "current.json").read_text(encoding='utf-8'))
+        data = json.loads((state / "update" / "current.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         data = None
     if isinstance(data, dict):
@@ -271,12 +239,9 @@ def _current(state: Path) -> dict:
         adapter_config = data.get("adapter_config")
         sha = data.get("sha")
         if (
-            isinstance(generation, str)
-            and isinstance(python, str)
-            and isinstance(adapter_config, str)
-            and Path(generation).is_dir()
-            and Path(python).exists()
-            and Path(adapter_config).is_file()
+            isinstance(generation, str) and Path(generation).is_dir()
+            and isinstance(python, str) and Path(python).exists()
+            and isinstance(adapter_config, str) and Path(adapter_config).is_file()
         ):
             return {
                 "generation": generation,
@@ -288,9 +253,10 @@ def _current(state: Path) -> dict:
 
 
 def _child_env(current: dict) -> dict:
-    env = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
     env["PYTHONIOENCODING"] = "utf-8"
     env["MINDIE_KIMI_CONFIG"] = current["adapter_config"]
+    env["MINDIE_DIAGNOSTICS_CONFIG"] = str(diagnostic_support.reporting_config_path())
     return env
 
 
@@ -300,8 +266,6 @@ def _fail_open() -> int:
 
 
 def _record_hook(stage, category, op="stop"):
-    """One bounded static diagnostic for an outer hook-entry failure.
-    Never blocks the business fail-open, never records genuine off."""
     try:
         diagnostic_support.failure("hook", stage, category, reportable=(op != "stop"))
     except Exception:
@@ -309,13 +273,6 @@ def _record_hook(stage, category, op="stop"):
 
 
 def _read_hook_stdin(deadline):
-    """Deadline-bounded raw fd read; never buffered I/O (shutdown can hang).
-
-    Stops at EOF, the deadline, or the first complete JSON
-    value so a held-open pipe cannot consume the helper's remaining time.
-    Windows native select is sockets-only; a daemon os.read thread is the
-    portable bound (code-only on Windows; not natively verified).
-    """
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         return b""
@@ -335,9 +292,7 @@ def _read_hook_stdin(deadline):
                     return
                 with lock:
                     buf.extend(chunk)
-                    # Native Stop is one object. Avoid reparsing a growing
-                    # final answer after every chunk (quadratic work).
-                    if not chunk.rstrip().endswith((b'}', b']')):
+                    if not chunk.rstrip().endswith((b"}", b"]")):
                         continue
                     try:
                         json.loads(bytes(buf))
@@ -386,12 +341,7 @@ def _hook(op: str) -> int:
             return _fail_open()
         script = Path(current["generation"]) / "scripts" / "bridge.py"
         if not script.is_file():
-            diagnostic_support.failure(
-                "hook",
-                "helper_missing",
-                "missing_committed_file",
-                reportable=(op != "stop"),
-            )
+            diagnostic_support.failure("hook", "helper_missing", "missing_committed_file", reportable=(op != "stop"))
             return _fail_open()
         remaining = deadline - time.monotonic()
         if remaining <= 0.05:
@@ -400,10 +350,7 @@ def _hook(op: str) -> int:
 
         def _hook_failure(stage, category, exc=None):
             diagnostic_support.failure(
-                "hook",
-                stage,
-                category,
-                exception=exc,
+                "hook", stage, category, exception=exc,
                 reportable=(op != "stop"),
                 elapsed_ms=max(0, int((time.monotonic() - started) * 1000)),
             )
@@ -411,11 +358,8 @@ def _hook(op: str) -> int:
         try:
             out = bounded.run(
                 [current["python"], str(script), op],
-                raw,
-                timeout=remaining,
-                env=_child_env(current),
-                cwd=str(Path(current["generation"])),
-                check=True,
+                raw, timeout=remaining, env=_child_env(current),
+                cwd=str(Path(current["generation"])), check=True,
             )
         except bounded.CommandTimedOut as exc:
             _hook_failure("helper_deadline", "child_deadline", exc)
@@ -445,12 +389,11 @@ def _local_answer(message: dict):
     ident = message.get("id")
     if method == "initialize":
         return dict(
-            jsonrpc="2.0",
-            id=ident,
+            jsonrpc="2.0", id=ident,
             result=dict(
                 protocolVersion="2025-11-25",
                 capabilities={"tools": {}},
-                serverInfo={"name": "mindie-kimi-front", "version": "0.0.1"},
+                serverInfo={"name": "mindie-kimi-front", "version": "0.0.2"},
             ),
         )
     if method == "ping":
@@ -461,17 +404,13 @@ def _local_answer(message: dict):
 def _valid_rpc_id(value) -> bool:
     if isinstance(value, bool) or value is None:
         return False
-    if isinstance(value, int):
-        return True
-    return isinstance(value, str) and 1 <= len(value) <= MAX_RPC_ID
+    return isinstance(value, int) or (isinstance(value, str) and 1 <= len(value) <= MAX_RPC_ID)
 
 
 def _local_tool_name(message):
     params = message.get("params") if isinstance(message.get("params"), dict) else {}
     name = params.get("name")
-    if not isinstance(name, str) or not name:
-        return None
-    return name.rsplit("__", 1)[-1]
+    return name.rsplit("__", 1)[-1] if isinstance(name, str) and name else None
 
 
 def _validated_remote_ref(message):
@@ -486,12 +425,8 @@ def _validated_remote_ref(message):
 
 def _front_reject(ident, text: str):
     return dict(
-        jsonrpc="2.0",
-        id=ident,
-        result=dict(
-            content=[dict(type="text", text=text[:500])],
-            isError=True,
-        ),
+        jsonrpc="2.0", id=ident,
+        result=dict(content=[dict(type="text", text=text[:500])], isError=True),
     )
 
 
@@ -504,33 +439,30 @@ def _stage_error(ident, message, stage: str, surface: str):
         name = _local_tool_name(message)
         if key:
             structured[key] = value
-            text = (
-                f"Remote outcome unconfirmed ({stage}). "
-                f"Inspect or stop original {key} {value} before a deliberate repeat."
-            )
+            text = f"Remote outcome unconfirmed ({stage}). Inspect or stop original {key} {value} before a deliberate repeat."
         elif name == "remote_bash":
-            text = (
-                f"Remote submission unconfirmed ({stage}). "
-                "Inspect local remote-dev job records before a deliberate repeat."
-            )
+            text = f"Remote submission unconfirmed ({stage}). Inspect local remote-dev job records before a deliberate repeat."
     return dict(
-        jsonrpc="2.0",
-        id=ident,
-        result=dict(
-            content=[dict(type="text", text=text[:500])],
-            isError=True,
-            structuredContent=structured,
-        ),
+        jsonrpc="2.0", id=ident,
+        result=dict(content=[dict(type="text", text=text[:500])], isError=True, structuredContent=structured),
     )
 
 
+def _call_budget(raw):
+    message = json.loads(raw)
+    arguments = (message.get("params") or {}).get("arguments") or {}
+    if _local_tool_name(message) == "mindie_entry" and arguments.get("op") in {
+        "init", "choose", "sharing-enable", "sharing-disable",
+    }:
+        return 180.0
+    return CALL_CHILD_BUDGET
+
+
 def _dispatch(surface: str, raw: bytes, ident, cancel=None):
-    """One bounded one-shot request through CURRENT generation. Never replayed."""
     if cancel is not None and cancel.is_set():
         raise bounded.CommandCancelled("command cancelled")
     state = _state_dir()
-    deadline = time.monotonic() + CALL_LOCK_BUDGET
-    descriptor = _shared_lock(state, deadline, cancel=cancel)
+    descriptor = _shared_lock(state, time.monotonic() + CALL_LOCK_BUDGET, cancel=cancel)
     try:
         if cancel is not None and cancel.is_set():
             raise bounded.CommandCancelled("command cancelled")
@@ -538,51 +470,32 @@ def _dispatch(surface: str, raw: bytes, ident, cancel=None):
         started = time.monotonic()
         script = Path(current["generation"]) / "scripts" / "mcp_server.py"
         if not script.is_file():
-            raise _dispatch_failure(
-                current, "helper_missing", "missing_committed_file", None, started
-            )
+            raise _dispatch_failure(current, "helper_missing", "missing_committed_file", None, started)
         payload = raw if raw.endswith(b"\n") else raw + b"\n"
         try:
             out = bounded.run(
                 [current["python"], str(script), surface, "--once"],
-                payload,
-                timeout=CALL_CHILD_BUDGET,
-                env=_child_env(current),
-                cwd=str(Path(current["generation"])),
-                cancel=cancel,
-                **(
-                    {"max_output": KNOWLEDGE_MAX_OUTPUT}
-                    if surface == "knowledge"
-                    else {}
-                ),
+                payload, timeout=_call_budget(raw), env=_child_env(current),
+                cwd=str(Path(current["generation"])), cancel=cancel,
+                **({"max_output": KNOWLEDGE_MAX_OUTPUT} if surface == "knowledge" else {}),
             )
         except bounded.CommandCancelled:
             raise
         except bounded.CommandTimedOut as exc:
-            raise _dispatch_failure(
-                current, "helper_deadline", "child_deadline", exc, started
-            ) from None
+            raise _dispatch_failure(current, "helper_deadline", "child_deadline", exc, started) from None
         except Exception as exc:
-            raise _dispatch_failure(
-                current, "helper_failed", "child_failure", exc, started
-            ) from None
+            raise _dispatch_failure(current, "helper_failed", "child_failure", exc, started) from None
         if cancel is not None and cancel.is_set():
             raise bounded.CommandCancelled("command cancelled")
         lines = [line for line in out.splitlines() if line.strip()]
         if len(lines) != 1:
-            raise _dispatch_failure(
-                current, "helper_protocol", "protocol_mismatch", None, started
-            )
+            raise _dispatch_failure(current, "helper_protocol", "protocol_mismatch", None, started)
         try:
             response = json.loads(lines[0])
         except ValueError:
-            raise _dispatch_failure(
-                current, "helper_protocol", "protocol_mismatch", None, started
-            ) from None
+            raise _dispatch_failure(current, "helper_protocol", "protocol_mismatch", None, started) from None
         if not isinstance(response, dict) or response.get("id") != ident:
-            raise _dispatch_failure(
-                current, "helper_protocol", "protocol_mismatch", None, started
-            )
+            raise _dispatch_failure(current, "helper_protocol", "protocol_mismatch", None, started)
         return response
     finally:
         _release(descriptor)
@@ -595,23 +508,8 @@ def _read_mcp_line(stdin):
 
 def _mcp(surface: str) -> int:
     output_fd = sys.stdout.fileno()
-    if os.name == "nt":
-        # Match POSIX nonblocking output on Python 3.11 as well (Python's
-        # os.set_blocking gained Windows pipe support only in 3.12).
-        import ctypes
-        import msvcrt
-        from ctypes import wintypes
-        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel.SetNamedPipeHandleState.argtypes = [
-            wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD),
-            ctypes.c_void_p, ctypes.c_void_p,
-        ]
-        mode = wintypes.DWORD(1)  # PIPE_NOWAIT, byte stream
-        if not kernel.SetNamedPipeHandleState(
-                msvcrt.get_osfhandle(output_fd), ctypes.byref(mode), None, None):
-            raise ctypes.WinError(ctypes.get_last_error())
-    else:
-        os.set_blocking(output_fd, False)
+    # MCP stdout is a pipe; Python 3.12+ supports nonblocking Windows pipes.
+    os.set_blocking(output_fd, False)
     stdin = sys.stdin.buffer
     output_lock = threading.Lock()
     transport_closed = threading.Event()
@@ -622,7 +520,6 @@ def _mcp(surface: str) -> int:
     active_control = 0
 
     def send(response):
-        # A client that stops reading must not hold cancellation/EOF forever.
         deadline = time.monotonic() + OUTPUT_BUDGET
         if not output_lock.acquire(timeout=OUTPUT_BUDGET):
             raise TimeoutError("response output unavailable")
@@ -637,8 +534,6 @@ def _mcp(surface: str) -> int:
                     transport_closed.wait(0.02)
                     continue
                 if not count:
-                    # A full Windows byte pipe can accept zero bytes.
-                    # A closed peer raises OSError; preserve unsent bytes.
                     transport_closed.wait(0.02)
                     continue
                 data = data[count:]
@@ -665,15 +560,11 @@ def _mcp(surface: str) -> int:
                 response = _stage_error(ident, message, "cancelled", surface)
             except DispatchFailure as exc:
                 response = _stage_error(ident, message, exc.stage, surface)
-                response["result"] = diagnostic_support.attach(
-                    response["result"], exc.diagnostic
-                )
+                response["result"] = diagnostic_support.attach(response["result"], exc.diagnostic)
             except (bounded.CommandTimedOut, LockUnavailable):
                 response = _stage_error(ident, message, "deadline", surface)
             except Exception:
                 response = _stage_error(ident, message, "helper_failed", surface)
-            # Terminal selection is atomic with cancellation; no state lock
-            # spans output I/O. A later cancellation cannot change completion.
             with pending_lock:
                 if cancel.is_set():
                     response = _stage_error(ident, message, "cancelled", surface)
@@ -709,51 +600,28 @@ def _mcp(surface: str) -> int:
                 continue
             method = message.get("method")
             if method == "notifications/cancelled":
-                params = (
-                    message.get("params")
-                    if isinstance(message.get("params"), dict)
-                    else {}
-                )
+                params = message.get("params") if isinstance(message.get("params"), dict) else {}
                 request_id = params.get("requestId")
                 if _valid_rpc_id(request_id):
                     with pending_lock:
-                        event = pending.get(request_id)
-                        if event is not None:
+                        if (event := pending.get(request_id)) is not None:
                             event.set()
                 continue
             if "id" not in message:
                 continue
             ident = message["id"]
             if not _valid_rpc_id(ident):
-                send(
-                    dict(
-                        jsonrpc="2.0",
-                        id=None,
-                        error=dict(code=-32600, message="Invalid request id"),
-                    )
-                )
+                send(dict(jsonrpc="2.0", id=None, error=dict(code=-32600, message="Invalid request id")))
                 continue
-            local = _local_answer(message)
-            if local is not None:
+            if (local := _local_answer(message)) is not None:
                 with pending_lock:
                     duplicate = ident in pending
-                if duplicate:
-                    send(_front_reject(ident, "Duplicate pending request; not executed."))
-                    continue
-                send(local)
+                send(_front_reject(ident, "Duplicate pending request; not executed.") if duplicate else local)
                 continue
             if method not in {"tools/list", "tools/call"}:
-                send(
-                    dict(
-                        jsonrpc="2.0",
-                        id=ident,
-                        error=dict(code=-32601, message="Method not found"),
-                    )
-                )
+                send(dict(jsonrpc="2.0", id=ident, error=dict(code=-32601, message="Method not found")))
                 continue
-            is_control = (
-                method == "tools/call" and _local_tool_name(message) in CONTROL_TOOLS
-            )
+            is_control = method == "tools/call" and _local_tool_name(message) in CONTROL_TOOLS
             slot = None
             cancel = None
             with pending_lock:
@@ -786,7 +654,7 @@ def _mcp(surface: str) -> int:
                 target=execute,
                 args=(raw, message, ident, cancel, slot),
                 name=f"mindie-mcp-{ident}",
-                daemon=True,  # EOF does not join a blocked transport writer forever.
+                daemon=True,
             )
             thread.start()
             workers.append(thread)
@@ -806,10 +674,6 @@ def _mcp(surface: str) -> int:
 
 
 def _updater(rest) -> int:
-    """Select the current tuple and exec that generation's updater.
-
-    No shared operation lock is held across the updater run.
-    """
     try:
         current = _current(_state_dir())
     except Exception as exc:
@@ -817,33 +681,17 @@ def _updater(rest) -> int:
         return 2
     script = Path(current["generation"]) / "scripts" / "updater.py"
     if not script.is_file():
-        diagnostic_support.failure(
-            "updater",
-            "helper_missing",
-            "missing_committed_file",
-        )
+        diagnostic_support.failure("updater", "helper_missing", "missing_committed_file")
         print("committed generation lacks updater.py", file=sys.stderr)
         return 2
     try:
         if os.name == "nt":
-            # Windows execve is a CRT spawn emulation. Its environment path
-            # can crash before the updater starts; CreateProcess also keeps
-            # argv quoting intact. The updater owns its operation deadlines.
             import subprocess
-            return subprocess.call(
-                [current["python"], str(script), *rest], env=_child_env(current),
-            )
-        os.execve(
-            current["python"],
-            [current["python"], str(script), *rest],
-            _child_env(current),
-        )
+
+            return subprocess.call([current["python"], str(script), *rest], env=_child_env(current))
+        os.execve(current["python"], [current["python"], str(script), *rest], _child_env(current))
     except OSError:
-        diagnostic_support.failure(
-            "updater",
-            "helper_failed",
-            "child_failure",
-        )
+        diagnostic_support.failure("updater", "helper_failed", "child_failure")
         print("committed generation updater could not start", file=sys.stderr)
         return 2
     return 2
@@ -855,6 +703,7 @@ def main(argv=None) -> int:
     _CONFIG_FILE = None
     if len(argv) >= 2 and argv[0] == "--config":
         _CONFIG_FILE = argv[1]
+        os.environ["MINDIE_KIMI_CONFIG"] = _CONFIG_FILE
         argv = argv[2:]
     kind = argv[0] if argv else ""
     name = argv[1] if len(argv) > 1 else ""

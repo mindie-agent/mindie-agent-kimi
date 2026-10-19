@@ -13,6 +13,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from support import (
@@ -44,6 +45,10 @@ ENV_KEYS = (
 
 class GenerationAuthorityTests(unittest.TestCase):
     def setUp(self):
+        reporter = patch("mindie_diagnostics.reporting_commands.ensure",
+                         return_value={"status": "degraded", "category": "test_no_native_service"})
+        reporter.start()
+        self.addCleanup(reporter.stop)
         self._scratch = tempfile.TemporaryDirectory(prefix="mindie-gen-authority-")
         self.tmp = Path(self._scratch.name)
         self._saved = {key: os.environ.get(key) for key in ENV_KEYS}
@@ -432,9 +437,9 @@ class GenerationAuthorityTests(unittest.TestCase):
         import consent
 
         result = consent.adopt_stranded_consent()
-        self.assertEqual(result["action"], "conflict", result)
-        self.assertFalse((profile_dir / "mindie-consent.json").exists())
-        self.assertEqual(consent.load()["state"], "missing")
+        self.assertEqual(result["action"], "adopted", result)
+        self.assertTrue((profile_dir / "mindie-consent.json").exists())
+        self.assertEqual(consent.load()["choice"], "disabled")
 
 
 if __name__ == "__main__":

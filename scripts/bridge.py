@@ -1,15 +1,24 @@
 #!/usr/bin/env python3
-"""Kimi plugin hooks only. Slash entry is MCP mindie_entry, not TurnStarted.
+"""Kimi PreToolUse and Stop Hook bridge.
 
-Stop never exits 2 and never continues the business model. The host omits
-the native turn id from Stop, and no asynchronous record can prove it, so
-Stop is a thin NOTIFICATION: real session_id, the current lease token, one
-local event_id for this invocation (explicitly not a native turn id) and
-the validated transcript reference. Cursor dedup and the single wake live
-in the shared core facade `capture_hook`; the adapter does not read
-transcript contents or copy the engine. Genuine off/inactive/recursive
-skips stay quiet; failures that lose an otherwise real handoff are recorded
-through the existing bounded diagnostics, never silently.
+[Role]
+Handles native Kimi Hook events (`pretool` and `stop`). `pretool` publishes
+single-use nonce bindings for MindIE MCP tool calls; `stop` sends a thin
+notification to `mindie_knowledge.loop.cli.capture_hook` for admitted sessions.
+
+[Invariants]
+- Slash entry is MCP `mindie_entry`, never `TurnStarted`.
+- `stop` never exits 2, never blocks the host, and generates a local `event_id`
+  (`identity_kind="notification"`), never fabricating a native turn ID.
+- Inactive/off sessions skip quietly; lost handoffs record bounded diagnostics.
+
+[Timeouts & Locks]
+- Synchronous hook budget is bounded by `HOOK_TOTAL` (10.0s); no LLM calls or
+  network sync occur inside `handle_pretool` or `handle_stop`.
+
+[Side-Effect Policy]
+- Writes nonce bind files (`pretool`), appends local capture notifications, and
+  records static diagnostics on handoff failure. Always prints `{}` and exits 0.
 """
 
 from __future__ import annotations
@@ -23,6 +32,7 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
+from consent import configured_community_path
 from identity import (
     is_mindie_mcp_tool,
     locate_main_wire,
@@ -31,7 +41,6 @@ from identity import (
     session_from_hook,
 )
 from paths import config_path
-from consent import configured_community_path
 
 SAFE_CAUSES = {
     "missing-identity",
@@ -52,12 +61,10 @@ def _print(value):
 
 
 def _read_event():
-    raw = sys.stdin.buffer.read()
-    return parse_hook(raw)
+    return parse_hook(sys.stdin.buffer.read())
 
 
 def _record_failure(stage, category):
-    """One bounded static diagnostic. Never raises, never carries content."""
     try:
         import diagnostic_support
 
@@ -70,18 +77,15 @@ def handle_pretool():
     try:
         event = _read_event()
         name = event.get("tool_name")
-        if not is_mindie_mcp_tool(name):
-            _print({})
-            return 0
-        tool_input = event.get("tool_input") or {}
-        session = session_from_hook(event)
-        publish_nonce_bind(
-            session,
-            tool_input.get("request_nonce"),
-            name,
-            event.get("tool_call_id"),
-            tool_input,
-        )
+        if is_mindie_mcp_tool(name):
+            tool_input = event.get("tool_input") or {}
+            publish_nonce_bind(
+                session_from_hook(event),
+                tool_input.get("request_nonce"),
+                name,
+                event.get("tool_call_id"),
+                tool_input,
+            )
     except Exception:
         pass
     _print({})
@@ -89,9 +93,6 @@ def handle_pretool():
 
 
 def _authorized_lease(session):
-    """(lease, category). lease with category None is authorized. lease=None
-    with category None is genuinely inactive/missing/off: quiet. A set
-    category is a static, honest failure state (never reported as off)."""
     from admission import gate
 
     admission = gate()
@@ -107,8 +108,6 @@ def _authorized_lease(session):
     try:
         lease = admission.check(session)
     except ValueError:
-        # inspect saw an active lease but the token read failed. Fail closed
-        # and say so; the core repeats the authoritative check anyway.
         return None, "admission-unreadable"
     if not isinstance(lease.get("token"), str) or not lease["token"]:
         return None, "admission-schema"
@@ -118,10 +117,7 @@ def _authorized_lease(session):
 def handle_stop():
     try:
         event = _read_event()
-        if event.get("hook_event_name") not in {None, "Stop"}:
-            _print({})
-            return 0
-        if event.get("stop_hook_active") not in {None, False}:
+        if event.get("hook_event_name") not in {None, "Stop"} or event.get("stop_hook_active") not in {None, False}:
             _print({})
             return 0
         session = session_from_hook(event)
@@ -136,10 +132,7 @@ def handle_stop():
             _record_failure("admission", unavailable)
             _print({})
             return 0
-        if lease is None:
-            _print({})
-            return 0
-        if not configured_community_path().is_file():
+        if lease is None or not configured_community_path().is_file():
             _print({})
             return 0
         settings = sharing_mod.load()
@@ -160,8 +153,6 @@ def handle_stop():
             identity_kind="notification",
             session_id=session,
             mindie_activation=lease["token"],
-            # One local notification id per native Stop invocation. This is
-            # NOT a native turn id and must never be read from the wire.
             event_id=uuid.uuid4().hex,
             harness="kimi",
         )
@@ -182,14 +173,10 @@ def handle_stop():
             return 0
         stage = result.get("stage") if isinstance(result, dict) else None
         if not isinstance(stage, str):
-            # Attempted dispatch is not acceptance: an older facade answers
-            # None for an event it cannot take. Record the lost handoff.
             _record_failure("handoff", "internal")
         elif stage in {"unavailable", "rejected"}:
             cause = result.get("cause") or result.get("reason")
-            if cause not in SAFE_CAUSES:
-                cause = "internal"
-            _record_failure(stage, cause)
+            _record_failure(stage, cause if cause in SAFE_CAUSES else "internal")
     except Exception:
         _record_failure("hook", "internal")
     _print({})
@@ -200,12 +187,10 @@ def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
         raise SystemExit("bridge operation required")
-    op = argv[0]
-    if op == "pretool":
+    if argv[0] == "pretool":
         raise SystemExit(handle_pretool())
-    if op == "stop":
+    if argv[0] == "stop":
         raise SystemExit(handle_stop())
-    # Leftover hook names (turn-started, command): never replay; fail open.
     _print({})
     return 0
 

@@ -54,30 +54,6 @@ def stop_real_services(engine_config, *, timeout=8.0, sleep=time.sleep):
     )
 
 
-def deny_read(path):
-    if os.name != "nt":
-        path.chmod(0)
-        return
-    import csv
-    sid = list(csv.reader(subprocess.check_output(
-        ["whoami", "/user", "/fo", "csv", "/nh"], text=True).splitlines()))[0][1]
-    if not sid.startswith("S-1-"):
-        raise AssertionError("current user SID unavailable")
-    subprocess.run(["icacls", str(path), "/deny", f"*{sid}:(RD)"],
-                   check=True, capture_output=True)
-
-
-def allow_read(path):
-    if os.name != "nt":
-        path.chmod(0o600)
-        return
-    import csv
-    sid = list(csv.reader(subprocess.check_output(
-        ["whoami", "/user", "/fo", "csv", "/nh"], text=True).splitlines()))[0][1]
-    subprocess.run(["icacls", str(path), "/remove:d", "*" + sid],
-                   check=True, capture_output=True)
-
-
 def windows_process_alive(pid):
     """Observe without sending a signal; os.kill(pid, 0) kills on Windows."""
     import ctypes

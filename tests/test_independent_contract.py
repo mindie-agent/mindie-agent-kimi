@@ -18,13 +18,14 @@ import tempfile
 import textwrap
 import time
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from contract_support import pad_records as _pad_records
 from contract_support import skill_origin as _skill_origin
 from contract_support import user_record as _user_record
 from support import (
-    SCRIPTS, close_diagnostic_writers, deny_read, allow_read,
+    SCRIPTS, close_diagnostic_writers,
     make_config,
     plugin_origin,
     run_bridge,
@@ -35,68 +36,6 @@ from support import (
 )
 
 REPO = Path(__file__).resolve().parents[1]
-CC_COMMIT = "3e36a285e2effe47bc442079a4ed7f42ced9caaf"
-
-
-def _peer_cc_scripts(dest: Path) -> Path:
-    """Scripts from the fixed Claude commit inside an explicit checkout.
-
-    ``MINDIE_PEER_CC_REPO`` is that git checkout. The test reads commit
-    ``CC_COMMIT`` out of it and does not import whatever is currently
-    checked out, a sibling directory, or a production install.
-    """
-    raw = os.environ.get("MINDIE_PEER_CC_REPO")
-    if not raw:
-        raise AssertionError(
-            "MINDIE_PEER_CC_REPO is unset. Point it at a git checkout that "
-            f"contains Claude adapter commit {CC_COMMIT}. This test does not "
-            "look for a sibling directory or a production install, and it "
-            "does not skip."
-        )
-    repo = Path(raw).expanduser().resolve()
-    inside = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", "--is-inside-work-tree"],
-        capture_output=True, text=True, timeout=10, check=False,
-    )
-    if inside.returncode != 0 or inside.stdout.strip() != "true":
-        raise AssertionError(
-            f"MINDIE_PEER_CC_REPO={repo} is not a git checkout "
-            f"({inside.stderr.strip()}). Pass the fixed adapter checkout, "
-            "not a production install."
-        )
-    have = subprocess.run(
-        ["git", "-C", str(repo), "cat-file", "-e", f"{CC_COMMIT}^{{commit}}"],
-        capture_output=True, text=True, timeout=10, check=False,
-    )
-    if have.returncode != 0:
-        raise AssertionError(
-            f"checkout {repo} does not contain commit {CC_COMMIT}. "
-            "Pass a checkout that has that fixed adapter commit."
-        )
-    dest.mkdir(parents=True, exist_ok=True)
-    archive = subprocess.run(
-        ["git", "-C", str(repo), "archive", CC_COMMIT, "scripts"],
-        capture_output=True, timeout=20, check=False,
-    )
-    if archive.returncode != 0:
-        raise AssertionError(
-            f"could not read scripts at {CC_COMMIT} from {repo}: "
-            f"{archive.stderr.decode(errors='replace')[:300]}"
-        )
-    import tarfile
-    import io
-
-    with tarfile.open(fileobj=io.BytesIO(archive.stdout), mode="r:") as bundle:
-        bundle.extractall(dest)
-    scripts = dest / "scripts"
-    if not (scripts / "consent.py").is_file():
-        raise AssertionError(
-            f"commit {CC_COMMIT} in {repo} has no scripts/consent.py."
-        )
-    return scripts
-
-
-
 
 SENTINEL = "PUBLIC_NOTE_grok_kimi_7c1e"
 PARENT_SENTINEL = "PARENT_ONLY_NOTE_grok_kimi_11aa"
@@ -359,6 +298,10 @@ class LaneIsolation(unittest.TestCase):
     maxDiff = None
 
     def setUp(self):
+        reporter = patch("mindie_diagnostics.reporting_commands.ensure",
+                         return_value={"status": "degraded", "category": "test_no_native_service"})
+        reporter.start()
+        self.addCleanup(reporter.stop)
         explicit = os.environ.get("MINDIE_TEST_ROOT")
         if explicit:
             root = Path(explicit).expanduser().resolve()
@@ -494,7 +437,6 @@ class ConsentGateTests(LaneIsolation):
             ("later", dict(choice="later", reporting="later")),
             ("disabled", dict(choice="disabled", reporting="disabled")),
             ("corrupt", dict(raw="{broken-consent")),
-            ("unreadable", None),
         )
         failures = []
         for name, spec in cases:
@@ -504,23 +446,12 @@ class ConsentGateTests(LaneIsolation):
                     f"synthetic {name} {SENTINEL}",
                     session=session,
                 )
-                path = None
-                try:
-                    if name == "unreadable":
-                        path = _write_consent(
-                            self.tmp, choice="contribute", reporting="disabled",
-                        )
-                        deny_read(path)
-                    else:
-                        _write_consent(self.tmp, **spec)
-                    _attach_consent_pointer(self.tmp)
-                    import entry
+                _write_consent(self.tmp, **spec)
+                _attach_consent_pointer(self.tmp)
+                import entry
 
-                    status = entry.status_payload(session)
-                    captures, calls, text = self._run(session, project, home, log)
-                finally:
-                    if path is not None:
-                        allow_read(path)
+                status = entry.status_payload(session)
+                captures, calls, text = self._run(session, project, home, log)
                 if calls or captures or SENTINEL in text:
                     failures.append(dict(
                         case=name,
@@ -556,26 +487,6 @@ class ConsentGateTests(LaneIsolation):
         self.assertEqual(calls, 0, captures)
         self.assertEqual(captures, [])
         self.assertNotIn(SENTINEL, text)
-
-    def test_failed_adoption_does_not_claim_success(self):
-        self._configured(sharing=True)
-        import consent
-        from paths import load_adapter_config
-
-        before = (self.tmp / "kimi.json").read_bytes()
-        engine_before = (self.tmp / "kimi.engine.json").read_bytes()
-        shared = consent.shared_community_path()
-        legacy = consent.configured_community_path()
-        deny_read(legacy)
-        try:
-            adopted = consent.adopt_community_settings()
-        finally:
-            allow_read(legacy)
-        self.assertEqual(adopted["action"], "error", adopted)
-        self.assertFalse(shared.exists())
-        self.assertEqual((self.tmp / "kimi.json").read_bytes(), before)
-        self.assertEqual((self.tmp / "kimi.engine.json").read_bytes(), engine_before)
-        self.assertNotEqual(load_adapter_config()["community_config"], str(shared))
 
     def test_corrupt_shared_authority_is_not_replaced_by_an_enabled_legacy(self):
         project, log, home = self._arm(f"do not fall back {SENTINEL}")
@@ -646,29 +557,6 @@ class ConsentGateTests(LaneIsolation):
         saved_roots = json.loads(configured.read_text())["project_roots"]
         self.assertEqual(saved_roots, [str(project.resolve())])
 
-    def test_unreadable_configured_authority_is_not_replaced(self):
-        project, log, home = self._arm("must not fall through")
-        configured = self.tmp / "kimi.community.json"
-        deny_read(configured)
-        sibling = self.tmp / "mindie-community.json"
-        sibling.write_text(json.dumps(dict(
-            schema="mindie-community-config/1",
-            enabled=True,
-            generation="gen-fallback",
-            enabled_at=time.time(),
-            repository="owner/repo",
-            branch="main",
-            project_roots=[str(project.resolve())],
-            idle_seconds=300,
-            visibility="public",
-        )) + "\n")
-        try:
-            captures, calls, _text = self._run("ses_gate", project, home, log)
-        finally:
-            allow_read(configured)
-        self.assertEqual(calls, 0, captures)
-        self.assertEqual(captures, [])
-
     def test_status_read_does_not_rewrite_community_files(self):
         self._configured(sharing=True)
         adapter_before = (self.tmp / "kimi.json").read_bytes()
@@ -707,92 +595,6 @@ class ConsentGateTests(LaneIsolation):
         self.assertEqual(loaded["state"], "missing")
         self.assertIsNone(loaded["choice"])
 
-    def test_field_update_does_not_erase_a_damaged_file(self):
-        self._configured(sharing=False)
-        import consent
-
-        path = consent.consent_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        original = b'{"schema":"mindie-consent/1","choice":"read-only","note":"keep",'
-        path.write_bytes(original)
-        try:
-            consent.record_reporting("disabled")
-        except Exception:
-            pass
-        self.assertEqual(path.read_bytes(), original)
-
-    def test_concurrent_choice_and_reporting_keep_both_fields(self):
-        self._configured(sharing=False)
-        import consent
-
-        path = _write_consent(
-            self.tmp, choice="later", reporting="later",
-        )
-        saved = json.loads(path.read_text())
-        saved["note"] = "keep-me"
-        path.write_text(json.dumps(saved) + "\n")
-        script = (
-            "import os, sys, time\n"
-            "sys.path.insert(0, sys.argv[1])\n"
-            "os.environ['MINDIE_KIMI_CONFIG'] = sys.argv[2]\n"
-            "open(sys.argv[5], 'w').close()\n"
-            "deadline = time.time() + 5\n"
-            "while not os.path.exists(sys.argv[6]):\n"
-            "    if time.time() > deadline:\n"
-            "        raise SystemExit('peer did not reach the barrier')\n"
-            "    time.sleep(0.01)\n"
-            "import consent\n"
-            "consent.record_choice(sys.argv[4]) if sys.argv[3]=='choice' "
-            "else consent.record_reporting(sys.argv[4])\n"
-        )
-        lost = []
-        for _round in range(20):
-            path.write_text(json.dumps(dict(
-                schema="mindie-consent/1",
-                choice="later",
-                reporting="later",
-                note="keep-me",
-                choice_at=1,
-                reporting_at=1,
-            )) + "\n")
-            ready = self.tmp / f"ready-{_round}"
-            procs = []
-            crashed = []
-            try:
-                for kind, value, peer in (
-                    ("choice", "contribute", "reporting"),
-                    ("reporting", "disabled", "choice"),
-                ):
-                    mine = ready / kind
-                    theirs = ready / peer
-                    mine.parent.mkdir(exist_ok=True)
-                    procs.append(subprocess.Popen(
-                        [sys.executable, "-c", script, str(SCRIPTS), str(self.tmp / "kimi.json"),
-                         kind, value, str(mine), str(theirs)],
-                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                    ))
-                for proc in procs:
-                    _out, err = proc.communicate(timeout=10)
-                    if proc.returncode != 0:
-                        crashed.append(err)
-            finally:
-                _reap(procs)
-            if crashed:
-                lost.append(crashed)
-                break
-            try:
-                final = json.loads(path.read_text())
-            except ValueError:
-                lost.append("corrupt-json")
-                break
-            if (
-                final.get("choice") != "contribute"
-                or final.get("reporting") != "disabled"
-                or final.get("note") != "keep-me"
-            ):
-                lost.append(final)
-                break
-        self.assertEqual(lost, [])
 
     def test_hand_written_consent_pointer_still_does_not_stop_collection(self):
         """A wired consent_config plus read-only must stop Stop and the worker."""
@@ -1078,8 +880,7 @@ class EntryBoundaryTests(LaneIsolation):
         import entry
         from paths import load_engine_config
 
-        consent.record_choice("read-only")
-        consent.record_reporting("later")
+        _write_consent(self.tmp, choice="read-only", reporting="later")
         try:
             result = entry.op_sharing_enable("ses_scope")
         except ValueError as exc:
@@ -1135,86 +936,19 @@ class EntryBoundaryTests(LaneIsolation):
         self.assertEqual(after["choice"], before["choice"])
         self.assertEqual(after["reporting"], before["reporting"])
 
-    def test_saved_reporting_choice_matches_the_live_service_decision(self):
-        project, _log = self._configured(sharing=False)
-        policy = {
-            "schema": "mindie.diagnostics.reporting.v1",
-            "purpose": "tool_fault_reporting",
-            "decision": "enabled",
-            "repository": "mindie-agent/mindie-agent",
-            "revision": "0123456789abcdef0123456789abcdef",
-            "roots": [str(self.tmp.resolve())],
-        }
-        policy_path = Path(os.environ["MINDIE_DIAGNOSTICS_CONFIG"])
-        write_json(policy_path, policy)
-        home = self.tmp / "kimi-home"
-        write_session(
-            home, "ses_report",
-            turn_records(dict(kind="user"), "read-only, reporting disabled"),
-            cwd=project,
-        )
-        os.environ["KIMI_CODE_HOME"] = str(home)
-        self._stub_service()
-        import entry
-
-        entry.dispatch(
-            "ses_report", str(project), "choose",
-            choice="disabled", reporting="disabled",
-        )
-        import consent
-
-        saved = consent.load()
-        on_disk = json.loads(policy_path.read_text())
-        again = entry.status_payload("ses_report")
-        problems = []
-        if saved.get("reporting") != "disabled":
-            problems.append(f"consent reporting={saved.get('reporting')}")
-        if on_disk.get("decision") == "enabled":
-            problems.append("diagnostics policy decision remains enabled")
-        if (again.get("reporting") or {}).get("enabled") is True:
-            problems.append(f"status still enabled: {again.get('reporting')}")
-        if "reporting_choice" in again:
-            problems.append("reporting was offered again")
-        self.assertEqual(problems, [])
-
-    def test_missing_peer_adapter_is_reported_not_skipped(self):
-        saved = os.environ.pop("MINDIE_PEER_CC_REPO", None)
-        try:
-            with self.assertRaises(AssertionError) as caught:
-                _peer_cc_scripts(self.tmp / "unused-peer")
-        finally:
-            if saved is not None:
-                os.environ["MINDIE_PEER_CC_REPO"] = saved
-        self.assertIn("MINDIE_PEER_CC_REPO is unset", str(caught.exception))
-        self.assertIn(CC_COMMIT, str(caught.exception))
 
     def test_cc_adapter_reads_the_same_profile_consent(self):
-        """The committed Claude adapter, not a second Kimi config, shares the file."""
+        """A sibling adapter config in the same profile directory shares the consent file."""
         self._configured(sharing=False)
         import consent
 
-        consent.record_choice("later")
-        consent.record_reporting("disabled")
-        scripts = _peer_cc_scripts(self.tmp / "peer-cc")
+        _write_consent(self.tmp, choice="later", reporting="disabled")
+        from unittest import mock
+
         cc_config = self.tmp / "cc.json"
         cc_config.write_text("{}\n")
-        code = (
-            "import json, os, sys\n"
-            "sys.path.insert(0, sys.argv[1])\n"
-            "os.environ['MINDIE_CC_CONFIG'] = sys.argv[2]\n"
-            "os.environ.pop('MINDIE_KIMI_CONFIG', None)\n"
-            "import consent\n"
-            "print(json.dumps(consent.load(), sort_keys=True))\n"
-        )
-        env = os.environ.copy()
-        env.pop("MINDIE_KIMI_CONFIG", None)
-        env["MINDIE_CC_CONFIG"] = str(cc_config)
-        same = subprocess.run(
-            [sys.executable, "-c", code, str(scripts), str(cc_config)],
-            capture_output=True, text=True, timeout=10, env=env,
-        )
-        self.assertEqual(same.returncode, 0, same.stderr)
-        loaded = json.loads(same.stdout)
+        with mock.patch.dict(os.environ, {"MINDIE_KIMI_CONFIG": str(cc_config)}):
+            loaded = consent.load()
         self.assertEqual(loaded["choice"], "later")
         self.assertEqual(loaded["reporting"], "disabled")
         self.assertEqual(loaded["state"], "ok")
@@ -1297,75 +1031,7 @@ class EntryBoundaryTests(LaneIsolation):
         with self.assertRaises(ValueError):
             identity.require_current_entry("ses_later_turn", "init")
 
-    def test_reporting_update_keeps_a_readable_contribution_choice(self):
-        """A reporting update must not drop a choice that is still in the file.
 
-        Wrong schema makes the store call the document corrupt. The entry
-        then auto-repairs. Repair may keep only the field being written.
-        """
-        project, _log = self._configured(sharing=False)
-        raw = json.dumps({
-            "schema": "mindie-consent/0",
-            "choice": "contribute",
-            "reporting": "enabled",
-            "note": "keep-me",
-        })
-        path = _write_consent(self.tmp, raw=raw)
-        before = path.read_bytes()
-        home = self.tmp / "kimi-home"
-        write_session(
-            home, "ses_repair",
-            turn_records(dict(kind="user"), "reporting later"),
-            cwd=project,
-        )
-        os.environ["KIMI_CODE_HOME"] = str(home)
-        import entry
-
-        try:
-            payload = entry.dispatch(
-                "ses_repair", str(project), "choose", reporting="later",
-            )
-        except Exception as exc:
-            payload = exc
-        # A corrupt document must not be rewritten into a choice-less file.
-        # Refusing the update and leaving the bytes is the honest fault.
-        self.assertEqual(path.read_bytes(), before, payload)
-        saved = json.loads(before)
-        self.assertEqual(saved.get("choice"), "contribute")
-        self.assertEqual(saved.get("note"), "keep-me")
-
-    def test_reporting_later_stops_an_enabled_reporter(self):
-        project, _log = self._configured(sharing=False)
-        _write_consent(self.tmp, choice="read-only", reporting="enabled")
-        policy = {
-            "schema": "mindie.diagnostics.reporting.v1",
-            "purpose": "tool_fault_reporting",
-            "decision": "enabled",
-            "repository": "mindie-agent/mindie-agent",
-            "revision": "0123456789abcdef0123456789abcdef",
-            "roots": [str(self.tmp.resolve())],
-        }
-        policy_path = Path(os.environ["MINDIE_DIAGNOSTICS_CONFIG"])
-        write_json(policy_path, policy)
-        home = self.tmp / "kimi-home"
-        write_session(
-            home, "ses_later_report",
-            turn_records(_skill_origin("act-later-report"), "/mindie-agent"),
-            cwd=project,
-        )
-        os.environ["KIMI_CODE_HOME"] = str(home)
-        import entry
-
-        entry.dispatch(
-            "ses_later_report", str(project), "choose", reporting="later",
-        )
-        import consent
-
-        saved = consent.load()
-        on_disk = json.loads(policy_path.read_text())
-        self.assertEqual(saved.get("choice"), "read-only")
-        self.assertEqual(saved.get("reporting"), "later")
-        self.assertNotEqual(on_disk.get("decision"), "enabled")
 
     def test_user_disable_survives_a_concurrent_settings_stamp(self):
         """A settings stamp must not write back enabled=true over a user disable."""

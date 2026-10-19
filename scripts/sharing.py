@@ -1,18 +1,7 @@
-"""Community sharing via the shared core validator. Default off.
-
-The settings file is the one designated authority: reads use
-``consent.configured_community_path`` as-is (no implicit adoption or
-fallback inside a read). Path convergence happens once at an explicit
-install/upgrade/entry boundary (``consent.adopt_community_settings``).
-
-Every mutation runs inside the ONE shared write boundary —
-``CommunityWriteContext`` anchored at the profile's canonical community
-path, even while the declared target is still a legacy file — so a user
-disable and a migration/stamp can never lose each other (core API.md §9).
-The current document is re-read inside the lock; no caller-supplied stale
-snapshot. Every write carries the ``consent_config`` extension pointing at
-the same profile consent authority, so the runtime gate checks the saved
-choice at its own capture/model/write boundaries.
+"""[Role] Community sharing configuration reader and writer backed by mindie_knowledge.loop.settings.
+[Invariants] Reads from configured_community_path() without implicit fallback; all writes serialize through CommunityWriteContext at shared_community_path().
+[Timeouts & Locks] Acquires CommunityWriteContext lock for all mutations and re-reads current document inside the lock.
+[Side-Effect Policy] write_enabled() and write_disabled() atomically update the target community config JSON with consent_config attached.
 """
 
 from __future__ import annotations
@@ -30,14 +19,11 @@ def _settings_mod():
 
 
 def _write_context():
-    """The profile's one community write boundary, anchored at the canonical
-    path regardless of which file is the current authority."""
     return _settings_mod().CommunityWriteContext(str(consent.shared_community_path()))
 
 
 def load(config=None):
-    path = configured_community_path() if config is None else config
-    return _settings_mod().load(path)
+    return _settings_mod().load(configured_community_path() if config is None else config)
 
 
 def public_status(config=None):
@@ -50,11 +36,7 @@ def capture_allowed(lease, cwd, config=None) -> bool:
         return False
     if not lease or not isinstance(lease.get("project_root"), str):
         return False
-    if not settings.in_scope(lease["project_root"]):
-        return False
-    if cwd and not settings.in_scope(cwd):
-        return False
-    return True
+    return settings.in_scope(lease["project_root"]) and (not cwd or settings.in_scope(cwd))
 
 
 def write_enabled(
@@ -74,17 +56,24 @@ def write_enabled(
         target = Path(config) if config is not None else configured_community_path()
         current = ctx.read(target)
         if account is None:
-            account = current.raw.get('account')
-        if (fork is None and current.repository == repository
-                and current.branch == branch and current.raw.get('account') == account):
-            fork = current.raw.get('fork')
+            account = current.raw.get("account")
+        if (
+            fork is None
+            and current.repository == repository
+            and current.branch == branch
+            and current.raw.get("account") == account
+        ):
+            fork = current.raw.get("fork")
         roots = list(project_roots)
-        if extend_scope:
-            if (current.enabled and current.repository == repository
-                    and current.branch == branch
-                    and current.raw.get('account') == account
-                    and current.raw.get('fork') == fork):
-                roots = list(dict.fromkeys([*roots, *map(str, current.project_roots)]))
+        if (
+            extend_scope
+            and current.enabled
+            and current.repository == repository
+            and current.branch == branch
+            and current.raw.get("account") == account
+            and current.raw.get("fork") == fork
+        ):
+            roots = list(dict.fromkeys([*roots, *map(str, current.project_roots)]))
         settings = ctx.write(
             target,
             enabled=True,
@@ -102,9 +91,6 @@ def write_enabled(
 def write_disabled(config=None):
     with _write_context() as ctx:
         target = Path(config) if config is not None else configured_community_path()
-        # The merge base is the CURRENT document read inside the lock; a
-        # missing file is a first configuration and a corrupt one is an
-        # honest failure (bytes preserved), never a fabricated overwrite.
         current = ctx.read(target)
         raw = current.raw if current.schema_ok else {}
         settings = ctx.write(

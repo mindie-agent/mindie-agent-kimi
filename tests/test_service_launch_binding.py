@@ -165,7 +165,7 @@ class LaunchContextDeclarationTests(unittest.TestCase):
         declaration = prepared["service_launch_context"]
         self.assertEqual(
             declaration,
-            {"paths": {}, "environment": ["MINDIE_KIMI_BIN", "MINDIE_GIT_BIN"]},
+            {"paths": {}, "environment": ["MINDIE_KIMI_BIN", "MINDIE_GIT_BIN", "MINDIE_DIAGNOSTICS_CONFIG"]},
         )
         engine = {
             "root": "/tmp/x",
@@ -179,7 +179,7 @@ class LaunchContextDeclarationTests(unittest.TestCase):
         validate_config(engine)
         self.assertEqual(
             service_context.validate(engine),
-            {"paths": {}, "environment": ["MINDIE_KIMI_BIN", "MINDIE_GIT_BIN"]},
+            {"paths": {}, "environment": ["MINDIE_KIMI_BIN", "MINDIE_GIT_BIN", "MINDIE_DIAGNOSTICS_CONFIG"]},
         )
 
     def test_ensure_service_sets_env_before_core_start(self):

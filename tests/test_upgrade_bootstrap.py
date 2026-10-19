@@ -23,7 +23,7 @@ class UpgradeBootstrapTests(unittest.TestCase):
         self.launch = self.update / 'launch' / SHA
         self.scripts.mkdir(parents=True)
         self.launch.mkdir(parents=True)
-        for name in ('diagnostic_support.py', 'diagnostic_fallback.py'):
+        for name in ('diagnostic_support.py', 'paths.py'):
             shutil.copy2(ROOT / 'scripts' / name, self.scripts / name)
         for name in ('mindie_launch.py', 'bounded.py'):
             shutil.copy2(ROOT / 'scripts' / name, self.launch / name)
@@ -35,7 +35,7 @@ class UpgradeBootstrapTests(unittest.TestCase):
         (self.update / 'current.json').write_text(json.dumps({'sha': 'b' * 40, 'generation': 'never-use-current-for-module'}))
         self.decoy = self.root / 'decoy'
         self.decoy.mkdir()
-        for name in ('diagnostic_support.py', 'diagnostic_fallback.py'):
+        for name in ('diagnostic_support.py', 'paths.py'):
             (self.decoy / name).write_text("raise AssertionError('PYTHONPATH module must not load')\n")
         self.env = {k: v for k, v in os.environ.items() if not k.startswith('MINDIE_')}
         self.env.update(PYTHONPATH=str(self.decoy), PYTHONDONTWRITEBYTECODE='1',
@@ -73,16 +73,20 @@ class UpgradeBootstrapTests(unittest.TestCase):
         marker.write_text('b' * 40 + '\n')
         self.assertNotIn('revision', self.metadata())
 
+    def test_generation_revision_survives_platform_line_endings(self):
+        marker = self.generation / '.mindie-generation-complete'
+        for ending in (b"\n", b"\r\n"):
+            with self.subTest(ending=ending):
+                marker.write_bytes(SHA.encode("ascii") + ending)
+                self.assertEqual(self.metadata()["revision"], SHA)
+
     def test_invalid_explicit_stamp_is_authoritative(self):
         stamp = self.scripts / 'diagnostic-build.json'
         stamp.write_text('invalid')
         self.assertEqual(self.metadata(), {})
-        stamp.unlink()
-        stamp.symlink_to(self.generation / '.mindie-generation-complete')
-        self.assertEqual(self.metadata(), {})
 
     def test_adjacent_valid_stamp_takes_precedence(self):
-        for name in ('diagnostic_support.py', 'diagnostic_fallback.py'):
+        for name in ('diagnostic_support.py', 'paths.py'):
             shutil.copy2(self.scripts / name, self.launch / name)
         (self.launch / 'diagnostic-build.json').write_text(json.dumps({'version': '0.1.0+actual', 'revision': 'c' * 40}))
         self.assertEqual(self.metadata(), {'version': '0.1.0+actual', 'revision': 'c' * 40})

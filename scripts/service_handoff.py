@@ -1,9 +1,9 @@
-"""Updater-only bounded handoff. Run directly with the selected interpreter.
-
-No launcher locks, task activation, transcript work or model calls here.
-The parent owns the exclusive update lock and permits restore only after this
-invocation confirmed stopping its previous endpoint. Output contains no token.
+"""[Role] Updater-only bounded knowledge service stop/restore handoff helper.
+[Invariants] Verifies loopback endpoint and waits for OS consumer.lock release before confirming stop; never leaks connection tokens in stdout.
+[Timeouts & Locks] stop_if_idle RPC timeout 1.0s + 3.0s consumer.lock release poll; restore ensure_service 5.0s + 0.5s status probe.
+[Side-Effect Policy] Stops idle knowledge service or restarts service when active admission leases exist.
 """
+
 import json
 import sys
 import time
@@ -11,8 +11,8 @@ from pathlib import Path
 from urllib.error import URLError
 from urllib.parse import urlparse
 
-from mindie_knowledge.loop.cli import config_at, connect, ensure_service, rpc
 from mindie_knowledge.loop.activation import Admission
+from mindie_knowledge.loop.cli import config_at, connect, ensure_service, rpc
 from mindie_knowledge.loop.locks import lock_held
 
 
@@ -43,14 +43,11 @@ def stop(engine):
         raise RuntimeError("invalid stop acknowledgement; no restart")
     if not result["idle"]:
         return {"idle": False, "service": "busy"}
-    # The core holds this OS lock until listener and store cleanup completes.
-    # Windows TCP refusal can take longer than each bounded network probe.
-    # An idle acknowledgement alone is not proof of resource release.
     deadline = time.monotonic() + 3
     while time.monotonic() < deadline:
         if lock_held(consumer) is False:
             return {"idle": True, "service": "stopped"}
-        time.sleep(min(.1, max(0, deadline-time.monotonic())))
+        time.sleep(min(0.1, max(0, deadline - time.monotonic())))
     raise RuntimeError("old service exit unconfirmed; no restart")
 
 
@@ -59,9 +56,8 @@ def restore(engine):
     path = config.get("admission_path")
     if not path or not Admission(path).leases():
         return {"status": "not-needed", "reason": "no-valid-lease"}
-    connection = ensure_service(engine)  # core: one spawn, 5 s, three probes
-    status = rpc(connection, "status", timeout=.5)
-    if status.get("admission_frozen") is not False:
+    connection = ensure_service(engine)
+    if rpc(connection, "status", timeout=0.5).get("admission_frozen") is not False:
         raise RuntimeError("selected service remains frozen; no restart")
     return {"status": "restored"}
 
@@ -69,9 +65,7 @@ def restore(engine):
 if __name__ == "__main__":
     try:
         action, engine = sys.argv[1:]
-        result = {"stop": stop, "restore": restore}[action](engine)
-        print(json.dumps(result))
+        print(json.dumps({"stop": stop, "restore": restore}[action](engine)))
     except Exception as exc:
-        # Exception values can include connection tokens or provider details.
         print(json.dumps({"status": "failed", "error": type(exc).__name__}))
         sys.exit(1)

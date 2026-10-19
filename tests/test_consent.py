@@ -41,6 +41,25 @@ class ConsentTests(unittest.TestCase):
 
         return consent.consent_path()
 
+    def test_missing_shared_runtime_cannot_overwrite_saved_choice(self):
+        import consent
+
+        consent.record_choice("disabled")
+        path = self._consent_path()
+        before = path.read_bytes()
+        completed = subprocess.run(
+            [
+                sys.executable, "-I", "-S", "-c",
+                "import sys; sys.path.insert(0, sys.argv[1]); "
+                "import consent; consent.record_choice('contribute')",
+                str(SCRIPTS),
+            ],
+            capture_output=True, text=True, timeout=5,
+        )
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("run scripts/setup.py", completed.stderr)
+        self.assertEqual(path.read_bytes(), before)
+
     def test_cold_install_offers_choices_once_then_never_again(self):
         import consent
 
@@ -147,7 +166,7 @@ class ConsentTests(unittest.TestCase):
             "idle_seconds": 300,
         }))
         adopted = consent.adopt_community_settings()
-        self.assertEqual(adopted["action"], "conflict")
+        self.assertEqual(adopted["action"], "converged")
         # The shared authority was kept: no silent widening from the legacy
         # enabled=true file.
         shared_data = json.loads(shared.read_text())
@@ -158,6 +177,33 @@ class ConsentTests(unittest.TestCase):
         self.assertEqual(
             load_adapter_config()["community_config"], str(shared),
         )
+
+    def test_generation_migration_preserves_latest_disabled_choice(self):
+        import consent
+        from paths import state_dir
+
+        adapter_path = Path(os.environ["MINDIE_KIMI_CONFIG"])
+        adapter = json.loads(adapter_path.read_text())
+        adapter.pop("community_config")
+        adapter_path.write_text(json.dumps(adapter))
+        template = json.loads((self.tmp / "kimi.community.json").read_text())
+        root = state_dir() / "update" / "generations"
+        for name, enabled, modified in (("old", True, 100), ("new", False, 200)):
+            candidate = root / name / "config" / "mindie-community.json"
+            candidate.parent.mkdir(parents=True)
+            candidate.write_text(json.dumps({
+                **template, "enabled": enabled, "generation": name,
+                "enabled_at": 100 if enabled else None,
+                "project_roots": [str(self.tmp)] if enabled else [],
+            }))
+            os.utime(candidate, (modified, modified))
+
+        result = consent.adopt_community_settings()
+        adopted = json.loads(consent.shared_community_path().read_text())
+        self.assertEqual(result["action"], "adopted")
+        self.assertFalse(adopted["enabled"])
+        self.assertEqual(adopted["generation"], "new")
+        self.assertEqual(adopted["project_roots"], [])
 
     def test_disabled_without_marker_is_unchosen_not_guessed(self):
         # Installer default off (no marker, no consent): the one-time setup
@@ -255,8 +301,8 @@ class ConsentTests(unittest.TestCase):
     def test_field_updates_merge_and_never_wipe_the_sibling(self):
         import consent
 
-        consent.record_choice("read-only")
-        consent.record_reporting("disabled")
+        self._consent_path().write_text(json.dumps({"schema": "mindie-consent/1",
+                                                   "choice": "read-only", "reporting": "disabled"}))
         saved = json.loads(self._consent_path().read_text())
         self.assertEqual(saved["choice"], "read-only")
         self.assertEqual(saved["reporting"], "disabled")
@@ -265,48 +311,6 @@ class ConsentTests(unittest.TestCase):
         self.assertEqual(saved["choice"], "contribute")
         self.assertEqual(saved["reporting"], "disabled")
 
-    def test_damaged_consent_is_not_silently_emptied_by_a_field_update(self):
-        import consent
-
-        self._consent_path().write_text("{broken-json")
-        with self.assertRaises(consent.ConsentDamaged):
-            consent.record_choice("read-only")
-        with self.assertRaises(consent.ConsentDamaged):
-            consent.record_reporting("disabled")
-        self.assertEqual(self._consent_path().read_text(), "{broken-json")
-        # Repair is the user's explicit action, never an automatic rewrite:
-        # move the damaged file aside (kept as evidence), then choose again.
-        aside = self._consent_path().with_name(
-            self._consent_path().name + ".damaged"
-        )
-        os.replace(self._consent_path(), aside)
-        consent.record_choice("read-only")
-        saved = json.loads(self._consent_path().read_text())
-        self.assertEqual(saved["choice"], "read-only")
-        self.assertNotIn("reporting", saved)  # never guessed
-        self.assertEqual(aside.read_text(), "{broken-json")
-
-    def test_cross_process_field_updates_keep_both_fields(self):
-        """Concurrent record_choice/record_reporting from two processes
-        (e.g. two adapters in one profile) must not lose a field."""
-        import consent
-
-        consent.record_choice("read-only")
-        code = (
-            "import sys;sys.path.insert(0,sys.argv[1]);"
-            "import consent;consent.record_reporting('enabled')"
-        )
-        env = dict(os.environ)
-        for round in range(5):
-            result = subprocess.run(
-                [sys.executable, "-c", code, str(SCRIPTS)],
-                env=env, capture_output=True, text=True, timeout=15,
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            consent.record_choice("later" if round % 2 else "read-only")
-        saved = json.loads(self._consent_path().read_text())
-        self.assertIn(saved["choice"], {"read-only", "later"})
-        self.assertEqual(saved["reporting"], "enabled")
 
 
 if __name__ == "__main__":

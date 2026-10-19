@@ -6,6 +6,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from support import SCRIPTS, make_config, write_json
 
@@ -41,10 +42,44 @@ def git(args, cwd):
 
 
 def commit(src, bare, marker):
+    manifest = json.loads((src / "kimi.plugin.json").read_text())
+    major, minor, patch_version = manifest["version"].split(".")
+    manifest["version"] = f"{major}.{minor}.{int(patch_version) + 1}"
+    write_json(src / "kimi.plugin.json", manifest)
     (src / "marker.txt").write_text(marker)
     git(["add", "-A"], src)
     git(["commit", "-m", marker], src)
     git(["push", str(bare), "main"], src)
+    publish_release(src, bare)
+
+
+def publish_release(src, bare):
+    from release_metadata import metadata
+
+    sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=src, check=True,
+                         capture_output=True, text=True, env=GIT_ENV).stdout.strip()
+    declaration = metadata(src, sha)
+    tag = "v" + declaration["version"]
+    git(["tag", tag], src)
+    git(["push", str(bare), tag], src)
+    catalog_path = bare.parent / "releases.json"
+    catalog = json.loads(catalog_path.read_text()) if catalog_path.exists() else []
+    catalog.append(dict(
+        id=len(catalog) + 1, tag_name=tag, draft=False, prerelease=False,
+        metadata=declaration,
+    ))
+    write_json(catalog_path, catalog)
+
+
+def local_release_catalog(adapter, current, deadline):
+    from mindie_knowledge.releases import select_release
+    from release_metadata import HARNESS, REPOSITORY
+
+    catalog = json.loads((Path(adapter["update_remote"]).parent / "releases.json").read_text())
+    return select_release(
+        catalog, repository=REPOSITORY, harness_name=HARNESS,
+        harness_version="2.2.0", installed_version=updater._installed_version(current),
+    )
 
 
 def make_remote(tmp: Path):
@@ -54,6 +89,8 @@ def make_remote(tmp: Path):
     (src / "skills").mkdir()
     (src / "commands").mkdir()
     write_json(src / "kimi.plugin.json", MANIFEST)
+    write_json(src / "harness-compatibility.json",
+               json.loads((SCRIPTS.parent / "harness-compatibility.json").read_text()))
     (src / "runtime-requirements.txt").write_text(
         "mindie-knowledge @ git+https://github.com/mindie-agent/knowledge"
         "@3f7c70d813377d3ba3140a0a585f48e1df04444b\n"
@@ -67,7 +104,7 @@ def make_remote(tmp: Path):
     import shutil
 
     for name in ("knowledge_service.py", "paths.py", "transcript.py",
-                 "diagnostic_support.py", "diagnostic_fallback.py"):
+                 "diagnostic_support.py", "paths.py"):
         shutil.copy2(SCRIPTS / name, src / "scripts" / name)
     (src / "marker.txt").write_text("one")
     git(["init", "-b", "main"], src)
@@ -77,6 +114,7 @@ def make_remote(tmp: Path):
                          capture_output=True, text=True, env=GIT_ENV).stdout.strip()
     git(["init", "--bare", str(bare)], tmp)
     git(["push", str(bare), "main"], src)
+    publish_release(src, bare)
     return src, bare, sha
 
 
@@ -106,6 +144,9 @@ class UpdaterTests(unittest.TestCase):
         self._sync = updater._feed_sync
         updater._feed_sync = lambda adapter, deadline: True
         self.installs = []
+        self._catalog = patch.object(updater, "_release_catalog", local_release_catalog)
+        self._catalog.start()
+        self.addCleanup(self._catalog.stop)
 
     def tearDown(self):
         updater._feed_sync = self._sync
@@ -141,6 +182,76 @@ class UpdaterTests(unittest.TestCase):
         args = dict(build=fake_build, install=self.fake_install)
         args.update(kw)
         return updater.check(self.adapter, **args)
+
+    def test_unpublished_main_commit_never_changes_installed_release(self):
+        self.assertEqual(self.run_check(), 0)
+        before = genstate.current_path(self.adapter).read_bytes()
+        (self.src / "marker.txt").write_text("unpublished")
+        git(["commit", "-am", "unpublished"], self.src)
+        git(["push", str(self.bare), "main"], self.src)
+        self.assertEqual(self.run_check(), 0)
+        self.assertEqual(genstate.current_path(self.adapter).read_bytes(), before)
+        self.assertEqual(len(self.installs), 1)
+
+    def test_draft_and_prerelease_keep_the_current_generation(self):
+        self.assertEqual(self.run_check(), 0)
+        before = genstate.current_path(self.adapter).read_bytes()
+        commit(self.src, self.bare, "unreleased")
+        catalog_path = self.tmp / "releases.json"
+        catalog = json.loads(catalog_path.read_text())
+        for field in ("draft", "prerelease"):
+            catalog[-1].update(draft=False, prerelease=False)
+            catalog[-1][field] = True
+            write_json(catalog_path, catalog)
+            self.assertEqual(self.run_check(), 0)
+            self.assertEqual(genstate.current_path(self.adapter).read_bytes(), before)
+        self.assertEqual(len(self.installs), 1)
+
+    def test_release_tag_mismatch_fails_before_build_or_install(self):
+        (self.src / "marker.txt").write_text("moved tag")
+        git(["commit", "-am", "moved tag"], self.src)
+        git(["tag", "-f", "v0.1.0"], self.src)
+        git(["push", "--force", str(self.bare), "v0.1.0"], self.src)
+        build_calls = []
+        self.assertEqual(self.run_check(
+            build=lambda *args: build_calls.append(args),
+        ), 1)
+        self.assertEqual(build_calls, [])
+        self.assertEqual(self.installs, [])
+        self.assertFalse(genstate.current_path(self.adapter).exists())
+        self.assertIn("tag does not match", genstate.read_status(self.adapter)["error"])
+
+    def test_source_version_must_match_release_before_runtime_build(self):
+        catalog_path = self.tmp / "releases.json"
+        catalog = json.loads(catalog_path.read_text())
+        catalog[0]["metadata"]["version"] = "0.2.0"
+        catalog[0]["tag_name"] = "v0.2.0"
+        write_json(catalog_path, catalog)
+        git(["tag", "v0.2.0"], self.src)
+        git(["push", str(self.bare), "v0.2.0"], self.src)
+        build_calls = []
+        self.assertEqual(self.run_check(
+            build=lambda *args: build_calls.append(args),
+        ), 1)
+        self.assertEqual(build_calls, [])
+        self.assertEqual(self.installs, [])
+        self.assertFalse(genstate.current_path(self.adapter).exists())
+        self.assertIn("formal Release metadata", genstate.read_status(self.adapter)["error"])
+
+    def test_unsupported_host_has_no_install_side_effect(self):
+        catalog_path = self.tmp / "releases.json"
+        catalog = json.loads(catalog_path.read_text())
+        declaration = catalog[0]["metadata"]["compatibility"]
+        intervals = [dict(minimum="2.3.0", maximum="2.3.0",
+                          maximum_inclusive=True, include_prerelease=False)]
+        declaration["supported"] = intervals
+        for row in declaration["interface_registry"].values():
+            row["supported"] = intervals
+        write_json(catalog_path, catalog)
+        self.assertEqual(self.run_check(), 1)
+        self.assertEqual(genstate.read_status(self.adapter)["result"], "no_compatible_release")
+        self.assertEqual(self.installs, [])
+        self.assertFalse(genstate.current_path(self.adapter).exists())
 
     def test_git_argv_uses_the_stamped_binary(self):
         from unittest.mock import patch
@@ -377,6 +488,7 @@ class UpdaterTests(unittest.TestCase):
     def test_idle_uses_reviewed_updater_helper_not_old_generation_scripts(self):
         empty = self.tmp / "empty-gen"
         (empty / "scripts").mkdir(parents=True)
+        write_json(empty / "kimi.plugin.json", dict(MANIFEST, version="0.0.1"))
         genstate.write_current({
             "generation": str(empty),
             "python": sys.executable,
@@ -453,12 +565,12 @@ class UpdaterTests(unittest.TestCase):
         self.assertIsNone(genstate.read_current(self.adapter)["sha"])
         # Feed sync is independent: it ran even though the candidate failed.
         self.assertEqual(calls, ["sync"])
-        # Same failed revision suppressed; installer never called.
+        # Same failed revision waits during backoff window; installer never called.
         self.assertEqual(self.run_check(), 0)
         self.assertEqual(self.installs, [])
         self.assertEqual(genstate.read_status(self.adapter)["result"],
-                         "suppressed-known-failed")
-        # Newer revision is not suppressed; explicit recovery re-checks.
+                         "retry-waiting")
+        # Newer revision is not blocked; explicit recovery re-checks.
         commit(self.src, self.bare, "two")
         self.assertEqual(self.run_check(), 0)
         self.assertEqual(len(self.installs), 1)
@@ -830,6 +942,9 @@ class StaleFailureFieldTests(unittest.TestCase):
         self._sync = updater._feed_sync
         updater._feed_sync = lambda adapter, deadline: True
         self.installs = []
+        self._catalog = patch.object(updater, "_release_catalog", local_release_catalog)
+        self._catalog.start()
+        self.addCleanup(self._catalog.stop)
 
     def tearDown(self):
         updater._feed_sync = self._sync

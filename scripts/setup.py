@@ -1,21 +1,43 @@
 #!/usr/bin/env python3
-"""Configure MindIE-owned files for the Kimi adapter. Default sharing OFF.
+"""Initial setup and runtime bootstrap for `mindie-agent-kimi`.
 
-Does not write ~/.kimi-code. Sharing can be configured after install.
+[Role]
+Builds or probes the pinned Python runtime (`runtime-requirements.txt`),
+stages the retained `bootstrap` generation, writes `kimi.json`,
+`kimi.engine.json`, and `mindie-community.json`, builds the initial native host
+package, and registers the automatic update schedule.
+
+[Invariants]
+- Default community sharing is OFF unless `--community-*` flags are provided.
+- Never mutates `~/.kimi-code` directly; native plugin registration is handled
+  separately by `install_kimi_plugin.py`.
+- Verifies SQLite >= 3.43 FTS5 `contentless_delete=1` and core module contracts
+  via `probe_runtime`.
+
+[Timeouts & Locks]
+- Runtime probe timeout: `15s`; `ensurepip` probe: `15s`; `create_venv`: `180s`;
+  `pip install`: `600s`.
+
+[Side-Effect Policy]
+- Creates `<root>/kimi/bootstrap-venv`, stages `<state_dir>/update/generations/bootstrap`,
+  writes `kimi.json` / `kimi.engine.json` / `mindie-community.json` / `current.json`,
+  and optionally installs the platform update schedule.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import os
-from pathlib import Path
 import re
 import secrets
 import shutil
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
@@ -32,7 +54,11 @@ PROBE_MODULES = (
 )
 _PROBE_TEMPLATE = """
 import importlib
+import os
+import sys
 missing = []
+if sys.version_info < ((3, 12) if os.name == "nt" else (3, 11)):
+    missing.append("Python 3.12+ on Windows or 3.11+ on POSIX is required; prefer Python 3.13")
 for name in {modules!r}:
     try:
         importlib.import_module(name)
@@ -64,7 +90,6 @@ if not missing:
         missing.append(f"transcript adapter load failed ({{type(exc).__name__}}: {{exc}})")
 """
 
-# In-memory only. contentless_delete=1 is SQLite >= 3.43 and an FTS5 build.
 _FTS_PROBE = r"""
 import sqlite3
 _fts = None
@@ -97,17 +122,21 @@ _PROBE_TAIL = """
 print("MISSING: " + "; ".join(missing) if missing else "OK")
 """
 
+BOOTSTRAP_ITEMS = (
+    "scripts",
+    "skills",
+    "commands",
+    "kimi.plugin.json",
+    "runtime-requirements.txt",
+)
+BOOTSTRAP_COMPLETE = ".bootstrap-complete"
+
 
 def probe_script(parser: str) -> str:
-    return (
-        _PROBE_TEMPLATE.format(modules=list(PROBE_MODULES), parser=parser)
-        + _FTS_PROBE
-        + _PROBE_TAIL
-    )
+    return _PROBE_TEMPLATE.format(modules=list(PROBE_MODULES), parser=parser) + _FTS_PROBE + _PROBE_TAIL
 
 
-PROBE_SCRIPT = probe_script(
-    str((PLUGIN_ROOT / "scripts" / "transcript.py").resolve()))
+PROBE_SCRIPT = probe_script(str((PLUGIN_ROOT / "scripts" / "transcript.py").resolve()))
 
 
 def probe_runtime(python):
@@ -137,11 +166,8 @@ def community_settings(args, parser):
     selected = any(
         getattr(args, key)
         for key in (
-            "community_repository",
-            "community_project_root",
-            "community_account",
-            "community_fork",
-            "community_visibility",
+            "community_repository", "community_project_root",
+            "community_account", "community_fork", "community_visibility",
         )
     )
     if not selected:
@@ -179,31 +205,11 @@ def community_settings(args, parser):
     return data
 
 
-BOOTSTRAP_ITEMS = (
-    "scripts",
-    "skills",
-    "commands",
-    "kimi.plugin.json",
-    "runtime-requirements.txt",
-)
-BOOTSTRAP_COMPLETE = ".bootstrap-complete"
-
-
 def _bootstrap_complete(root: Path) -> bool:
-    if not (root / BOOTSTRAP_COMPLETE).is_file():
-        return False
-    return all((root / name).exists() for name in BOOTSTRAP_ITEMS)
+    return (root / BOOTSTRAP_COMPLETE).is_file() and all((root / name).exists() for name in BOOTSTRAP_ITEMS)
 
 
 def stage_retained_bootstrap(dest: Path, source: Path) -> Path:
-    """Copy plugin code into an installation-owned generation.
-
-    Staging is atomic: items are copied into a temp directory, a completion
-    marker is written only after every BOOTSTRAP_ITEMS path exists, then the
-    temp directory is renamed to dest. An already-complete retained generation
-    is reused and never overwritten. An unknown or incomplete dest fails
-    closed. Only this function's failed temp staging is cleaned.
-    """
     dest = dest.expanduser().absolute()
     source = source.expanduser().absolute()
     if dest == source:
@@ -211,9 +217,7 @@ def stage_retained_bootstrap(dest: Path, source: Path) -> Path:
     if dest.exists():
         if _bootstrap_complete(dest):
             return dest
-        raise SystemExit(
-            f"incomplete or unknown retained bootstrap, refusing to overwrite: {dest}"
-        )
+        raise SystemExit(f"incomplete or unknown retained bootstrap, refusing to overwrite: {dest}")
     dest.parent.mkdir(parents=True, exist_ok=True)
     staging = dest.parent / f".{dest.name}.staging-{secrets.token_hex(8)}"
     try:
@@ -227,8 +231,7 @@ def stage_retained_bootstrap(dest: Path, source: Path) -> Path:
                 shutil.copytree(src, staging / name, ignore=ignore)
             else:
                 shutil.copy2(src, staging / name)
-        missing = [name for name in BOOTSTRAP_ITEMS if not (staging / name).exists()]
-        if missing:
+        if any(not (staging / name).exists() for name in BOOTSTRAP_ITEMS):
             raise SystemExit("retained bootstrap is missing required plugin files")
         (staging / BOOTSTRAP_COMPLETE).write_text("ok\n")
         os.replace(staging, dest)
@@ -241,36 +244,27 @@ def stage_retained_bootstrap(dest: Path, source: Path) -> Path:
 
 def write_community(path, community, consent_config=None, python=None):
     from community_config import configure
-    from pathlib import Path
-    request = dict(community) if community is not None else None
-    if request is not None:
-        request['consent_config'] = consent_config or str(Path(path).with_name('mindie-consent.json').resolve())
+
+    resolved_consent = consent_config or str(Path(path).with_name("mindie-consent.json").resolve())
+    request = dict(community, consent_config=resolved_consent) if community is not None else None
     result = configure(path, request, python)
-    if community is None and 'consent_config' not in result:
-        result = configure(path, dict(consent_config=consent_config or str(Path(path).with_name('mindie-consent.json').resolve())), python)
-    return 'enabled' if result['enabled'] else 'off'
+    if community is None and "consent_config" not in result:
+        result = configure(path, dict(consent_config=resolved_consent), python)
+    return "enabled" if result["enabled"] else "off"
 
 
 def ensurepip_available(python=None) -> bool:
-    """Cheap up-front probe: stock Ubuntu server images lack python3-venv,
-    so ``python -m venv`` aborts on the missing ensurepip module."""
-    interpreter = str(python or sys.executable)
     try:
         probe = subprocess.run(
-            [interpreter, "-m", "ensurepip", "--version"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=15,
+            [str(python or sys.executable), "-m", "ensurepip", "--version"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15,
         )
+        return probe.returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         return False
-    return probe.returncode == 0
 
 
 def create_venv(venv: Path, *, timeout) -> None:
-    """Create the pinned venv, preferring the stdlib and falling back to
-    ``uv venv --seed`` (uv is a declared base tool) when ensurepip is
-    missing. A machine with neither gets both remedies in one clear error."""
     if ensurepip_available():
         run([sys.executable, "-m", "venv", str(venv)], "", timeout=timeout)
         return
@@ -285,41 +279,40 @@ def create_venv(venv: Path, *, timeout) -> None:
 
 
 def build_bootstrap_runtime(domain_root: Path) -> str:
-    """Fresh install builds its own pinned venv from runtime-requirements.txt;
-    no hand-created venv required."""
     venv = domain_root / "bootstrap-venv"
     python = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     if python.exists():
         return str(python)
     env = dict(
         os.environ,
-        PIP_RETRIES="0",
-        PIP_NO_INPUT="1",
-        PIP_DISABLE_PIP_VERSION_CHECK="1",
-        GIT_TERMINAL_PROMPT="0",
+        PIP_RETRIES="0", PIP_NO_INPUT="1",
+        PIP_DISABLE_PIP_VERSION_CHECK="1", GIT_TERMINAL_PROMPT="0",
     )
     create_venv(venv, timeout=180)
     run(
-        [str(python), "-m", "pip", "install", "-r",
-         str(PLUGIN_ROOT / "runtime-requirements.txt")],
-        "",
-        timeout=600,
-        max_output=512 * 1024,
-        env=env,
+        [str(python), "-m", "pip", "install", "-r", str(PLUGIN_ROOT / "runtime-requirements.txt")],
+        "", timeout=600, max_output=512 * 1024, env=env,
     )
     return str(python)
 
 
+def activate_reporting(python, config, *, contribution=False):
+    from bounded import run
+
+    argv = [str(python), str(PLUGIN_ROOT / "scripts" / "diagnostic_support.py"),
+            "--config", str(config)]
+    if contribution:
+        argv += ["--choice", "contribute"]
+    return json.loads(run(argv, "", timeout=90))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--knowledge-python", default=None,
-                        help="operator override; default builds a pinned venv")
+    parser.add_argument("--knowledge-python", default=None, help="operator override; default builds a pinned venv")
     parser.add_argument("--config", type=Path, default=default_config_path())
     parser.add_argument(
-        "--root",
-        type=Path,
-        default=Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
-        / "mindie-agent",
+        "--root", type=Path,
+        default=Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "mindie-agent",
     )
     parser.add_argument("--domain", default="vllm-ascend")
     parser.add_argument("--no-public-feed", action="store_true")
@@ -329,173 +322,165 @@ def main():
     parser.add_argument("--community-account")
     parser.add_argument("--community-fork")
     parser.add_argument("--community-visibility", choices=["public"])
-    parser.add_argument("--kimi-home", type=Path,
-                        help="explicit Kimi home for native plugin install/update")
-    parser.add_argument("--update-remote", default=None,
-                        help="git remote tracked for automatic updates")
-    parser.add_argument("--no-schedule", action="store_true",
-                        help="do not register the automatic update check")
+    parser.add_argument("--kimi-home", type=Path, help="explicit Kimi home for native plugin install/update")
+    parser.add_argument("--update-remote", default=None, help="git remote tracked for automatic updates")
+    parser.add_argument("--no-schedule", action="store_true", help="do not register the automatic update check")
     args = parser.parse_args()
-    if sys.version_info < (3, 11):
-        parser.error("Python 3.11+ is required")
+    if sys.version_info < ((3, 12) if os.name == "nt" else (3, 11)):
+        parser.error("Python 3.12+ on Windows or 3.11+ on POSIX is required; prefer Python 3.13")
     community = community_settings(args, parser)
     config = args.config.expanduser().absolute()
     domain_root = args.root.expanduser().absolute() / "kimi"
     if args.knowledge_python:
-        python = str(Path(args.knowledge_python).expanduser())
-        if not os.path.isabs(python):
-            python = str(Path(python).absolute())
-        probe_runtime(python)
+        python = str(Path(args.knowledge_python).expanduser().absolute())
     else:
         python = build_bootstrap_runtime(domain_root)
+    try:
         probe_runtime(python)
-    if not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", args.domain):
-        parser.error("invalid domain name")
-    engine_config = config.with_name(config.stem + ".engine.json")
-    community_config = config.with_name("mindie-community.json")
-    if config.exists() or engine_config.exists():
-        if community is None:
-            parser.error(
-                "configuration already exists; pass --community-* to configure sharing"
+        if not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", args.domain):
+            parser.error("invalid domain name")
+        engine_config = config.with_name(config.stem + ".engine.json")
+        community_config = config.with_name("mindie-community.json")
+        if config.exists() or engine_config.exists():
+            if community is None:
+                parser.error("configuration already exists; pass --community-* to configure sharing")
+            sharing = write_community(
+                community_config, community,
+                consent_config=str(config.with_name("mindie-consent.json")), python=python,
             )
+            reporting = activate_reporting(python, config, contribution=True)
+            print(json.dumps(dict(config=str(config), sharing=sharing, reporting=reporting, updated="community"), indent=2))
+            return
+        admission = domain_root / "admission.sqlite3"
+        state_dir = domain_root / "adapter-state"
+        bootstrap_root = stage_retained_bootstrap(state_dir / "update" / "generations" / "bootstrap", PLUGIN_ROOT)
+        value = dict(
+            root=str(domain_root),
+            domain=args.domain,
+            admission_path=str(admission),
+            transcript_adapter=str(bootstrap_root / "scripts" / "transcript.py"),
+            **__import__("capture_config").prepare(python, bootstrap_root / "scripts"),
+            community_config=str(community_config),
+        )
+        if args.domain == "vllm-ascend" and not args.no_public_feed:
+            value["feeds"] = [
+                dict(
+                    repository="mindie-agent/knowledge-vllm-ascend",
+                    ref="main", domain="vllm-ascend", interval_seconds=300,
+                )
+            ]
+        write_private(engine_config, value)
+        kimi_home = (
+            args.kimi_home.expanduser().absolute()
+            if args.kimi_home
+            else Path(os.environ.get("KIMI_CODE_HOME") or Path.home() / ".kimi-code").expanduser().absolute()
+        )
+        adapter_value = dict(
+            python=python,
+            engine_config=str(engine_config),
+            community_config=str(community_config),
+            state_dir=str(state_dir),
+            profile_config=str(config),
+            kimi_home=str(kimi_home),
+        )
+        if args.update_remote:
+            adapter_value["update_remote"] = args.update_remote
+        from paths import resolve_git_bin, resolve_kimi_bin
+
+        try:
+            kimi_bin = resolve_kimi_bin(adapter_value)
+        except (OSError, ValueError):
+            kimi_bin = None
+        if kimi_bin is not None:
+            adapter_value["kimi_bin"] = kimi_bin
+        try:
+            git_bin = resolve_git_bin()
+        except (OSError, ValueError):
+            git_bin = None
+        if git_bin is not None:
+            adapter_value["git_bin"] = git_bin
+        write_private(config, adapter_value)
         sharing = write_community(
             community_config, community,
             consent_config=str(config.with_name("mindie-consent.json")), python=python,
         )
-        print(json.dumps(dict(config=str(config), sharing=sharing, updated="community"), indent=2))
-        return
-    admission = domain_root / "admission.sqlite3"
-    state_dir = domain_root / "adapter-state"
-    bootstrap_root = state_dir / "update" / "generations" / "bootstrap"
-    bootstrap_root = stage_retained_bootstrap(bootstrap_root, PLUGIN_ROOT)
-    transcript = bootstrap_root / "scripts" / "transcript.py"
-    organizer = bootstrap_root / "scripts" / "organizer.py"
-    value = dict(
-        root=str(domain_root),
-        domain=args.domain,
-        admission_path=str(admission),
-        transcript_adapter=str(transcript),
-        **__import__("capture_config").prepare(python, bootstrap_root / "scripts"),
-        community_config=str(community_config),
-    )
-    if args.domain == "vllm-ascend" and not args.no_public_feed:
-        value["feeds"] = [
-            dict(
-                repository="mindie-agent/knowledge-vllm-ascend",
-                ref="main",
-                domain="vllm-ascend",
-                interval_seconds=300,
+        reporting = activate_reporting(python, config, contribution=community is not None)
+        import genstate
+        import updater
+
+        bootstrap_package = updater.build_host_package(
+            bootstrap_root, adapter_value, "bootstrap",
+            package_dir=genstate.update_dir(adapter_value) / "bootstrap-package",
+            config_file=config,
+        )
+        genstate.write_current(
+            {
+                "generation": str(bootstrap_root),
+                "python": python,
+                "adapter_config": str(config),
+                "sha": None,
+            },
+            adapter_value,
+        )
+        scheduled = "skipped"
+        if not args.no_schedule:
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    code = updater.install_schedule(config)
+                scheduled = "registered" if code == 0 else "manual"
+            except Exception as exc:
+                scheduled = f"manual ({type(exc).__name__}: {str(exc)[:120]})"
+        result = dict(
+            config=str(config),
+            engine_config=str(engine_config),
+            community_config=str(community_config),
+            admission_path=str(admission),
+            native_package=str(bootstrap_package),
+            domain=args.domain,
+            sharing=sharing,
+            reporting=reporting,
+            contribution_notice=(
+                "One contribution choice controls public knowledge sharing and sanitized fault reports. "
+                "Existing choices are preserved; legacy choices require explicit confirmation before reporting."
+            ),
+            update_schedule=scheduled,
+            kimi_bin=kimi_bin,
+            git_bin=git_bin,
+            plugin_install=(
+                "Native install: POST /api/v1/plugins {source: <host-package>} "
+                "in the selected Kimi home (scripts/install_kimi_plugin.py). "
+                "Automatic updates: scripts/updater.py check (scheduled), "
+                "status via scripts/updater.py status, recovery via "
+                "scripts/updater.py recover. See docs/update.md."
+            ),
+        )
+        warnings = []
+        if kimi_bin is None:
+            warnings.append(
+                "no kimi binary resolved (MINDIE_KIMI_BIN unset, no "
+                "<kimi_home>/bin/kimi, not on PATH); the summary worker will "
+                "report configuration-unavailable until one exists"
             )
-        ]
-    write_private(engine_config, value)
-    adapter_value = dict(
-        python=python,
-        engine_config=str(engine_config),
-        community_config=str(community_config),
-        state_dir=str(state_dir),
-        # Generations inherit this pointer: authority state anchors at the
-        # profile directory, never at a per-generation config fork.
-        profile_config=str(config),
-    )
-    if args.kimi_home:
-        adapter_value["kimi_home"] = str(args.kimi_home.expanduser().absolute())
-    else:
-        adapter_value["kimi_home"] = str(
-            Path(os.environ.get("KIMI_CODE_HOME") or Path.home() / ".kimi-code")
-            .expanduser().absolute()
-        )
-    if args.update_remote:
-        adapter_value["update_remote"] = args.update_remote
-    from paths import resolve_git_bin, resolve_kimi_bin
+        if git_bin is None:
+            warnings.append(
+                "no git executable resolved (MINDIE_KIMI_GIT_BIN unset, not on "
+                "PATH); scheduled update checks will report configuration-"
+                "unavailable until one exists"
+            )
+        if warnings:
+            result["warnings"] = warnings
+        print(json.dumps(result, indent=2))
+    except Exception as exc:
+        from bounded import run
 
-    kimi_bin = None
-    try:
-        kimi_bin = resolve_kimi_bin(adapter_value)
-    except (OSError, ValueError):
-        kimi_bin = None
-    if kimi_bin is not None:
-        # Service launches (systemd --user, Task Scheduler) do not share the
-        # login shell's PATH; the summary worker gets a deterministic binary.
-        adapter_value["kimi_bin"] = kimi_bin
-    git_bin = None
-    try:
-        git_bin = resolve_git_bin()
-    except (OSError, ValueError):
-        git_bin = None
-    if git_bin is not None:
-        # The scheduled update check fires in a reduced environment whose
-        # PATH may lack git (Task Scheduler Session 0); pin what setup saw.
-        adapter_value["git_bin"] = git_bin
-    write_private(config, adapter_value)
-    sharing = write_community(
-        community_config, community,
-        consent_config=str(config.with_name("mindie-consent.json")), python=python,
-    )
-    import genstate
-    import updater
-
-    # Bootstrap gets a REAL retained host package on the stable front, so
-    # first native install and any later rollback target an actual package.
-    bootstrap_package = updater.build_host_package(
-        bootstrap_root, adapter_value, "bootstrap",
-        package_dir=genstate.update_dir(adapter_value) / "bootstrap-package",
-        config_file=config,
-    )
-    genstate.write_current(
-        {
-            "generation": str(bootstrap_root),
-            "python": python,
-            "adapter_config": str(config),
-            "sha": None,
-        },
-        adapter_value,
-    )
-    scheduled = "skipped"
-    if not args.no_schedule:
         try:
-            import contextlib
-            import io
-
-            with contextlib.redirect_stdout(io.StringIO()):
-                code = updater.install_schedule(config)
-            scheduled = "registered" if code == 0 else "manual"
-        except Exception as exc:
-            scheduled = f"manual ({type(exc).__name__}: {str(exc)[:120]})"
-    result = dict(
-        config=str(config),
-        engine_config=str(engine_config),
-        community_config=str(community_config),
-        admission_path=str(admission),
-        native_package=str(bootstrap_package),
-        domain=args.domain,
-        sharing=sharing,
-        update_schedule=scheduled,
-        kimi_bin=kimi_bin,
-        git_bin=git_bin,
-        plugin_install=(
-            "Native install: POST /api/v1/plugins {source: <host-package>} "
-            "in the selected Kimi home (scripts/install_kimi_plugin.py). "
-            "Automatic updates: scripts/updater.py check (scheduled), "
-            "status via scripts/updater.py status, recovery via "
-            "scripts/updater.py recover. See docs/update.md."
-        ),
-    )
-    warnings = []
-    if kimi_bin is None:
-        warnings.append(
-            "no kimi binary resolved (MINDIE_KIMI_BIN unset, no "
-            "<kimi_home>/bin/kimi, not on PATH); the summary worker will "
-            "report configuration-unavailable until one exists"
-        )
-    if git_bin is None:
-        warnings.append(
-            "no git executable resolved (MINDIE_KIMI_GIT_BIN unset, not on "
-            "PATH); scheduled update checks will report configuration-"
-            "unavailable until one exists"
-        )
-    if warnings:
-        result["warnings"] = warnings
-    print(json.dumps(result, indent=2))
+            receipt = run([python, str(PLUGIN_ROOT / "scripts" / "diagnostic_support.py"),
+                           "--config", str(config), "--record-setup-failure", type(exc).__name__],
+                          "", timeout=5)
+            print("MindIE setup diagnostic: " + receipt.strip(), file=sys.stderr)
+        except Exception as logging_error:
+            print("MindIE diagnostic storage unavailable: " + type(logging_error).__name__, file=sys.stderr)
+        raise
 
 
 if __name__ == "__main__":

@@ -1,27 +1,22 @@
 #!/usr/bin/env python3
-"""Reuse shared core config, transcript loader, and service startup."""
+"""[Role] Adapter helper for preparing service launch environment, loading transcript adapter, and starting knowledge service.
+[Invariants] Pins MINDIE_KIMI_BIN and MINDIE_GIT_BIN deterministically from stamped adapter config or environment without guessing paths.
+[Timeouts & Locks] existing_service status probe bounded at 0.4s; ensure_service delegates to shared core startup lock.
+[Side-Effect Policy] Sets MINDIE_KIMI_BIN / MINDIE_GIT_BIN in os.environ and spawns local knowledge service when ensure_service() is called.
+"""
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
 
-from paths import engine_config_path, resolve_git_bin, resolve_kimi_bin
+from paths import engine_config_path, load_adapter_config, resolve_git_bin, resolve_kimi_bin
 
 
 def prepare_service_env(config=None):
-    """Pin MINDIE_KIMI_BIN and MINDIE_GIT_BIN for service launches whose
-    PATH is not the login shell's (a systemd --user unit has no
-    ~/.local/bin; Task Scheduler differs). The engine declares both names
-    in service_launch_context.environment, and only the current caller's
-    values cross the launch boundary. Each adapter stamp wins for its
-    name; otherwise resolve deterministically, with an explicit
-    MINDIE_GIT_BIN/MINDIE_KIMI_GIT_BIN override taking precedence.
-    Unresolvable tools stay unset: the component and the summary worker
-    keep their own honest configuration failures, never a guessed path.
-    Never raises: launch failures stay visible downstream."""
-    from paths import load_adapter_config
+    from diagnostic_support import bind_environment
 
+    bind_environment()
     try:
         if config is None:
             try:
@@ -50,8 +45,7 @@ def prepare_service_env(config=None):
 def engine_config(engine_file=None):
     from mindie_knowledge.loop.cli import config_at
 
-    path = str(Path(engine_file or engine_config_path()).resolve())
-    return config_at(path)
+    return config_at(str(Path(engine_file or engine_config_path()).resolve()))
 
 
 def load_transcript(engine_file=None):
@@ -61,11 +55,9 @@ def load_transcript(engine_file=None):
 
 
 def existing_service(engine_file=None):
-    """Probe a live connection. Never spawn."""
     from mindie_knowledge.loop.cli import connect, rpc
 
-    config = engine_config(engine_file)
-    connection = connect(config)
+    connection = connect(engine_config(engine_file))
     rpc(connection, "status", timeout=0.4)
     return connection
 
