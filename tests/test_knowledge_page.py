@@ -115,7 +115,26 @@ class KnowledgePageTests(unittest.TestCase):
         self.assertEqual(query["inputSchema"]["properties"]["limit"]["maximum"], 20)
         self.assertEqual(
             set(query["inputSchema"]["properties"]),
-            {"query", "limit", "conditions", "continuation", "request_nonce"},
+            {
+                "query", "limit", "conditions", "continuation", "domain",
+                "domain_path", "token_budget", "include_unknown", "request_nonce",
+            },
+        )
+        distill = next(item for item in mcp_server.KNOWLEDGE_TOOLS if item["name"] == "knowledge_distill")
+        self.assertEqual(
+            set(distill["inputSchema"]["properties"]),
+            {"inputs", "task_state", "domain", "request_nonce"},
+        )
+        self.assertEqual(
+            distill["inputSchema"]["required"],
+            ["inputs", "task_state", "request_nonce"],
+        )
+        self.assertEqual(
+            set(distill["inputSchema"]["properties"]["inputs"]["items"]["properties"]),
+            {
+                "kind", "outcome", "source_locator", "content",
+                "evidence_refs", "repetitions",
+            },
         )
 
     def test_query_rejects_invalid_arguments_before_starting_service(self):

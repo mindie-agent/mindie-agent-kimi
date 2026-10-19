@@ -17,7 +17,7 @@ under the shared `operation.lock` and dispatches one-shot children.
 
 [Timeouts & Locks]
 - `HOOK_TOTAL = 10.0s`, `HOOK_LOCK_BUDGET = 2.0s`, `BOOTSTRAP_TOTAL = 540.0s`,
-  `CALL_LOCK_BUDGET = 5.0s`, `CALL_CHILD_BUDGET = 60.0s` (180s for explicit entry activation/configuration including 75s reporter startup), `EOF_JOIN = 3.0s`,
+  `CALL_LOCK_BUDGET = 5.0s`, `CALL_CHILD_BUDGET = 60.0s` (180s for explicit entry activation/configuration including reporter startup), `EOF_JOIN = 3.0s`,
   `OUTPUT_BUDGET = 1.0s`.
 - Acquires shared `operation.lock` (`fcntl.flock` / `msvcrt.locking`) before
   reading `current.json` and holds it across child execution.
@@ -393,7 +393,7 @@ def _local_answer(message: dict):
             result=dict(
                 protocolVersion="2025-11-25",
                 capabilities={"tools": {}},
-                serverInfo={"name": "mindie-kimi-front", "version": "0.0.2"},
+                serverInfo={"name": "mindie-kimi-front", "version": "0.0.3"},
             ),
         )
     if method == "ping":

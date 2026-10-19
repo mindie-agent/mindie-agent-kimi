@@ -103,6 +103,7 @@ class GenerationAuthorityTests(unittest.TestCase):
         config = make_config(self.tmp, sharing=False)
         adapter = json.loads(config.read_text())
         adapter["kimi_bin"] = "/opt/kimi-stamped"
+        config.write_text(json.dumps(adapter, indent=2) + "\n")
         generation = (
             self.tmp / "adapter-state" / "update" / "generations" / ("c" * 40)
         )
@@ -153,6 +154,7 @@ class GenerationAuthorityTests(unittest.TestCase):
         config = make_config(self.tmp, sharing=False)
         adapter = json.loads(config.read_text())
         adapter["git_bin"] = "/opt/git-stamped"
+        config.write_text(json.dumps(adapter, indent=2) + "\n")
         generation = (
             self.tmp / "adapter-state" / "update" / "generations" / ("f" * 40)
         )

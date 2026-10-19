@@ -183,6 +183,30 @@ class UpdaterTests(unittest.TestCase):
         args.update(kw)
         return updater.check(self.adapter, **args)
 
+    def test_failed_cached_domain_refresh_is_rebuilt_on_retry(self):
+        deadline = time.monotonic() + updater.RESERVE + 30
+        generation, _, _ = updater.stage_generation(
+            self.sha, str(self.bare), self.adapter, deadline, build=fake_build)
+        self.assertTrue((generation / updater.COMPLETE).is_file())
+        active = json.loads(self.config_path.read_text())
+        manual_engine = self.tmp / "manual.engine.json"
+        engine = json.loads(Path(active["engine_config"]).read_text())
+        write_json(manual_engine, {**engine, "domain": "manual"})
+        active["domain_configs"] = {"manual": str(manual_engine)}
+        write_json(self.config_path, active)
+        # The fixture uses the already built test interpreter for both builds.
+        with patch.object(updater, "_venv_python", return_value=Path(sys.executable)):
+            with patch.object(updater, "build_host_package", side_effect=OSError("disk write failed")):
+                with self.assertRaises(OSError):
+                    updater.stage_generation(self.sha, str(self.bare), active, deadline, build=fake_build)
+            self.assertFalse((generation / updater.COMPLETE).exists())
+            rebuilt, _, config = updater.stage_generation(
+                self.sha, str(self.bare), active, deadline, build=fake_build)
+        self.assertEqual(rebuilt, generation)
+        self.assertTrue((rebuilt / updater.COMPLETE).is_file())
+        self.assertTrue((rebuilt / "host-package" / "kimi.plugin.json").is_file())
+        self.assertEqual(json.loads(config.read_text())["domain_source_configs"], active["domain_configs"])
+
     def test_unpublished_main_commit_never_changes_installed_release(self):
         self.assertEqual(self.run_check(), 0)
         before = genstate.current_path(self.adapter).read_bytes()

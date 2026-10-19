@@ -273,6 +273,7 @@ class SetupInstallTests(unittest.TestCase):
             self.assertNotEqual(generation.resolve(), (SCRIPTS.parent).resolve())
             self.assertTrue((generation / "scripts" / "transcript.py").is_file())
             self.assertTrue((generation / "scripts" / "organizer.py").is_file())
+            self.assertTrue((generation / "scripts" / "organizer_distill.py").is_file())
             engine = json.loads(Path(adapter["engine_config"]).read_text())
             self.assertEqual(engine["transcript_adapter"],
                              str(generation / "scripts" / "transcript.py"))
@@ -556,6 +557,26 @@ class SetupInstallTests(unittest.TestCase):
             self.assertEqual(
                 Path(genstate.read_current(adapter)["generation"]),
                 generation,
+            )
+
+    def test_retained_bootstrap_deploys_the_c6_worker_helper(self):
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            source = tmp / "source"
+            (source / "scripts").mkdir(parents=True)
+            (source / "scripts" / "organizer.py").write_text("# organizer\n")
+            (source / "scripts" / "organizer_distill.py").write_text("# c6 helper\n")
+            (source / "skills").mkdir()
+            (source / "commands").mkdir()
+            (source / "kimi.plugin.json").write_text("{}\n")
+            (source / "runtime-requirements.txt").write_text("\n")
+            sys.path.insert(0, str(SCRIPTS))
+            import setup
+
+            dest = setup.stage_retained_bootstrap(tmp / "bootstrap", source)
+            self.assertEqual(
+                (dest / "scripts" / "organizer_distill.py").read_text(),
+                "# c6 helper\n",
             )
 
     def test_partial_retained_bootstrap_is_rejected(self):

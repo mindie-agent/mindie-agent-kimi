@@ -399,6 +399,11 @@ def main():
             git_bin = None
         if git_bin is not None:
             adapter_value["git_bin"] = git_bin
+        from capture_config import prepare_domains
+        adapter_value['domain_configs'] = prepare_domains(
+            python, adapter_value, value, config_directory=str(config.with_name(config.stem + '.domains')),
+            authority_directory=str(config.parent / 'knowledge-domains'),
+            consent_config=str(config.with_name('mindie-consent.json')), public_feeds=not args.no_public_feed)
         write_private(config, adapter_value)
         sharing = write_community(
             community_config, community,

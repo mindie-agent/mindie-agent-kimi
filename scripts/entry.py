@@ -12,16 +12,25 @@ claims the native `PreToolUse` nonce.
 - Public contribution destination (`owner/repo` and `account`) must originate
   from the user's current turn reply or native slash arguments, never model-only
   tool arguments.
+- Explicit `init` domain activation uses the native verified session/cwd and
+  the target config's own consent/scope/admission. It never writes or rotates
+  the default-domain lease token.
 - `status_payload` is strictly read-only and never mutates consent or community
   files; install-state convergence runs only on explicit entry/sharing mutations.
 
 [Timeouts & Locks]
 - `op_recover` runs each `mindie_knowledge.loop.cli` recovery subcommand with a
   `20s` timeout via `bounded.run`.
+- Registered-domain deactivation delegates one shared total `6s` revocation
+  budget to the core helper; the outer explicit-entry child budget covers the
+  helper plus cleanup.
 
 [Side-Effect Policy]
 - Mutates task admission leases, install-level consent/community settings, and
   starts the background knowledge service when `allows_capture()` is true.
+  Explicit target-domain activation writes only that domain's admission lease;
+  native deactivation revokes the trusted session across default and registered
+  domain admissions without consulting capture consent.
 """
 
 from __future__ import annotations
@@ -455,6 +464,51 @@ def _configured_init_activation(session, cwd, activation_id, *, activate_reporte
     return payload
 
 
+def _configured_domain_activation(session, cwd, domain, found):
+    """Bind one explicitly selected target domain without touching the default."""
+    if not _configured():
+        raise ValueError("MindIE is not configured; run scripts/setup.py first")
+    if _parse_native_setup(found.get("arguments")) is not None:
+        raise ValueError("domain activation cannot be combined with setup arguments")
+    root = _project_root(session, cwd)
+    try:
+        from mindie_knowledge.loop.domain_routes import activate_selected_domain
+    except ModuleNotFoundError as exc:
+        if exc.name != "mindie_knowledge.loop.domain_routes":
+            raise
+        raise ValueError(
+            "knowledge domain activation is unavailable in the installed runtime"
+        ) from exc
+    from mindie_knowledge.loop.activation import Admission
+    from paths import admission_path, domain_configs, engine_config_path, load_engine_config_at
+
+    result = activate_selected_domain(
+        str(engine_config_path()),
+        domain=domain,
+        domain_configs=domain_configs(),
+        session=session,
+        project_root=root,
+        root_session=session,
+    )
+    lease = result["lease"]
+    target_engine = load_engine_config_at(result["engine_config"])
+    first = Admission(admission_path(target_engine)).claim(
+        session, "plugin_command", found["activation_id"], token=lease["token"],
+    )
+    payload = status_payload(session)
+    payload["binding"] = dict(
+        domain=result["domain"],
+        session=lease.get("session"),
+        enabled=bool(lease.get("enabled")),
+        project_root=lease.get("project_root"),
+        generation=result.get("generation"),
+        service="not-requested:target-service-starts-on-use",
+    )
+    if first is not True:
+        payload["already"] = True
+    return payload
+
+
 def _apply_entry_choice(payload, session, cwd, native):
     view = _apply_choice(
         session, cwd, native["choice"],
@@ -473,8 +527,10 @@ def _apply_entry_choice(payload, session, cwd, native):
     return payload
 
 
-def op_init(session, cwd):
+def op_init(session, cwd, domain=None):
     found = require_current_entry(session, "init")
+    if domain is not None:
+        return _configured_domain_activation(session, cwd, domain, found)
     native = _parse_native_setup(found.get("arguments"))
     if not _configured():
         if not consume_activation_id(found["activation_id"]):
@@ -563,8 +619,43 @@ def op_deactivate(session):
     if not _configured():
         return dict(session=session, deactivated=False, configured=False)
     from admission import deactivate
+    from paths import domain_configs, engine_config_path
 
-    return dict(session=session, deactivated=bool(deactivate(session)))
+    mappings = domain_configs()
+    if not mappings:
+        return dict(session=session, deactivated=bool(deactivate(session)))
+    try:
+        from mindie_knowledge.loop.domain_routes import deactivate_registered_domains
+    except ModuleNotFoundError as exc:
+        if exc.name != "mindie_knowledge.loop.domain_routes":
+            raise
+        raise ValueError(
+            "knowledge domain deactivation is unavailable in the installed runtime"
+        ) from exc
+    result = deactivate_registered_domains(
+        str(engine_config_path()),
+        domain_configs=mappings,
+        session=session,
+        timeout=6.0,
+    )
+    domains = [
+        {key: value for key, value in item.items() if key != "engine_config"}
+        for item in result.get("domains", [])
+        if isinstance(item, dict)
+    ]
+    payload = dict(
+        session=session,
+        deactivated=result.get("status") == "inactive" and bool(result.get("changed")),
+        changed=bool(result.get("changed")),
+        status=result.get("status"),
+        domains=domains,
+    )
+    if result.get("status") != "inactive":
+        payload["partial"] = True
+        payload["warning"] = (
+            "one or more registered domains could not be revoked; inspect domains"
+        )
+    return payload
 
 
 def op_sharing_enable(session, _model_arguments="", cwd=None):
@@ -660,9 +751,11 @@ def op_reporting(session):
     return diagnostic_support.reporting_status()
 
 
-def dispatch(session, cwd, op, arguments="", choice=None, *, repository=None, account=None):
+def dispatch(session, cwd, op, arguments="", choice=None, *, repository=None, account=None, domain=None):
+    if op != "init" and domain is not None:
+        raise ValueError("domain is accepted only with op=init")
     if op == "init":
-        return op_init(session, cwd)
+        return op_init(session, cwd, domain=domain)
     if op == "choose":
         if choice is None:
             raise ValueError("choose requires the contribution choice")

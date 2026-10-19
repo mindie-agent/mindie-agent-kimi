@@ -5,6 +5,7 @@
 """
 
 from pathlib import Path
+import json
 import subprocess
 
 
@@ -25,3 +26,12 @@ def prepare(python, scripts):
         "summary_command": [str(python), str(Path(scripts) / "organizer.py")],
         "service_launch_context": {"paths": {}, "environment": ["MINDIE_KIMI_BIN", "MINDIE_GIT_BIN", "MINDIE_DIAGNOSTICS_CONFIG"]},
     }
+
+
+def prepare_domains(python, adapter, engine, **options):
+    """Use the selected core's one catalog and policy-preserving preparation."""
+    from bounded import run
+    output = run([str(python), '-m', 'mindie_knowledge.loop.domain_catalog'],
+                 json.dumps(dict(adapter=adapter, engine=engine, **options)),
+                 timeout=90, max_output=65536)
+    return json.loads(output)['domain_configs']
