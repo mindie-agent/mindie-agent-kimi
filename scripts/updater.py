@@ -90,7 +90,7 @@ RESERVE = ROLLBACK_BUDGET + FEED_BUDGET + HANDOFF_BUDGET
 SHA = r"[0-9a-f]{40}"
 COMPLETE = ".mindie-generation-complete"
 LAUNCHER = "mindie_launch.py"
-MIN_PYTHON = (3, 11)
+MIN_PYTHON = (3, 12) if os.name == "nt" else (3, 11)
 GIT_ENV = dict(os.environ, GIT_TERMINAL_PROMPT="0")
 PIP_ENV = dict(
     os.environ,

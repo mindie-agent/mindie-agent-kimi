@@ -131,4 +131,5 @@ class FrontControlTests(unittest.TestCase):
         self.start_call(large=True)
         time.sleep(.15)
         self.proc.stdin.close()
-        self.proc.wait(timeout=3)
+        # The process owns a three-second drain; the caller also allows exit.
+        self.proc.wait(timeout=5)

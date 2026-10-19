@@ -54,7 +54,11 @@ PROBE_MODULES = (
 )
 _PROBE_TEMPLATE = """
 import importlib
+import os
+import sys
 missing = []
+if sys.version_info < ((3, 12) if os.name == "nt" else (3, 11)):
+    missing.append("Python 3.12+ on Windows or 3.11+ on POSIX is required; prefer Python 3.13")
 for name in {modules!r}:
     try:
         importlib.import_module(name)
@@ -312,8 +316,8 @@ def main():
     parser.add_argument("--update-remote", default=None, help="git remote tracked for automatic updates")
     parser.add_argument("--no-schedule", action="store_true", help="do not register the automatic update check")
     args = parser.parse_args()
-    if sys.version_info < (3, 11):
-        parser.error("Python 3.11+ is required")
+    if sys.version_info < ((3, 12) if os.name == "nt" else (3, 11)):
+        parser.error("Python 3.12+ on Windows or 3.11+ on POSIX is required; prefer Python 3.13")
     community = community_settings(args, parser)
     config = args.config.expanduser().absolute()
     domain_root = args.root.expanduser().absolute() / "kimi"

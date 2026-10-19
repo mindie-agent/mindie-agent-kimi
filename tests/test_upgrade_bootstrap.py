@@ -73,6 +73,13 @@ class UpgradeBootstrapTests(unittest.TestCase):
         marker.write_text('b' * 40 + '\n')
         self.assertNotIn('revision', self.metadata())
 
+    def test_generation_revision_survives_platform_line_endings(self):
+        marker = self.generation / '.mindie-generation-complete'
+        for ending in (b"\n", b"\r\n"):
+            with self.subTest(ending=ending):
+                marker.write_bytes(SHA.encode("ascii") + ending)
+                self.assertEqual(self.metadata()["revision"], SHA)
+
     def test_invalid_explicit_stamp_is_authoritative(self):
         stamp = self.scripts / 'diagnostic-build.json'
         stamp.write_text('invalid')

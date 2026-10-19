@@ -100,7 +100,7 @@ def _generation_metadata():
                 text = raw.decode()
             except UnicodeError:
                 text = None
-            if text in (base, base + "\n"):
+            if text in (base, base + "\n", base + "\r\n"):
                 result["revision"] = base
     return result
 

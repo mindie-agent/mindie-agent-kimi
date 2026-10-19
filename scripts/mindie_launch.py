@@ -497,8 +497,8 @@ def _read_mcp_line(stdin):
 
 def _mcp(surface: str) -> int:
     output_fd = sys.stdout.fileno()
-    if os.name != "nt":
-        os.set_blocking(output_fd, False)
+    # MCP stdout is a pipe; Python 3.12+ supports nonblocking Windows pipes.
+    os.set_blocking(output_fd, False)
     stdin = sys.stdin.buffer
     output_lock = threading.Lock()
     transport_closed = threading.Event()
