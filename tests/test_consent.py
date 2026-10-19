@@ -41,6 +41,25 @@ class ConsentTests(unittest.TestCase):
 
         return consent.consent_path()
 
+    def test_missing_shared_runtime_cannot_overwrite_saved_choice(self):
+        import consent
+
+        consent.record_choice("disabled")
+        path = self._consent_path()
+        before = path.read_bytes()
+        completed = subprocess.run(
+            [
+                sys.executable, "-I", "-S", "-c",
+                "import sys; sys.path.insert(0, sys.argv[1]); "
+                "import consent; consent.record_choice('contribute')",
+                str(SCRIPTS),
+            ],
+            capture_output=True, text=True, timeout=5,
+        )
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("run scripts/setup.py", completed.stderr)
+        self.assertEqual(path.read_bytes(), before)
+
     def test_cold_install_offers_choices_once_then_never_again(self):
         import consent
 

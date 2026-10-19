@@ -113,7 +113,7 @@ class LauncherTests(unittest.TestCase):
             )
             shutil.copy2(ROOT / "kimi.plugin.json", generation / "kimi.plugin.json")
             for name in ("mindie_launch.py", "bounded.py",
-                         "diagnostic_support.py", "diagnostic_fallback.py"):
+                         "diagnostic_support.py"):
                 shutil.copy2(SCRIPTS / name, generation / "scripts" / name)
             write_current(config, generation)
             package = updater.build_host_package(

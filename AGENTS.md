@@ -13,7 +13,7 @@ Bridges native Kimi Hook/MCP/Skill surfaces to shared first-party runtime compon
 | `identity.py` | Session directory lookup, turn-origin verification, and one-shot nonce binds | `require_current_entry()`, `publish_nonce_bind()`, `claim_nonce()`, `mcp-binds.sqlite3` |
 | `entry.py` & `entry_state.py` | `/mindie-agent` unified entry and slash command operations (`init`, `choose`, `status`, `recover`) | `dispatch()`, `status_payload()`, `consume_activation_id()` |
 | `admission.py` & `sharing.py` | Task admission lease helpers and community sharing status/configuration | `admission.sqlite3`, `mindie-community.json` |
-| `consent.py` & `consent_store_bootstrap.py` | Profile-shared consent (`mindie-consent.json`) and generation-stranded state convergence | `load()`, `record_choice()`, `adopt_community_settings()` |
+| `consent.py` | Profile-shared consent through `mindie_knowledge.consent_store` and generation-stranded state convergence | `load()`, `record_choice()`, `adopt_community_settings()` |
 | `transcript.py` | Bounded Kimi `wire.jsonl` reader with fork-boundary (`state.createdAt`) filtering | `identify()`, `read_material()` |
 | `organizer.py` | Isolated `kimi -p` summary worker (`--output-format text`, thinking off, zero tools/hooks) | `identity()`, `run()`, `prepare_isolated_home()` |
 | `knowledge_service.py` & `service_handoff.py` | Background knowledge service lifecycle and authenticated updater `stop_if_idle`/`restore` | `ensure_service()`, `stop_if_idle()` |
@@ -21,7 +21,7 @@ Bridges native Kimi Hook/MCP/Skill surfaces to shared first-party runtime compon
 | `setup.py` & `install_kimi_plugin.py` | Pinned runtime bootstrap (`bootstrap-venv`) and native `kimi web` plugin API installer | `build_bootstrap_runtime()`, `verify_install_report()` |
 | `bounded.py` & `with_runtime.py` | Bounded subprocess runner with process-tree cleanup and runtime `sys.path` injector | `bounded.run()`, `classify_transport_text()` |
 | `paths.py`, `capture_config.py`, `community_config.py` | Canonical config/state path resolution and core engine config builders | `kimi.json`, `kimi.engine.json` |
-| `diagnostic_support.py` & `diagnostic_fallback.py` | Sanitized local fault recording and opt-in reporting status/configuration | `failure()`, `attach()`, `diagnostics.json` |
+| `diagnostic_support.py` | Shared `mindie_diagnostics.integration` fault recording and opt-in reporting; reports `logging_failed` when unavailable | `failure()`, `attach()`, `diagnostics.json` |
 
 ## 2. Host Protocols & Core State Invariants
 

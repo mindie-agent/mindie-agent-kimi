@@ -3,11 +3,13 @@
 [Role]
 Bridges Kimi plugin failure recording, incident projection (`reference`/`attach`),
 and reporting consent commands (`reporting_status`/`configure_reporting`) to
-`mindie_diagnostics.integration` (or `diagnostic_fallback` before bootstrap).
+`mindie_diagnostics.integration`.
 
 [Invariants]
 - Importing this module performs zero I/O or subprocess calls.
 - Never records an already-trusted inner incident ID twice.
+- An unavailable shared runtime reports `logging_failed` without writing a
+  second diagnostic store.
 - Build metadata comes from adjacent `diagnostic-build.json`, falling back to
   completed generation metadata only when `diagnostic-build.json` is absent.
 
@@ -141,10 +143,8 @@ def _warn():
 
 
 def _record():
-    try:
-        from mindie_diagnostics.integration import record_failure
-    except ImportError:
-        from diagnostic_fallback import record_failure
+    from mindie_diagnostics.integration import record_failure
+
     return record_failure
 
 

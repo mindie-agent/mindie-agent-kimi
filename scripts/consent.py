@@ -30,6 +30,14 @@ import tempfile
 import time
 from pathlib import Path
 
+try:
+    from mindie_knowledge import consent_store
+except ImportError as exc:
+    raise RuntimeError(
+        "MindIE shared consent runtime is unavailable; run scripts/setup.py "
+        "and use the configured runtime Python before changing consent."
+    ) from exc
+
 from paths import (
     community_config_path,
     config_path,
@@ -39,17 +47,9 @@ from paths import (
 )
 
 
-def _store_mod():
-    try:
-        from mindie_knowledge import consent_store as mod
-    except ImportError:
-        import consent_store_bootstrap as mod
-    return mod
-
-
-SCHEMA = _store_mod().SCHEMA
-CHOICES = _store_mod().CHOICES
-REPORTING = _store_mod().REPORTING
+SCHEMA = consent_store.SCHEMA
+CHOICES = consent_store.CHOICES
+REPORTING = consent_store.REPORTING
 
 
 class ConsentDamaged(RuntimeError):
@@ -85,7 +85,7 @@ def _stranded_candidates(filename: str) -> list[Path]:
 
 def _read_json(path: Path):
     try:
-        raw = _store_mod()._read_bytes(path)
+        raw = consent_store._read_bytes(path)
     except FileNotFoundError:
         return "missing", None
     except OSError:
@@ -117,7 +117,7 @@ def _store(path: Path, data: dict) -> None:
 
 
 def _shared_file_lock(path: Path):
-    return _store_mod()._UpdateLock(path.with_name(path.name + ".lock"))
+    return consent_store._UpdateLock(path.with_name(path.name + ".lock"))
 
 
 def _marker_path():
@@ -128,7 +128,7 @@ def _marker_path():
 
 
 def load() -> dict:
-    return _store_mod().read(consent_path())
+    return consent_store.read(consent_path())
 
 
 def _repair_corrupt_and_update(path: Path, **updates) -> None:
@@ -153,8 +153,8 @@ def record_choice(choice: str) -> str:
         raise ValueError("choice must be contribute, read-only, later or disabled")
     path = consent_path()
     try:
-        _store_mod().record_choice(path, choice)
-    except _store_mod().ConsentError as exc:
+        consent_store.record_choice(path, choice)
+    except consent_store.ConsentError as exc:
         if exc.state == "corrupt":
             _repair_corrupt_and_update(path, choice=choice, choice_at=time.time())
         else:
@@ -167,8 +167,8 @@ def record_reporting(value: str) -> str:
         raise ValueError("reporting must be enabled, disabled or later")
     path = consent_path()
     try:
-        _store_mod().record_reporting(path, value)
-    except _store_mod().ConsentError as exc:
+        consent_store.record_reporting(path, value)
+    except consent_store.ConsentError as exc:
         if exc.state == "corrupt":
             _repair_corrupt_and_update(path, reporting=value, reporting_at=time.time())
         else:
@@ -212,11 +212,11 @@ def adopt_stranded_consent() -> dict:
     profile = consent_path()
     result = dict(action="already", notes=[])
     with _shared_file_lock(profile):
-        if _store_mod().read(profile)["state"] == "ok":
+        if consent_store.read(profile)["state"] == "ok":
             return result
         valid, damaged = [], []
         for path in _stranded_candidates("mindie-consent.json"):
-            view = _store_mod().read(path)
+            view = consent_store.read(path)
             if view["state"] == "ok" and (view.get("choice") is not None or view.get("reporting") is not None):
                 valid.append((path, view))
             elif view["state"] != "missing":
@@ -227,7 +227,7 @@ def adopt_stranded_consent() -> dict:
             return result
         path, view = max(valid, key=lambda item: _consent_rank(item[0], item[1]))
         try:
-            _atomic_write_bytes(profile, _store_mod()._read_bytes(path))
+            _atomic_write_bytes(profile, consent_store._read_bytes(path))
         except OSError as exc:
             result.update(action="error")
             result["notes"].append(f"stranded consent adoption failed: {type(exc).__name__}")
@@ -328,7 +328,7 @@ def adopt_community_settings() -> dict:
         if legacy is not None and legacy.is_file():
             if not shared.exists():
                 try:
-                    _atomic_write_bytes(shared, _store_mod()._read_bytes(legacy))
+                    _atomic_write_bytes(shared, consent_store._read_bytes(legacy))
                 except OSError as exc:
                     result.update(action="error")
                     result["notes"].append(f"legacy adoption failed: {type(exc).__name__}")

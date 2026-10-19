@@ -67,7 +67,6 @@ def _load_diagnostic_support():
             raise
         return module
 
-    load("diagnostic_fallback")
     return load("diagnostic_support")
 
 

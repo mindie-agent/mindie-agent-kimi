@@ -1,7 +1,9 @@
 """Component checks for adapter projection and explicit reporting choice."""
 import io
+import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import types
@@ -14,6 +16,29 @@ import diagnostic_support as support
 
 
 class DiagnosticSupportTests(unittest.TestCase):
+    def test_missing_runtime_preserves_result_without_shadow_log(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env = dict(os.environ, MINDIE_DIAGNOSTICS_ROOT=str(root / "logs"))
+            completed = subprocess.run(
+                [
+                    sys.executable, "-I", "-S", "-c",
+                    "import json,sys; sys.path.insert(0, sys.argv[1]); "
+                    "import diagnostic_support as d; "
+                    "print(json.dumps(d.attach({'status':'completed','job_id':'keep-job'},"
+                    "d.failure('mcp','receipt','storage'))))",
+                    str(SCRIPTS),
+                ],
+                env=env, capture_output=True, text=True, timeout=5, check=True,
+            )
+            result = json.loads(completed.stdout)
+            self.assertEqual(result["status"], "completed")
+            self.assertNotIn("isError", result)
+            self.assertEqual(result["job_id"], "keep-job")
+            self.assertEqual(result["diagnostic"], {"logging_failed": True})
+            self.assertIn("diagnostic storage unavailable", result["content"][0]["text"])
+            self.assertFalse((root / "logs").exists())
+
     def test_empty_reference_cannot_suppress_new_failure(self):
         incident = "a" * 32
         for old in ({}, {"logging_failed": False}, {"incident_id": "not-an-id"}):

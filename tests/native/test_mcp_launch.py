@@ -64,8 +64,7 @@ class NativeMcpLaunchTests(unittest.TestCase):
             root = Path(temporary)
             source = root / "source"
             (source / "scripts").mkdir(parents=True)
-            for name in ("mindie_launch.py", "bounded.py", "diagnostic_support.py",
-                         "diagnostic_fallback.py"):
+            for name in ("mindie_launch.py", "bounded.py", "diagnostic_support.py"):
                 shutil.copy2(SCRIPTS / name, source / "scripts" / name)
             shutil.copy2(TESTS.parent / "kimi.plugin.json", source / "kimi.plugin.json")
             config = make_config(root / "config")
@@ -102,8 +101,7 @@ class NativeMcpLaunchTests(unittest.TestCase):
             source = root / "source"
             (source / "scripts").mkdir(parents=True)
             repository = TESTS.parent
-            for name in ("mindie_launch.py", "bounded.py", "diagnostic_support.py",
-                         "diagnostic_fallback.py"):
+            for name in ("mindie_launch.py", "bounded.py", "diagnostic_support.py"):
                 shutil.copy2(repository / "scripts" / name, source / "scripts" / name)
             shutil.copy2(repository / "kimi.plugin.json", source / "kimi.plugin.json")
             sha = "a" * 40
