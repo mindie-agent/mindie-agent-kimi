@@ -17,7 +17,9 @@ jobs:
         uv venv --python 3.13 && uv pip install -r runtime-requirements.txt pytest
       test-command: |
         .venv/bin/python tests/preflight.py
-        .venv/bin/python -m pytest -q -m "not live_npu"
+        .venv/bin/python -m unittest discover -s tests
+        .venv/bin/python -m unittest discover -s tests/native
       node: true
       build-command: |
+        .venv/bin/python scripts/release_metadata.py build --source . --revision "$GITHUB_SHA" > "$RELEASE_ASSETS_DIR/mindie-plugin-release.json"
         git archive --format=tar.gz --prefix="mindie-agent-kimi-$RELEASE_VERSION/" --output="$RELEASE_ASSETS_DIR/mindie-agent-kimi-$RELEASE_VERSION.tar.gz" "$GITHUB_SHA"

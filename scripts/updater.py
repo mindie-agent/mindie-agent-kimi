@@ -4,7 +4,7 @@
 [Role]
 Executes a single bounded update check (`check`), status inspection (`status`),
 explicit recovery (`recover`), or scheduler registration (`install-schedule` /
-`uninstall-schedule`). Resolves remote `main`, stages an immutable generation
+`uninstall-schedule`). Selects a compatible formal Release, stages its exact generation
 with its own pinned venv and versioned launcher, switches `current.json` under
 the exclusive `operation.lock` after `stop_if_idle` and native plugin install
 readback, and runs independent knowledge feed sync.
@@ -202,12 +202,36 @@ def _git(args, *, timeout, deadline, cwd=None, transport=False):
     )
 
 
-def resolve_main(remote: str, deadline: float) -> str:
-    output = _git(["ls-remote", remote, "refs/heads/main"], timeout=30, deadline=deadline, transport=True)
-    match = re.search(rf"\b({SHA})\s+refs/heads/main", output)
-    if not match:
-        raise CheckFailed("remote main did not resolve to a commit SHA")
-    return match.group(1)
+def _installed_version(current: dict) -> str:
+    source = Path(current["generation"]) if current.get("generation") else HERE.parent
+    return json.loads((source / "kimi.plugin.json").read_text(encoding="utf-8"))["version"]
+
+
+def _release_catalog(adapter: dict, current: dict, deadline: float) -> dict:
+    from paths import resolve_kimi_bin
+
+    # Bound all pagination, asset and source reads together, including cleanup.
+    output = bounded_run(
+        [sys.executable, str(HERE / "release_metadata.py"), "select",
+         "--kimi-bin", resolve_kimi_bin(adapter),
+         "--installed-version", _installed_version(current)],
+        "", timeout=min(60, _remaining(deadline, RESERVE + 2)), transport=True,
+    )
+    return json.loads(output)
+
+
+def resolve_release(remote: str, adapter: dict, current: dict, deadline: float) -> dict:
+    selected = _release_catalog(adapter, current, deadline)
+    candidate = selected["candidate"]
+    if candidate is not None:
+        tag = "refs/tags/" + candidate["tag_name"]
+        output = _git(["ls-remote", remote, tag, tag + "^{}"],
+                      timeout=30, deadline=deadline, transport=True)
+        refs = dict((ref, sha) for sha, ref in (line.split() for line in output.splitlines()))
+        sha = refs.get(tag + "^{}", refs.get(tag))
+        if sha != candidate["metadata"]["source"]["sha"]:
+            raise CheckFailed("formal Release tag does not match its declared source SHA")
+    return selected
 
 
 def _venv_python(venv: Path) -> Path:
@@ -374,7 +398,7 @@ def build_host_package(
     launcher_dir.mkdir(parents=True, exist_ok=True)
     launcher = launcher_dir / LAUNCHER
     if not launcher.is_file():
-        for name in (LAUNCHER, "bounded.py", "diagnostic_support.py", "diagnostic_fallback.py"):
+        for name in (LAUNCHER, "bounded.py", "diagnostic_support.py"):
             shutil.copy2(generation / "scripts" / name, launcher_dir / name)
     package = package_dir if package_dir is not None else generation / "host-package"
     if package.exists():
@@ -430,10 +454,12 @@ def _remove_owned_tree(path):
 
 def stage_generation(
     sha: str, remote: str, adapter: dict, deadline: float,
-    build=build_runtime,
+    build=build_runtime, release=None,
 ) -> tuple[Path, Path, Path]:
     target = generations_dir(adapter) / sha
     if (target / COMPLETE).is_file():
+        if release is not None:
+            _verify_generation_release(target, sha, release)
         python = _venv_python(target / ".venv")
         gen_adapter = target / "config" / "kimi.adapter.json"
         if python.exists() and gen_adapter.is_file():
@@ -453,6 +479,8 @@ def stage_generation(
         _remove_owned_tree(staging)
         raise
     try:
+        if release is not None:
+            _verify_generation_release(target, sha, release)
         python = build(target, deadline)
         probe_runtime(python, deadline, target)
         gen_adapter = write_generation_configs(target, python, adapter)
@@ -462,6 +490,13 @@ def stage_generation(
     except Exception:
         _remove_owned_tree(target)
         raise
+
+
+def _verify_generation_release(generation: Path, sha: str, release: dict) -> None:
+    from release_metadata import metadata
+
+    if metadata(generation, sha) != release:
+        raise CheckFailed("fetched source does not match the formal Release metadata")
 
 
 def _generation_engine(current: dict) -> str:
@@ -821,7 +856,7 @@ def _note_resolve_failure(adapter, exc, current_sha):
         resolve_failure_class=category,
         failure_class=category,
         next_retry_at=time.time() + _retry_delay(count, getattr(exc, "retry_after", None) if category else None),
-        diagnostic=_update_diagnostic("resolve_main", exc),
+        diagnostic=_update_diagnostic("resolve_release", exc),
     )
 
 
@@ -857,7 +892,7 @@ def _check_once(adapter: dict, deadline: float, *, force, build, idle, install, 
         )
         return 0
     try:
-        sha = resolve_main(remote, deadline)
+        selected = resolve_release(remote, adapter, current, deadline)
     except Exception as exc:
         recorded = _note_resolve_failure(adapter, exc, current.get("sha"))
         print(
@@ -871,6 +906,17 @@ def _check_once(adapter: dict, deadline: float, *, force, build, idle, install, 
         )
         return 1
     _clear_resolve_wait(adapter)
+    candidate = selected["candidate"]
+    if candidate is None:
+        result = "current" if selected["status"] == "up_to_date" else selected["status"]
+        status = _record(
+            adapter, current_sha=current.get("sha"), result=result, error=None,
+            release_selection=selected,
+        )
+        print(json.dumps(status))
+        return int(result == "no_compatible_release" or status["result"] == "degraded")
+    release = candidate["metadata"]
+    sha = release["source"]["sha"]
     failed = read_json(failed_path(adapter))
     if not force and isinstance(failed, dict) and failed.get("sha") == sha and current.get("sha") != sha:
         if _failure_gate(failed) == "wait":
@@ -896,7 +942,9 @@ def _check_once(adapter: dict, deadline: float, *, force, build, idle, install, 
         print(json.dumps(status))
         return int(status["result"] == "degraded")
     try:
-        generation, python, gen_adapter = stage_generation(sha, remote, adapter, deadline, build=build)
+        generation, python, gen_adapter = stage_generation(
+            sha, remote, adapter, deadline, build=build, release=release,
+        )
     except Exception as exc:
         record = _remember_failure(adapter, sha, exc)
         diagnostic = _update_diagnostic("stage_generation", exc)

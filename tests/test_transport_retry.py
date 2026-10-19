@@ -210,7 +210,7 @@ class RetryTests(unittest.TestCase):
         self._time.start()
         self._feed = updater._feed_sync
         self._log = updater._logging_maintenance
-        self._resolve = updater.resolve_main
+        self._resolve = updater.resolve_release
         self._stage = updater.stage_generation
         self._switch = updater.switch
         updater._feed_sync = lambda *args, **kwargs: True
@@ -219,7 +219,7 @@ class RetryTests(unittest.TestCase):
     def tearDown(self):
         updater._feed_sync = self._feed
         updater._logging_maintenance = self._log
-        updater.resolve_main = self._resolve
+        updater.resolve_release = self._resolve
         updater.stage_generation = self._stage
         updater.switch = self._switch
         self._time.stop()
@@ -230,11 +230,11 @@ class RetryTests(unittest.TestCase):
         return updater.check(self.adapter)
 
     def test_same_sha_retries_past_three_without_recover(self):
-        def resolve(remote, deadline):
+        def resolve(remote, adapter, current, deadline):
             self.calls["resolve"] += 1
-            return SHA
+            return {"candidate": {"metadata": {"source": {"sha": SHA}}}}
 
-        def stage(sha, remote, adapter, deadline, build=None):
+        def stage(sha, remote, adapter, deadline, build=None, release=None):
             self.calls["stage"] += 1
             if self.calls["stage"] <= 4:
                 _run(NET, transport=True)
@@ -249,7 +249,7 @@ class RetryTests(unittest.TestCase):
                 "sha": SHA,
             }, self.adapter)
 
-        updater.resolve_main = resolve
+        updater.resolve_release = resolve
         updater.stage_generation = stage
         updater.switch = switch
         self.assertEqual(self._check(), 1)
@@ -298,11 +298,11 @@ class RetryTests(unittest.TestCase):
         self.assertNotEqual(entry._updater_view().get("recovery"), "manual")
 
     def test_certificate_retries_after_backoff_without_quarantine(self):
-        def stage(sha, remote, adapter, deadline, build=None):
+        def stage(sha, remote, adapter, deadline, build=None, release=None):
             self.calls["stage"] += 1
             _run(CERT, transport=True)
 
-        updater.resolve_main = lambda remote, deadline: SHA
+        updater.resolve_release = lambda *args: {"candidate": {"metadata": {"source": {"sha": SHA}}}}
         updater.stage_generation = stage
         self.assertEqual(self._check(), 1)
         failed = genstate.read_json(genstate.failed_path(self.adapter))
@@ -353,11 +353,11 @@ class RetryTests(unittest.TestCase):
         self.assertEqual(stored["history"][0]["class"], "temporary_network")
 
     def test_resolve_failure_does_not_busy_loop(self):
-        def resolve(remote, deadline):
+        def resolve(remote, adapter, current, deadline):
             self.calls["resolve"] += 1
             _run(NET, transport=True)
 
-        updater.resolve_main = resolve
+        updater.resolve_release = resolve
         self.assertEqual(self._check(), 1)
         status = genstate.read_status(self.adapter)
         self.assertEqual(status["resolve_failure_class"], "temporary_network")
