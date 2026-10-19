@@ -165,6 +165,23 @@ class AdmissionOrganizerTests(unittest.TestCase):
             self.assertEqual(identity["model"], "k3")
             self.assertEqual(identity["effort"], "off")
 
+    def test_expired_parent_budget_never_starts_a_paid_native_call(self):
+        from unittest.mock import patch
+        import organizer
+        from mindie_knowledge.loop import summary_budget
+
+        with tempfile.TemporaryDirectory() as raw:
+            source = self._source_home(Path(raw))
+            receipt = dict(native_started=False)
+            with patch.dict(os.environ, {
+                "KIMI_CODE_HOME": str(source),
+                "MINDIE_KIMI_BIN": sys.executable,
+                summary_budget.DEADLINE_ENV: "1",
+            }):
+                with self.assertRaisesRegex(TimeoutError, "before native invocation"):
+                    organizer._invoke_native("public synthetic material", receipt)
+            self.assertFalse(receipt["native_started"])
+
     def test_missing_profile_is_a_configuration_failure_envelope(self):
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)

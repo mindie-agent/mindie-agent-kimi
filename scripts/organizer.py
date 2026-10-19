@@ -14,7 +14,8 @@ blocks into `mindie-summary-outcome/1` envelopes.
   `status="outcome_unknown"` and is never retried here.
 
 [Timeouts & Locks]
-- Summary subprocess deadline: `SUMMARY_DEADLINE = 300s`; output cap:
+- Summary subprocess deadline: at most 300s, bounded by the enclosing worker's
+  remaining budget with 5s reserved for cleanup and its receipt; output cap:
   `MAX_RESULT = 64 KiB`; `doctor_isolated` timeout: `20s`.
 
 [Side-Effect Policy]
@@ -41,11 +42,11 @@ if str(HERE) not in sys.path:
 import bounded
 from bounded import CommandTimedOut, OutputLimitExceeded
 from mindie_knowledge.loop.process import AGENT_ERROR_EXIT_CODES
+from mindie_knowledge.loop import summary_budget
 from mindie_knowledge.materials import summarizer
 
 MAX_REQUEST_BYTES = 128 * 1024
 SUMMARY_EFFORT = "off"
-SUMMARY_DEADLINE = 300
 MAX_RESULT = 64 * 1024
 AGENT_FILE = HERE / "organize-agent.md"
 PROVIDER = "managed:kimi-code"
@@ -247,9 +248,10 @@ def _invoke_native(prompt, receipt):
             "--model", MODEL, "--agent-file", str(agent_file),
             "--skills-dir", str(home / "skills"),
         ]
+        timeout = summary_budget.native_timeout()
         try:
             output = bounded.run(
-                argv, "", timeout=SUMMARY_DEADLINE, env=env,
+                argv, "", timeout=timeout, env=env,
                 cwd=str(isolated), max_output=MAX_RESULT,
             )
             receipt["native_started"] = True

@@ -159,6 +159,33 @@ class ConsentTests(unittest.TestCase):
             load_adapter_config()["community_config"], str(shared),
         )
 
+    def test_generation_migration_preserves_latest_disabled_choice(self):
+        import consent
+        from paths import state_dir
+
+        adapter_path = Path(os.environ["MINDIE_KIMI_CONFIG"])
+        adapter = json.loads(adapter_path.read_text())
+        adapter.pop("community_config")
+        adapter_path.write_text(json.dumps(adapter))
+        template = json.loads((self.tmp / "kimi.community.json").read_text())
+        root = state_dir() / "update" / "generations"
+        for name, enabled, modified in (("old", True, 100), ("new", False, 200)):
+            candidate = root / name / "config" / "mindie-community.json"
+            candidate.parent.mkdir(parents=True)
+            candidate.write_text(json.dumps({
+                **template, "enabled": enabled, "generation": name,
+                "enabled_at": 100 if enabled else None,
+                "project_roots": [str(self.tmp)] if enabled else [],
+            }))
+            os.utime(candidate, (modified, modified))
+
+        result = consent.adopt_community_settings()
+        adopted = json.loads(consent.shared_community_path().read_text())
+        self.assertEqual(result["action"], "adopted")
+        self.assertFalse(adopted["enabled"])
+        self.assertEqual(adopted["generation"], "new")
+        self.assertEqual(adopted["project_roots"], [])
+
     def test_disabled_without_marker_is_unchosen_not_guessed(self):
         # Installer default off (no marker, no consent): the one-time setup
         # has not happened — choices are presented exactly once, and nothing

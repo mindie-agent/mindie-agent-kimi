@@ -22,7 +22,6 @@ class ManifestTests(unittest.TestCase):
         stop = next(item for item in self.manifest["hooks"] if item["event"] == "Stop")
         self.assertTrue(stop["command"].startswith("python3 "))
         self.assertNotIn("printf", stop["command"])
-        self.assertLessEqual(stop["timeout"], 2)
         for hook in self.manifest["hooks"]:
             self.assertTrue(hook["command"].startswith("python3 "))
             self.assertIn("with_runtime.py", hook["command"])

@@ -283,18 +283,16 @@ def _repoint_config_paths(shared: Path, adapter_path: Path, adapter: dict) -> No
 
 
 def _select_latest_community(candidates: list[Path]) -> Path | None:
-    best_path, best_rank = None, (-1.0, -1.0)
+    best_path, best_rank = None, (-1, False)
     for path in candidates:
         state, data = _read_json(path)
         if state != "ok":
             continue
-        ts = float(data.get("enabled_at") or 0.0) if isinstance(data.get("enabled_at"), (int, float)) else 0.0
-        try:
-            mtime = path.stat().st_mtime
-        except OSError:
-            mtime = 0.0
-        if (ts, mtime) >= best_rank:
-            best_rank = (ts, mtime)
+        # enabled_at describes an activation, not the last user decision:
+        # disabling clears it. Equal-time conflicts cannot renew consent.
+        rank = (path.stat().st_mtime_ns, data.get("enabled") is False)
+        if rank >= best_rank:
+            best_rank = rank
             best_path = path
     return best_path or (candidates[-1] if candidates else None)
 

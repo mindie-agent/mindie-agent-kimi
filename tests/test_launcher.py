@@ -92,6 +92,42 @@ STOP_EVENT = json.dumps(
 
 
 class LauncherTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "posix", "POSIX generated hook command")
+    def test_installed_host_budget_allows_bridge_to_return_after_two_seconds(self):
+        import shlex
+        import shutil
+        sys.path.insert(0, str(SCRIPTS))
+        import updater
+
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            config = make_config(tmp, sharing=True, roots=[tmp])
+            generation = write_stub_generation(
+                tmp / "generation",
+                **{"bridge.py": (
+                    "import json,sys,threading\n"
+                    "json.load(sys.stdin)\n"
+                    "threading.Event().wait(2.1)\n"
+                    "print('{\"accepted\":true}',flush=True)\n"
+                )},
+            )
+            shutil.copy2(ROOT / "kimi.plugin.json", generation / "kimi.plugin.json")
+            for name in ("mindie_launch.py", "bounded.py",
+                         "diagnostic_support.py", "diagnostic_fallback.py"):
+                shutil.copy2(SCRIPTS / name, generation / "scripts" / name)
+            write_current(config, generation)
+            package = updater.build_host_package(
+                generation, json.loads(config.read_text()), "a" * 40, config_file=config,
+            )
+            manifest = json.loads((package / "kimi.plugin.json").read_text())
+            hook = next(item for item in manifest["hooks"] if item["event"] == "Stop")
+            result = subprocess.run(
+                shlex.split(hook["command"]), input=STOP_EVENT, text=True,
+                capture_output=True, env=env_for(config), timeout=hook["timeout"],
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout), {"accepted": True})
+
     def test_sharing_off_stop_creates_no_update_state(self):
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
