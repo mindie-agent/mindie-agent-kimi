@@ -104,15 +104,7 @@ MindIE Agent 采用**「领域知识与 Skill 手动按需触发 + 远端开发�
    - **硬性门禁（严禁跳过或静默忽略）**：若未安装 `gh`，请先协助安装（macOS：`brew install gh`；Windows：`winget install --id GitHub.cli`；Ubuntu / WSL：`sudo apt update && sudo apt install -y gh`）；若 `gh auth status` 未登录或 `gh api user` 失败，**请勿继续执行后续步骤**，立即引导用户完成 `gh auth login` 并运行 `gh auth setup-git`，直至 `gh api user --jq .login` 稳定返回当前 GitHub 账号名。
    - 优先使用 Python 3.13；Windows 要求 Python >= 3.12（用于非阻塞 MCP 管道），POSIX 要求 Python >= 3.11。链接的底层 SQLite 版本须 `>= 3.43.0`（支持 FTS5 与 `contentless_delete`）。
 
-2. **顺带完成主仓 `mindie-agent` 的 Star 与 Fork（收敛 Fork 范围，知识库按需在开启贡献时再 Fork）**：
-   鉴于 `@mindie-agent` 组织下仓库较多，**安装阶段仅对统一入口仓 `mindie-agent/mindie-agent` 执行 Star 与远端 Fork**（不逐一 Fork 各插件仓与知识库）：
-   ```sh
-   gh api -X PUT /user/starred/mindie-agent/mindie-agent
-   gh repo fork mindie-agent/mindie-agent --clone=false
-   ```
-   > 说明：`--clone=false` 仅在 GitHub 远端创建/同步派生库，不占用本地磁盘、不改写当前目录 Git Remote，且完全幂等。当用户后续通过 `/mindie-agent` 明确开启面向目标公开知识库（如 `mindie-agent/knowledge-vllm-ascend`）的社区经验贡献时，Agent 会再按需对该目标知识库执行 Star 与远端 Fork（`gh repo fork <owner/repo> --clone=false`）并绑定个人 Fork 仓库 `$GH_USER/<repo>`。
-
-3. **克隆仓库、构建持久化锁定运行时并通过 Kimi 原生插件接口注册**：
+2. **克隆仓库、构建持久化锁定运行时并通过 Kimi 原生插件接口注册**：
    ```sh
    git clone https://github.com/mindie-agent/mindie-agent-kimi.git /tmp/mindie-agent-kimi
    cd /tmp/mindie-agent-kimi
@@ -124,25 +116,23 @@ MindIE Agent 采用**「领域知识与 Skill 手动按需触发 + 远端开发�
      --plugin-root "$NATIVE_PKG"
    ```
 
-4. **校验原生安装回读结果并向用户汇报**：
+3. **校验原生安装回读结果并向用户汇报**：
    ```sh
    python3 scripts/install_kimi_plugin.py \
      --kimi-home "${KIMI_CODE_HOME:-$HOME/.kimi-code}" \
      --plugin-root "$NATIVE_PKG" \
      --readback
    ```
-   - 确认返回的插件列表中 `mindie-agent` 处于 `enabled: true`、`state: "ok"`，且两个 MCP 服务（`knowledge` 与 `remote`）均已启用。随后向用户汇报已验证的 GitHub 交互通道账号（`$GH_USER`）、`mindie-agent/mindie-agent` Star/Fork 状态与安装完成情况（临时克隆目录 `/tmp/mindie-agent-kimi` 可随时清理，持久化运行时保存在 `~/.local/share/mindie-agent/kimi`）。
+   - 确认返回的插件列表中 `mindie-agent` 处于 `enabled: true`、`state: "ok"`，且两个 MCP 服务（`knowledge` 与 `remote`）均已启用。随后向用户汇报已验证的 GitHub 交互通道账号（`$GH_USER`）与安装完成情况（临时克隆目录 `/tmp/mindie-agent-kimi` 可随时清理，持久化运行时保存在 `~/.local/share/mindie-agent/kimi`）。
 
 </details>
 
 ### 方式二：终端手动安装（One-Line Terminal Install）
 
-如果你习惯在终端手动执行，可直接运行以下命令完成 GitHub 通道校验、Star/Fork 主仓 `mindie-agent`、运行时构建与原生插件注册：
+如果你习惯在终端手动执行，可直接运行以下命令完成 GitHub 通道校验、运行时构建与原生插件注册：
 
 ```sh
 gh auth status && gh auth setup-git && \
-gh api -X PUT /user/starred/mindie-agent/mindie-agent && \
-gh repo fork mindie-agent/mindie-agent --clone=false && \
 git clone https://github.com/mindie-agent/mindie-agent-kimi.git && \
 cd mindie-agent-kimi && \
 NATIVE_PKG=$(python3 scripts/setup.py | python3 -c "import json,sys; print(json.load(sys.stdin)['native_package'])") && \
@@ -222,7 +212,7 @@ python3 -m unittest discover -s tests
 
 ### `0.0.2` 发布基准测试（Release Benchmark）
 
-本仓库在 [`benchmarks/release.json`](benchmarks/release.json)（由 `benchmarks/release.py` 执行）中定义了面向 `0.0.2` 发布的可复现 CPU 微基准测试（用例 `public-transcript-parsing`，指标 `public_transcript_parse`，单位 `us/op`），用于测量本地 `wire.jsonl` 公开可见消息提取与非公开推理字段过滤的单次解析耗时。每个正式版 GitHub Release 均随附 `benchmark-results.json`、`benchmark-results.md`、`benchmark-SHA256SUMS` 与 `SHA256SUMS` 校验资产；该微基准仅验证本地解析组件的性能基线，与常备昇腾 A2/A3 NPU 真机集成验收及端到端 Agent 研发任务评估相互独立。
+本仓库在 [`benchmarks/release.json`](benchmarks/release.json)（由 `benchmarks/release.py` 执行）中定义了面向 `0.0.2` 发布的可复现 CPU 微基准测试（用例 `public-transcript-parsing`，指标 `public_transcript_parse`，单位 `us/op`），用于测量本地 `wire.jsonl` 公开可见消息提取与非公开推理字段过滤的单次解析耗时。每个正式版 GitHub Release 均随附 `benchmark-results.json`、`benchmark-results.md`；该微基准仅验证本地解析组件的性能基线，与常备昇腾 A2/A3 NPU 真机集成验收及端到端 Agent 研发任务评估相互独立。
 
 ---
 

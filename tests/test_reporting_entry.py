@@ -17,6 +17,44 @@ from mindie_diagnostics.outbox import Outbox
 
 
 class ReportingEntryTests(unittest.TestCase):
+    def test_native_entry_migrates_legacy_contribution_only_on_explicit_choice(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw).resolve()
+            config = make_config(root, sharing=True)
+            home = root / "kimi-home"
+            authority = config.parent / "mindie-consent.json"
+            authority.write_text(json.dumps({
+                "schema": "mindie-consent/1", "choice": "contribute",
+                "reporting": "disabled",
+            }))
+            before = authority.read_bytes()
+            with patch.dict(os.environ, MINDIE_KIMI_CONFIG=str(config), KIMI_CODE_HOME=str(home)), \
+                    patch("mindie_diagnostics.reporting_commands.ensure", return_value={
+                        "status": "degraded", "category": "test_service_unavailable",
+                    }) as ensure, patch("knowledge_service.ensure_service"):
+                write_session(home, "ses_migrate", turn_records(
+                    plugin_origin("init", "legacy-startup"), "init"), cwd=root)
+                result = entry.dispatch("ses_migrate", str(root), "init")
+                self.assertEqual(result["reporting_activation"]["status"], "needs_choice")
+                self.assertEqual(authority.read_bytes(), before)
+                ensure.assert_not_called()
+
+                arguments = "contribute owner/repo owner"
+                write_session(home, "ses_migrate", turn_records(
+                    plugin_origin("init", "explicit-migration", arguments), arguments), cwd=root)
+                result = entry.dispatch("ses_migrate", str(root), "init")
+                self.assertEqual(result["sharing"]["reporting"]["status"], "degraded")
+                revision = consent_store.read(authority)["choice_revision"]
+                self.assertTrue(revision)
+                ensure.assert_called_once()
+
+                write_session(home, "ses_migrate", turn_records(
+                    plugin_origin("init", "next-startup"), "init"), cwd=root)
+                result = entry.dispatch("ses_migrate", str(root), "init")
+                self.assertEqual(result["first_use"], "contribute")
+                self.assertEqual(result["reporting_activation"]["status"], "degraded")
+                self.assertEqual(consent_store.read(authority)["choice_revision"], revision)
+
     def test_explicit_init_choice_does_not_start_reporter_twice(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw).resolve()

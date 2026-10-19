@@ -104,15 +104,7 @@ If you are an AI Agent asked by the user to install this plugin, execute the fol
    - **Hard Gate (Never skip or silently ignore)**: If `gh` is missing, assist the user in installing it first (macOS: `brew install gh`; Windows: `winget install --id GitHub.cli`; Ubuntu / WSL: `sudo apt update && sudo apt install -y gh`). If `gh auth status` is not logged in or `gh api user` fails, **do not proceed**—guide the user to complete `gh auth login` and run `gh auth setup-git` until `gh api user --jq .login` reliably returns their GitHub username.
    - Prefer Python 3.13. Windows requires Python >= 3.12 for nonblocking MCP pipes; POSIX requires Python >= 3.11. The linked SQLite library must be `>= 3.43.0` (compiled with FTS5 and `contentless_delete` support).
 
-2. **Star & Fork `mindie-agent/mindie-agent` on installation (Scoped Fork Policy; Knowledge Repos Forked On-Demand)**:
-   Because the `@mindie-agent` organization hosts many repositories, **installation only Stars and Forks the unified entry repository `mindie-agent/mindie-agent`** (never mass-forking individual plugin or knowledge repos at install time):
-   ```sh
-   gh api -X PUT /user/starred/mindie-agent/mindie-agent
-   gh repo fork mindie-agent/mindie-agent --clone=false
-   ```
-   > Note: `--clone=false` creates/syncs the fork on GitHub only, using zero local disk space, leaving local Git remotes untouched, and running idempotently. Later, if the user explicitly opts into community knowledge contribution via `/mindie-agent` for a target public repository (e.g., `mindie-agent/knowledge-vllm-ascend`), the Agent Stars and Forks that target knowledge repository on demand (`gh repo fork <owner/repo> --clone=false`) and binds the personal Fork `$GH_USER/<repo>`.
-
-3. **Clone the repository, build the pinned runtime, and register via Kimi's native plugin API**:
+2. **Clone the repository, build the pinned runtime, and register via Kimi's native plugin API**:
    ```sh
    git clone https://github.com/mindie-agent/mindie-agent-kimi.git /tmp/mindie-agent-kimi
    cd /tmp/mindie-agent-kimi
@@ -124,14 +116,14 @@ If you are an AI Agent asked by the user to install this plugin, execute the fol
      --plugin-root "$NATIVE_PKG"
    ```
 
-4. **Verify native registry readback and report back**:
+3. **Verify native registry readback and report back**:
    ```sh
    python3 scripts/install_kimi_plugin.py \
      --kimi-home "${KIMI_CODE_HOME:-$HOME/.kimi-code}" \
      --plugin-root "$NATIVE_PKG" \
      --readback
    ```
-   - Confirm `mindie-agent` shows `enabled: true`, `state: "ok"`, and both MCP servers (`knowledge` and `remote`) enabled. Report the verified GitHub account (`$GH_USER`), `mindie-agent/mindie-agent` Star/Fork status, and installation completion to the user (the temporary clone `/tmp/mindie-agent-kimi` can be removed; the persistent runtime lives under `~/.local/share/mindie-agent/kimi`).
+   - Confirm `mindie-agent` shows `enabled: true`, `state: "ok"`, and both MCP servers (`knowledge` and `remote`) enabled. Report the verified GitHub account (`$GH_USER`) and installation completion to the user (the temporary clone `/tmp/mindie-agent-kimi` can be removed; the persistent runtime lives under `~/.local/share/mindie-agent/kimi`).
 
 </details>
 
@@ -141,8 +133,6 @@ To install manually from your terminal:
 
 ```sh
 gh auth status && gh auth setup-git && \
-gh api -X PUT /user/starred/mindie-agent/mindie-agent && \
-gh repo fork mindie-agent/mindie-agent --clone=false && \
 git clone https://github.com/mindie-agent/mindie-agent-kimi.git && \
 cd mindie-agent-kimi && \
 NATIVE_PKG=$(python3 scripts/setup.py | python3 -c "import json,sys; print(json.load(sys.stdin)['native_package'])") && \
@@ -222,7 +212,7 @@ python3 -m unittest discover -s tests
 
 ### `0.0.2` Release Benchmark
 
-[`benchmarks/release.json`](benchmarks/release.json) (driven by `benchmarks/release.py`) defines the reproducible `0.0.2` CPU microbenchmark (`public-transcript-parsing`, metric `public_transcript_parse` in `us/op`), measuring per-operation latency for extracting public user/assistant messages and filtering non-public reasoning fields from `wire.jsonl`. Every formal GitHub Release publishes `benchmark-results.json`, `benchmark-results.md`, `benchmark-SHA256SUMS`, and `SHA256SUMS`. These deterministic CPU microbenchmarks verify local parser latency only and are distinct from live Ascend A2/A3 NPU integration acceptance and end-to-end Agent productivity evaluation.
+[`benchmarks/release.json`](benchmarks/release.json) (driven by `benchmarks/release.py`) defines the reproducible `0.0.2` CPU microbenchmark (`public-transcript-parsing`, metric `public_transcript_parse` in `us/op`), measuring per-operation latency for extracting public user/assistant messages and filtering non-public reasoning fields from `wire.jsonl`. Every formal GitHub Release publishes `benchmark-results.json`, `benchmark-results.md`. These deterministic CPU microbenchmarks verify local parser latency only and are distinct from live Ascend A2/A3 NPU integration acceptance and end-to-end Agent productivity evaluation.
 
 ---
 
