@@ -5,8 +5,8 @@
 <h1 align="center">MindIE Agent for Kimi Code</h1>
 
 <p align="center">
-  <b>Native Kimi Code Plugin for the Full Ascend NPU AI Infra Lifecycle</b><br/>
-  <sub>Architecture Design · Feature Development · AscendC / Triton Kernels · Remote NPU Testing · Silent Experience Loop</sub>
+  <b>Native Kimi Code Plugin for the Ascend NPU AI Infra Lifecycle</b><br/>
+  <sub>Architecture Design · Feature Development · AscendC / Triton Kernels · Remote NPU Testing · Sanitized Experience Loop</sub>
 </p>
 
 <p align="center">
@@ -26,11 +26,11 @@
 
 ---
 
-**MindIE Agent for Kimi Code** (`mindie-agent-kimi`) is the native Kimi Code plugin adapter for [MindIE Agent](https://github.com/mindie-agent/mindie-agent), providing **a unified Agent capability foundation across the entire Ascend NPU AI Infra workflow — architecture design, feature development, operator implementation, testing & verification, and performance tuning**. Today it includes deep support for **`vLLM-Ascend` development & testing** and **`AscendC` / `Triton` kernel engineering**, with broader Ascend AI Infra domains continuously expanding.
+**MindIE Agent for Kimi Code** (`mindie-agent-kimi`) is the native Kimi Code plugin adapter for [MindIE Agent](https://github.com/mindie-agent/mindie-agent), supporting the **Ascend NPU AI Infra design, development, and testing workflow**. In `v0.0.2`, it delivers **`vLLM-Ascend` feature development & testing**, **`AscendC` / `Triton` operator implementation & verification**, remote NPU execution, and sanitized public experience capture, while additional Ascend AI Infra domains continue expanding on the roadmap.
 
 Designed around the [MindIE Agent Engineering Design Principles](https://github.com/mindie-agent/mindie-agent/blob/main/docs/design-principles.en.md), this thin adapter handles Kimi session identity, `wire.jsonl` public transcript extraction, MCP dispatch, and atomic generation updates, while delegating core knowledge, remote execution, and diagnostics to shared components.
 
-> **Ecosystem & Release Note**: The initial `v0.0.1` MindIE Agent product release ships for three hosts — Claude Code ([`mindie-agent-cc`](https://github.com/mindie-agent/mindie-agent-cc)), OpenAI Codex CLI ([`mindie-agent-codex`](https://github.com/mindie-agent/mindie-agent-codex)), and Kimi Code (this repository) — all on the same shared knowledge and remote-dev components. See the [Documentation Index](#documentation-index) for per-host verification scope.
+> **Ecosystem & Release Note**: Currently `v0.0.2` supports four hosts — Claude Code ([`mindie-agent-cc`](https://github.com/mindie-agent/mindie-agent-cc)), OpenAI Codex CLI ([`mindie-agent-codex`](https://github.com/mindie-agent/mindie-agent-codex)), Kimi Code (this repository), and DeepSeek Harness ([`mindie-agent-dsh`](https://github.com/mindie-agent/mindie-agent-dsh)) — all built on the same shared knowledge, remote-dev, and diagnostics components. See the [Documentation Index](#documentation-index) for per-host verification scope.
 
 ---
 
@@ -42,10 +42,10 @@ MindIE Agent combines **manual on-demand activation for domain knowledge & skill
 | :--- | :--- | :--- | :--- |
 | **Experience, Knowledge & Skill System**<br/>(`mindie-knowledge` + `mindie-agent` Skill) | **🎯 Manual Trigger** | When designing Ascend AI Infra features, developing in `vLLM-Ascend`, writing `AscendC` / `Triton` kernels, authoring unit/accuracy tests, or tuning performance | Explicitly type **`/mindie-agent` + your task description** |
 | **Remote Ascend NPU Dev & Testing**<br/>(`remote-dev` MCP toolset) | **⚡ Default Auto-Trigger** | When syncing local code/tests to a remote Ascend server/container, running NPU builds/tests, checking `npu-smi`, or tailing long job logs | **No slash command needed**—just describe the remote task in natural language |
-| **Engineering Experience Loop**<br/>(`Stop` Auto-Capture + Gitleaks Redaction) | **🔄 Silent Background Run** | When contributing sanitized design, kernel development, testing, or tuning takeaways back to the open-source knowledge base | **Set once, zero daily friction**—once enabled in setup, every session is automatically redacted and packaged into a knowledge PR in the background |
+| **Experience Capture & Unified Contribution Switch**<br/>(`Stop` Auto-Capture + Gitleaks Redaction + Fault Reporting) | **🔄 Opt-In Background Run** | When contributing sanitized design, kernel development, testing, or tuning takeaways back to the open-source knowledge base, or reporting sanitized tool faults | Once explicitly enabled in setup, every eligible session is redacted locally and packaged into a knowledge PR in the background |
 
 ### Scenario 1: Type `/mindie-agent` for Feature Design, Kernel Development & Test Authoring (Manual Trigger)
-> **The Problem**: Designing new Ascend features, implementing `AscendC` / `Triton` operators, or writing `vLLM-Ascend` accuracy tests often requires domain-specific architecture conventions, kernel constraints, and verified test patterns.  
+> **Context**: Designing new Ascend features, implementing `AscendC` / `Triton` operators, or writing `vLLM-Ascend` accuracy tests benefits from prior architecture conventions, kernel constraints, and verified test patterns.  
 > **Copy-Paste Example**:
 > ```text
 > /mindie-agent I want to design and implement a custom fused operator in vllm-ascend (with Triton / AscendC kernel support) and add unit + accuracy tests. Please check past experience and architecture conventions to propose an implementation plan.
@@ -53,20 +53,23 @@ MindIE Agent combines **manual on-demand activation for domain knowledge & skill
 > **What Happens**: Typing `/mindie-agent` activates the `mindie-agent` Skill and queries locally synced [`knowledge-vllm-ascend`](https://github.com/mindie-agent/knowledge-vllm-ascend) packages via SQLite FTS5, returning verified engineering cases complete with **applicable environments, evidence, and known caveats** as reference material.
 
 ### Scenario 2: Everyday Conversation Automatically Triggers Remote Ascend NPU Dev & Testing (`remote-dev` Default Auto-Trigger)
-> **The Problem**: Your daily machine is a macOS or Windows laptop while the Ascend NPU hardware lives on a remote Linux server or container. Manually syncing code, compiling kernels, and tailing long test runs slows down every iteration.  
+> **Context**: Your local machine is a macOS or Windows laptop while the Ascend NPU hardware lives on a remote Linux server or container.  
 > **Copy-Paste Example (no slash command required)**:
 > ```text
 > Connect to the vllm_dev container on my remote 910B server, check current NPU memory usage, and sync my new operator implementation and rotary_embedding tests to run the full pytest verification suite.
 > ```
 > **What Happens**: The built-in `remote-dev` MCP server is always on and **triggers automatically by default** whenever your prompt involves remote servers, containers, or NPU commands—supporting remote command execution, file synchronization, and bounded background job polling over SSH even if knowledge capture is disabled.
 
-### Scenario 3: Silent Background Experience Capture & Community Contribution (Set Once, Zero Friction)
-> **The Problem**: Hard-won design, kernel implementation, testing, or tuning insights usually vanish when you close the terminal, yet sharing raw transcripts risks leaking internal IPs, keys, or private file paths.  
-> **Copy-Paste Example (just work on your engineering task normally)**:
+### Scenario 3: Background Experience Capture & Unified Contribution Switch (`mindie-consent.json`)
+> **Context**: You want to contribute reusable engineering takeaways back to the community while keeping internal IPs, keys, and private file paths out of public commits.  
+> **Copy-Paste Example**:
 > ```text
 > /mindie-agent Help me complete the build and accuracy alignment verification for this custom Ascend operator using the knowledge base and our remote NPU container, and run the corresponding unit test once fixed.
 > ```
-> **What Happens**: Community sharing is **off by default**. Once you opt in during initial setup, every time a session finishes (`Stop`), the plugin silently extracts visible user/assistant messages in the background, strips IPs, tokens, accounts, and private paths via local deterministic rules and Gitleaks, and prepares a sanitized knowledge PR through an isolated organizer—with zero extra steps required during your daily work.
+> **Unified Contribution Switch & State Boundaries**:
+> - **Single Persistent Switch**: Community knowledge sharing and automatic tool fault reporting share a single persistent switch in `mindie-consent.json`. Explicitly selecting `contribute` enables scoped public knowledge sharing and starts the native background fault reporter; selecting `disabled` stops subsequent outgoing sends for both paths.
+> - **Upgrade Preservation & Legacy Re-Confirmation**: Existing `disabled`, `later`, and `read-only` choices stay off across upgrades. Legacy knowledge-only `contribute` records lacking the unified consent revision (`choice_revision` / marked `needs_choice`) do **not** automatically gain fault-upload permission on upgrade until explicitly re-confirmed once by the user.
+> - **Three-State Separation**: The system strictly separates (1) local consent configuration written to disk, (2) background reporter or organizer worker running, and (3) external GitHub Issue or knowledge PR actually created. Use `/mindie-agent:reporting-status` for a read-only check of worker and queue state.
 > - Read the **[User & Contribution Notice](skills/mindie-agent/references/user-notice.md)** for full details on sharing scope, redaction limits, and public Git history.
 > - To set up a multi-task Git worktree layout for `vllm` and `vllm-ascend`, see **[Workspace Setup](skills/mindie-agent/references/workspace-setup.md)** and [vllm-ascend-workspace](https://github.com/mindie-agent/vllm-ascend-workspace.git).
 
@@ -74,9 +77,9 @@ MindIE Agent combines **manual on-demand activation for domain knowledge & skill
 
 ## Quick Start
 
-### Option 1: One-Sentence Install via Your AI Agent (Recommended)
+### Option 1: Automated Setup via Your AI Agent
 
-Copy and paste the prompt below directly to Kimi Code (or any terminal-capable AI Agent) and let it build and install the plugin for you:
+Copy and paste the prompt below directly to Kimi Code (or any terminal-capable AI Agent) so it can run the prerequisite checks, build the locked runtime, and register the plugin:
 
 ```text
 Please install https://github.com/mindie-agent/mindie-agent-kimi for me
@@ -101,15 +104,7 @@ If you are an AI Agent asked by the user to install this plugin, execute the fol
    - **Hard Gate (Never skip or silently ignore)**: If `gh` is missing, assist the user in installing it first (macOS: `brew install gh`; Windows: `winget install --id GitHub.cli`; Ubuntu / WSL: `sudo apt update && sudo apt install -y gh`). If `gh auth status` is not logged in or `gh api user` fails, **do not proceed**—guide the user to complete `gh auth login` and run `gh auth setup-git` until `gh api user --jq .login` reliably returns their GitHub username.
    - Prefer Python 3.13. Windows requires Python >= 3.12 for nonblocking MCP pipes; POSIX requires Python >= 3.11. The linked SQLite library must be `>= 3.43.0` (compiled with FTS5 and `contentless_delete` support).
 
-2. **Star & Fork `mindie-agent/mindie-agent` on installation (Scoped Fork Policy; Knowledge Repos Forked On-Demand)**:
-   Because the `@mindie-agent` organization hosts many repositories, **installation only Stars and Forks the unified entry repository `mindie-agent/mindie-agent`** (never mass-forking individual plugin or knowledge repos at install time):
-   ```sh
-   gh api -X PUT /user/starred/mindie-agent/mindie-agent
-   gh repo fork mindie-agent/mindie-agent --clone=false
-   ```
-   > Note: `--clone=false` creates/syncs the fork on GitHub only, using zero local disk space, leaving local Git remotes untouched, and running idempotently. Later, if the user explicitly opts into community knowledge contribution via `/mindie-agent` for a target public repository (e.g., `mindie-agent/knowledge-vllm-ascend`), the Agent Stars and Forks that target knowledge repository on demand (`gh repo fork <owner/repo> --clone=false`) and binds the personal Fork `$GH_USER/<repo>`.
-
-3. **Clone the repository, build the pinned runtime, and register via Kimi's native plugin API**:
+2. **Clone the repository, build the pinned runtime, and register via Kimi's native plugin API**:
    ```sh
    git clone https://github.com/mindie-agent/mindie-agent-kimi.git /tmp/mindie-agent-kimi
    cd /tmp/mindie-agent-kimi
@@ -121,25 +116,23 @@ If you are an AI Agent asked by the user to install this plugin, execute the fol
      --plugin-root "$NATIVE_PKG"
    ```
 
-4. **Verify native registry readback and report back**:
+3. **Verify native registry readback and report back**:
    ```sh
    python3 scripts/install_kimi_plugin.py \
      --kimi-home "${KIMI_CODE_HOME:-$HOME/.kimi-code}" \
      --plugin-root "$NATIVE_PKG" \
      --readback
    ```
-   - Confirm `mindie-agent` shows `enabled: true`, `state: "ok"`, and both MCP servers (`knowledge` and `remote`) enabled. Report the verified GitHub account (`$GH_USER`), `mindie-agent/mindie-agent` Star/Fork status, and installation completion to the user (the temporary clone `/tmp/mindie-agent-kimi` can be removed; the persistent runtime lives under `~/.local/share/mindie-agent/kimi`).
+   - Confirm `mindie-agent` shows `enabled: true`, `state: "ok"`, and both MCP servers (`knowledge` and `remote`) enabled. Report the verified GitHub account (`$GH_USER`) and installation completion to the user (the temporary clone `/tmp/mindie-agent-kimi` can be removed; the persistent runtime lives under `~/.local/share/mindie-agent/kimi`).
 
 </details>
 
-### Option 2: One-Line Terminal Install (Manual)
+### Option 2: Terminal Install (Manual)
 
 To install manually from your terminal:
 
 ```sh
 gh auth status && gh auth setup-git && \
-gh api -X PUT /user/starred/mindie-agent/mindie-agent && \
-gh repo fork mindie-agent/mindie-agent --clone=false && \
 git clone https://github.com/mindie-agent/mindie-agent-kimi.git && \
 cd mindie-agent-kimi && \
 NATIVE_PKG=$(python3 scripts/setup.py | python3 -c "import json,sys; print(json.load(sys.stdin)['native_package'])") && \
@@ -155,22 +148,22 @@ python3 scripts/install_kimi_plugin.py --kimi-home "${KIMI_CODE_HOME:-$HOME/.kim
 
 ## Everyday Usage & Interaction
 
-You only ever need one entry point—**`/mindie-agent`**—with **no subcommands to memorize**:
+Everyday tasks use a single entry point—**`/mindie-agent`**—without requiring separate internal subcommands:
 
 - **`remote-dev` remote NPU tools trigger automatically by default** in everyday conversation (no slash command required).
-- **All MindIE Agent interactions** (design, development, operator implementation, testing & tuning with domain knowledge, first-time setup, checking status, or changing sharing preferences) are handled through **`/mindie-agent` + natural language**, while the Agent progressively loads internal operational context only when needed:
+- **All MindIE Agent interactions** (design, development, operator implementation, testing & tuning with domain knowledge, first-time setup, checking status, or updating the unified contribution choice) are handled through **`/mindie-agent` + natural language**, while the Agent progressively loads internal operational context only when needed:
 
 | What You Want to Do | How to Do It |
 |---|---|
 | **Ascend AI Infra Design, Dev (`vLLM-Ascend` / `AscendC` / `Triton`), Testing & Tuning** | `/mindie-agent <describe your design, development, testing, or tuning goal>` |
 | **Work on a remote Ascend server / container (sync files, run tests, check `npu-smi`)** | **No slash command needed**—just describe the remote task in natural language (`remote-dev` triggers automatically) |
-| **First-time setup, check status, or toggle community experience sharing** | `/mindie-agent` (or `/mindie-agent check status / enable community sharing`) |
+| **First-time setup, check status, or toggle the unified contribution switch** | `/mindie-agent` (or `/mindie-agent check status / enable community sharing`) |
 
-> 💡 **Silent Background Experience Capture**: Once you opt in to community sharing during initial setup, every session automatically sanitizes and packages public engineering takeaways in the background when the session ends—zero interruption to your workflow.
+> 💡 **Background Experience Capture**: Once you explicitly opt in to community contribution during setup, eligible sessions extract and sanitize public user/assistant messages in the background at session end (`Stop`). Local capture completion is distinct from external PR creation; inspect status receipts to verify remote publication.
 
 ### Automatic Updates & Safe Uninstall
 
-- **Scheduled Model-Free Updates**: On macOS, a `launchd` job checks remote `main` every 5 minutes, builds an immutable generation with its own pinned virtualenv, stops the old service when idle, registers the updated package through Kimi's native plugin API, and switches the generation pointer atomically with rollback receipts (see [Automatic Updates](docs/update.en.md)). Check update status at any time with:
+- **Scheduled Model-Free Updates**: On macOS, a `launchd` job checks for compatible verified formal releases, builds an immutable generation with its own pinned virtualenv, stops the old service when idle, registers the updated package through Kimi's native plugin API, and switches the generation pointer atomically with rollback receipts (see [Automatic Updates](docs/update.en.md)). Check update status at any time with:
   ```sh
   MINDIE_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/mindie-agent/kimi.json"
   MINDIE_LAUNCHER=$(python3 -c 'import json,sys,pathlib; cfg=json.loads(pathlib.Path(sys.argv[1]).read_text()); u=pathlib.Path(cfg["state_dir"])/"update"; cur=json.loads((u/"current.json").read_text()); print(u/"launch"/(cur["sha"] or "bootstrap")/"mindie_launch.py")' "$MINDIE_CONFIG")
@@ -191,7 +184,7 @@ flowchart LR
   Launcher --> Knowledge["mindie-agent/knowledge<br/>(SQLite FTS5 Search, Redaction & PR Loop)"]
   Knowledge --> Feed["mindie-agent/knowledge-vllm-ascend<br/>(vLLM-Ascend Knowledge Feed)"]
   Launcher --> RemoteDev["mindie-agent/remote-dev<br/>(SSH Remote Ascend Exec, Sync & Poll)"]
-  Launcher --> Diagnostics["mindie-agent/diagnostics<br/>(Bounded Local Diagnostics & Opt-In Reporter)"]
+  Launcher --> Diagnostics["mindie-agent/diagnostics<br/>(Bounded Local Diagnostics & Unified Consent Reporter)"]
 ```
 
 | Repository / Component | Responsibility |
@@ -201,7 +194,7 @@ flowchart LR
 | [`mindie-agent/knowledge`](https://github.com/mindie-agent/knowledge) | Shared knowledge core: local SQLite FTS5 search, deterministic redaction, capture queue, and GitHub PR publication receipts. |
 | [`mindie-agent/knowledge-vllm-ascend`](https://github.com/mindie-agent/knowledge-vllm-ascend) | Curated `vllm-ascend` domain knowledge feed. |
 | [`mindie-agent/remote-dev`](https://github.com/mindie-agent/remote-dev) | Bounded remote command execution, file synchronization, and background job polling over SSH for Ascend servers. |
-| [`mindie-agent/diagnostics`](https://github.com/mindie-agent/diagnostics) | Bounded local diagnostic retention and optional sanitized GitHub Issue fault reporting. |
+| [`mindie-agent/diagnostics`](https://github.com/mindie-agent/diagnostics) | Bounded local diagnostic retention and sanitized GitHub Issue fault reporting governed by the unified `mindie-consent.json` switch. |
 
 ---
 
@@ -217,6 +210,10 @@ python3 -m unittest discover -s tests/native -v
 python3 -m unittest discover -s tests
 ```
 
+### `0.0.2` Release Benchmark
+
+[`benchmarks/release.json`](benchmarks/release.json) (driven by `benchmarks/release.py`) defines the reproducible `0.0.2` CPU microbenchmark (`public-transcript-parsing`, metric `public_transcript_parse` in `us/op`), measuring per-operation latency for extracting public user/assistant messages and filtering non-public reasoning fields from `wire.jsonl`. Every formal GitHub Release publishes `benchmark-results.json`, `benchmark-results.md`. These deterministic CPU microbenchmarks verify local parser latency only and are distinct from live Ascend A2/A3 NPU integration acceptance and end-to-end Agent productivity evaluation.
+
 ---
 
 ## Documentation Index
@@ -225,7 +222,7 @@ Detailed engineering guides and verification specifications are available in [`d
 
 - **[Documentation Index (English)](docs/README.en.md)** | **[文档索引（中文）](docs/README.md)**
 - **Automatic Update Mechanism**: [English](docs/update.en.md) | [中文](docs/update.md) — Immutable generation staging, atomic pointer switching, rollback receipts, and host reload boundaries.
-- **Framework Stability & Verification**: [English](docs/framework-stability.en.md) | [中文](docs/framework-stability.md) — Persistent user preferences, Windows atomic config I/O, and preflight test workflow.
+- **Framework Stability & Verification**: [English](docs/framework-stability.en.md) | [中文](docs/framework-stability.md) — Persistent user preferences, atomic config replacement, and preflight test workflow.
 - **Failure Diagnostics & Local Cancellation**: [English](docs/failure-diagnostics.en.md) | [中文](docs/failure-diagnostics.md) — Read-only status checks, local process cleanup on cancel, and remote job reference preservation.
 - **Organizer Diagnostics & Process Groups**: [English](docs/organizer-diagnostics.en.md) | [中文](docs/organizer-diagnostics.md) — Static exit-code categories, process-group lifecycle management, and isolated organizer verification.
 - **Service Continuity Across Updates**: [English](docs/service-continuity.en.md) | [中文](docs/service-continuity.md) — Knowledge service stop/restore during updates, rollback handoff, and daemon acceptance boundaries.
@@ -237,7 +234,3 @@ Detailed engineering guides and verification specifications are available in [`d
 ## License
 
 Released under the [MIT License](LICENSE).
-
-## Unified contribution choice
-
-`contribute` enables both scoped public knowledge sharing and sanitized product-fault reporting; `disabled` disables both. Legacy choices remain unchanged and require an explicit choice before fault uploads. Startup does not grant consent. `/mindie-agent:reporting-status` reports worker and queue state without changing settings. See [the user notice](skills/mindie-agent/references/user-notice.md).

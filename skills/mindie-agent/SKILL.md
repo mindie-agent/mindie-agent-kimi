@@ -13,8 +13,9 @@ Meanwhile, `remote-dev` MCP tools are always available on demand in normal conve
    - When `/mindie-agent` is invoked in the current native Kimi task, call `mindie_entry` **exactly once** with `op=init` and a fresh `request_nonce`. Never pass or fabricate a session ID (`${KIMI_SESSION_ID}` in text is not a capability).
    - Every subsequent knowledge and remote MCP call MUST also include a fresh `request_nonce`.
 2. **Automatic Experience Loop by Default**:
-   - Once community contribution is enabled for the approved project scope, the configured loop processes eligible `Stop` events **automatically in the background**—users never need to ask to save experience at the end of a session, and one-time setup is never re-asked.
-   - If `experience` in the `mindie_entry` response reports incomplete configuration, reuse already-approved values, ask only for the missing public `owner/repo` and GitHub account, and call `mindie_entry` with `op=choose`, `choice=contribute`, and those exact values.
+   - Once the unified contribution choice is enabled for the approved project scope, eligible `Stop` events run **automatically in the background**. Reuse a valid saved choice; no per-task permission or end-of-session save request is needed.
+   - Inspect `first_use` and `reporting_activation` from the entry response. Preserve saved `disabled`, `later`, and `read-only` choices without prompting. If no choice exists, present the [contribution notice](references/user-notice.md) once and accept `contribute` or `disabled`. For a first conversational contribution choice, call `op=choose` only with the public `owner/repo` and GitHub account the user supplied in that reply.
+   - If saved legacy `contribute` returns `needs_choice`, explain once that contribution now includes sanitized product-fault reporting. The supported migration entry is `/mindie-agent contribute owner/repo ACCOUNT`; its explicit arguments are the confirmation, so do not ask again. Never turn incomplete configuration or an old knowledge-only approval into a new opt-in. Reuse known destination values and ask only for missing ones.
 
 ## Progressive Context Disclosure (Read Only on Demand)
 
