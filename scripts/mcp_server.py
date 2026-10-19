@@ -70,7 +70,8 @@ KNOWLEDGE_TOOLS = [
             "current project; via the entry itself the destination comes from "
             "the native arguments (/mindie-agent contribute owner/repo "
             "account). A saved choice persists across sessions, "
-            "restarts, upgrades and failures and is never re-asked. "
+            "restarts, upgrades and failures. Legacy choices require explicit "
+            "confirmation before fault uploads; ordinary startup never grants consent. "
             "Status includes safe task failure categories and contribution batch IDs for recover inspection; it never retries work."
         ),
         inputSchema=dict(
