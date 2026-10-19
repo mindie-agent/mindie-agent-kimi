@@ -32,7 +32,7 @@ Bridges native Kimi Hook/MCP/Skill surfaces to shared first-party runtime compon
 ## 3. Timeout Budgets & `v0.0.2` Engineering Iron Rules
 
 - **Explicit Timeout Hierarchy**:
-  - `HOOK_TOTAL = 10.0s` (`HOOK_LOCK_BUDGET = 2.0s`), native host hook timeout `15s`, `CALL_LOCK_BUDGET = 5.0s`, `CALL_CHILD_BUDGET = 60.0s`, `MAX_YIELD_TIME_MS = 30000` (30s).
+  - `HOOK_TOTAL = 10.0s` (`HOOK_LOCK_BUDGET = 2.0s`), native host hook timeout `15s`, `CALL_LOCK_BUDGET = 5.0s`, `CALL_CHILD_BUDGET = 60.0s` (`180s` for explicit contribution activation/configuration, including shared reporter startup), `MAX_YIELD_TIME_MS = 30000` (30s).
   - `BOOTSTRAP_TOTAL = 540.0s`, summary native timeout at most `300s` and bounded by `summary_budget.native_timeout()` with `5s` reserved for cleanup, `CHECK_BUDGET = 240.0s` (with `RESERVE = 113.0s`: `ROLLBACK_BUDGET = 45.0s` + `FEED_BUDGET = 60.0s` + `HANDOFF_BUDGET = 8.0s`).
 - **Four `v0.0.2` Iron Rules**:
   1. **Lightweight SQLite & File I/O**: Use `busy_timeout=5000` and `os.replace()` atomic writes; never run recursive parent symlink checks, `O_NOFOLLOW`/`S_ISREG` descriptor dances, or per-read `chmod` ceremonies.
