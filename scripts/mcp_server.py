@@ -301,7 +301,7 @@ def handle(surface, message):
             result=dict(
                 protocolVersion="2025-11-25",
                 capabilities={"tools": {}},
-                serverInfo={"name": f"mindie-kimi-{surface}", "version": "0.0.1"},
+                serverInfo={"name": f"mindie-kimi-{surface}", "version": "0.0.2"},
             ),
         )
     if method == "ping":
