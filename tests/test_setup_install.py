@@ -55,13 +55,13 @@ class SetupInstallTests(unittest.TestCase):
             engine = json.loads(Path(payload["engine_config"]).read_text())
             self.assertEqual(
                 engine["service_launch_context"],
-                {"paths": {}, "environment": ["MINDIE_KIMI_BIN", "MINDIE_GIT_BIN"]},
+                {"paths": {}, "environment": ["MINDIE_KIMI_BIN", "MINDIE_GIT_BIN", "MINDIE_DIAGNOSTICS_CONFIG"]},
             )
             from mindie_knowledge.loop import service_context
 
             self.assertEqual(
                 service_context.validate(engine),
-                {"paths": {}, "environment": ["MINDIE_KIMI_BIN", "MINDIE_GIT_BIN"]},
+                {"paths": {}, "environment": ["MINDIE_KIMI_BIN", "MINDIE_GIT_BIN", "MINDIE_DIAGNOSTICS_CONFIG"]},
             )
 
     def test_setup_default_sharing_off_and_no_session_activation_alias(self):

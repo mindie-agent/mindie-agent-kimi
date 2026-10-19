@@ -81,6 +81,10 @@ class EntryTests(unittest.TestCase):
                 self.assertEqual(set(sharing.load().project_roots), {left.resolve(), right.resolve()})
 
     def setUp(self):
+        reporter = patch("mindie_diagnostics.reporting_commands.ensure",
+                         return_value={"status": "degraded", "category": "test_no_native_service"})
+        reporter.start()
+        self.addCleanup(reporter.stop)
         import importlib
 
         for name in ("entry", "entry_state", "identity", "paths"):
@@ -677,34 +681,6 @@ class EntryTests(unittest.TestCase):
             settings = json.loads(consent.shared_community_path().read_text())
             self.assertFalse(settings["enabled"])
 
-    def test_reporting_choice_recorded_from_first_setup_conversation(self):
-        with tempfile.TemporaryDirectory() as raw:
-            tmp = Path(raw)
-            config = make_config(tmp)
-            os.environ["MINDIE_KIMI_CONFIG"] = str(config)
-            os.environ["XDG_CONFIG_HOME"] = str(tmp / "xdg")
-            self._home(
-                tmp, "ses_rep",
-                turn_records(dict(kind="user"), "read-only, and no reporting"),
-            )
-            from unittest.mock import patch
-
-            import consent
-            import diagnostic_support
-            import entry
-
-            with patch.object(
-                diagnostic_support, "configure_reporting",
-                return_value={"enabled": False},
-            ) as configure:
-                payload = entry.op_choose(
-                    "ses_rep", "disabled", str(tmp), reporting="disabled",
-                )
-            configure.assert_called_once_with(False, sys.executable)
-            self.assertEqual(payload["first_use"], "disabled")
-            saved = consent.load()
-            self.assertEqual(saved["choice"], "disabled")
-            self.assertEqual(saved["reporting"], "disabled")
 
     def test_in_turn_prefix_trap_is_not_the_entry(self):
         """Regression: '/mindie-agentuous …' is a plain mention, not an

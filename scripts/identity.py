@@ -56,8 +56,6 @@ COMMANDS = {
     "sharing-status",
     "recover",
     "reporting-status",
-    "reporting-enable",
-    "reporting-disable",
 }
 ENTRY_ALIASES = {"mindie-agent": "init"}
 TAIL_CHUNK = 256 * 1024

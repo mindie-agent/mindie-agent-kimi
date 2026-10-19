@@ -18,6 +18,7 @@ import tempfile
 import textwrap
 import time
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from contract_support import pad_records as _pad_records
@@ -297,6 +298,10 @@ class LaneIsolation(unittest.TestCase):
     maxDiff = None
 
     def setUp(self):
+        reporter = patch("mindie_diagnostics.reporting_commands.ensure",
+                         return_value={"status": "degraded", "category": "test_no_native_service"})
+        reporter.start()
+        self.addCleanup(reporter.stop)
         explicit = os.environ.get("MINDIE_TEST_ROOT")
         if explicit:
             root = Path(explicit).expanduser().resolve()
@@ -590,78 +595,6 @@ class ConsentGateTests(LaneIsolation):
         self.assertEqual(loaded["state"], "missing")
         self.assertIsNone(loaded["choice"])
 
-    def test_concurrent_choice_and_reporting_keep_both_fields(self):
-        self._configured(sharing=False)
-        import consent
-
-        path = _write_consent(
-            self.tmp, choice="later", reporting="later",
-        )
-        saved = json.loads(path.read_text())
-        saved["note"] = "keep-me"
-        path.write_text(json.dumps(saved) + "\n")
-        script = (
-            "import os, sys, time\n"
-            "sys.path.insert(0, sys.argv[1])\n"
-            "os.environ['MINDIE_KIMI_CONFIG'] = sys.argv[2]\n"
-            "open(sys.argv[5], 'w').close()\n"
-            "deadline = time.time() + 5\n"
-            "while not os.path.exists(sys.argv[6]):\n"
-            "    if time.time() > deadline:\n"
-            "        raise SystemExit('peer did not reach the barrier')\n"
-            "    time.sleep(0.01)\n"
-            "import consent\n"
-            "consent.record_choice(sys.argv[4]) if sys.argv[3]=='choice' "
-            "else consent.record_reporting(sys.argv[4])\n"
-        )
-        lost = []
-        for _round in range(20):
-            path.write_text(json.dumps(dict(
-                schema="mindie-consent/1",
-                choice="later",
-                reporting="later",
-                note="keep-me",
-                choice_at=1,
-                reporting_at=1,
-            )) + "\n")
-            ready = self.tmp / f"ready-{_round}"
-            procs = []
-            crashed = []
-            try:
-                for kind, value, peer in (
-                    ("choice", "contribute", "reporting"),
-                    ("reporting", "disabled", "choice"),
-                ):
-                    mine = ready / kind
-                    theirs = ready / peer
-                    mine.parent.mkdir(exist_ok=True)
-                    procs.append(subprocess.Popen(
-                        [sys.executable, "-c", script, str(SCRIPTS), str(self.tmp / "kimi.json"),
-                         kind, value, str(mine), str(theirs)],
-                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                    ))
-                for proc in procs:
-                    _out, err = proc.communicate(timeout=10)
-                    if proc.returncode != 0:
-                        crashed.append(err)
-            finally:
-                _reap(procs)
-            if crashed:
-                lost.append(crashed)
-                break
-            try:
-                final = json.loads(path.read_text())
-            except ValueError:
-                lost.append("corrupt-json")
-                break
-            if (
-                final.get("choice") != "contribute"
-                or final.get("reporting") != "disabled"
-                or final.get("note") != "keep-me"
-            ):
-                lost.append(final)
-                break
-        self.assertEqual(lost, [])
 
     def test_hand_written_consent_pointer_still_does_not_stop_collection(self):
         """A wired consent_config plus read-only must stop Stop and the worker."""
@@ -947,8 +880,7 @@ class EntryBoundaryTests(LaneIsolation):
         import entry
         from paths import load_engine_config
 
-        consent.record_choice("read-only")
-        consent.record_reporting("later")
+        _write_consent(self.tmp, choice="read-only", reporting="later")
         try:
             result = entry.op_sharing_enable("ses_scope")
         except ValueError as exc:
@@ -1004,55 +936,13 @@ class EntryBoundaryTests(LaneIsolation):
         self.assertEqual(after["choice"], before["choice"])
         self.assertEqual(after["reporting"], before["reporting"])
 
-    def test_saved_reporting_choice_matches_the_live_service_decision(self):
-        project, _log = self._configured(sharing=False)
-        policy = {
-            "schema": "mindie.diagnostics.reporting.v1",
-            "purpose": "tool_fault_reporting",
-            "decision": "enabled",
-            "repository": "mindie-agent/mindie-agent",
-            "revision": "0123456789abcdef0123456789abcdef",
-            "roots": [str(self.tmp.resolve())],
-        }
-        policy_path = Path(os.environ["MINDIE_DIAGNOSTICS_CONFIG"])
-        write_json(policy_path, policy)
-        home = self.tmp / "kimi-home"
-        write_session(
-            home, "ses_report",
-            turn_records(dict(kind="user"), "read-only, reporting disabled"),
-            cwd=project,
-        )
-        os.environ["KIMI_CODE_HOME"] = str(home)
-        self._stub_service()
-        import entry
-
-        entry.dispatch(
-            "ses_report", str(project), "choose",
-            choice="disabled", reporting="disabled",
-        )
-        import consent
-
-        saved = consent.load()
-        on_disk = json.loads(policy_path.read_text())
-        again = entry.status_payload("ses_report")
-        problems = []
-        if saved.get("reporting") != "disabled":
-            problems.append(f"consent reporting={saved.get('reporting')}")
-        if on_disk.get("decision") == "enabled":
-            problems.append("diagnostics policy decision remains enabled")
-        if (again.get("reporting") or {}).get("enabled") is True:
-            problems.append(f"status still enabled: {again.get('reporting')}")
-        if "reporting_choice" in again:
-            problems.append("reporting was offered again")
-        self.assertEqual(problems, [])
 
     def test_cc_adapter_reads_the_same_profile_consent(self):
         """A sibling adapter config in the same profile directory shares the consent file."""
         self._configured(sharing=False)
         import consent
 
-        consent.record_choice("later")
-        consent.record_reporting("disabled")
+        _write_consent(self.tmp, choice="later", reporting="disabled")
         from unittest import mock
 
         cc_config = self.tmp / "cc.json"
@@ -1141,70 +1031,7 @@ class EntryBoundaryTests(LaneIsolation):
         with self.assertRaises(ValueError):
             identity.require_current_entry("ses_later_turn", "init")
 
-    def test_reporting_update_keeps_a_readable_contribution_choice(self):
-        """A reporting update must not drop a choice that is still in the file.
 
-        Wrong schema makes the store call the document corrupt. Updating
-        reporting repairs the schema while preserving valid sibling fields.
-        """
-        project, _log = self._configured(sharing=False)
-        raw = json.dumps({
-            "schema": "mindie-consent/0",
-            "choice": "contribute",
-            "reporting": "enabled",
-            "note": "keep-me",
-        })
-        path = _write_consent(self.tmp, raw=raw)
-        home = self.tmp / "kimi-home"
-        write_session(
-            home, "ses_repair",
-            turn_records(dict(kind="user"), "reporting later"),
-            cwd=project,
-        )
-        os.environ["KIMI_CODE_HOME"] = str(home)
-        import entry
-
-        payload = entry.dispatch(
-            "ses_repair", str(project), "choose", reporting="later",
-        )
-        saved = json.loads(path.read_text())
-        self.assertEqual(saved.get("schema"), "mindie-consent/1", payload)
-        self.assertEqual(saved.get("choice"), "contribute")
-        self.assertEqual(saved.get("reporting"), "later")
-        self.assertEqual(saved.get("note"), "keep-me")
-
-    def test_reporting_later_stops_an_enabled_reporter(self):
-        project, _log = self._configured(sharing=False)
-        _write_consent(self.tmp, choice="read-only", reporting="enabled")
-        policy = {
-            "schema": "mindie.diagnostics.reporting.v1",
-            "purpose": "tool_fault_reporting",
-            "decision": "enabled",
-            "repository": "mindie-agent/mindie-agent",
-            "revision": "0123456789abcdef0123456789abcdef",
-            "roots": [str(self.tmp.resolve())],
-        }
-        policy_path = Path(os.environ["MINDIE_DIAGNOSTICS_CONFIG"])
-        write_json(policy_path, policy)
-        home = self.tmp / "kimi-home"
-        write_session(
-            home, "ses_later_report",
-            turn_records(_skill_origin("act-later-report"), "/mindie-agent"),
-            cwd=project,
-        )
-        os.environ["KIMI_CODE_HOME"] = str(home)
-        import entry
-
-        entry.dispatch(
-            "ses_later_report", str(project), "choose", reporting="later",
-        )
-        import consent
-
-        saved = consent.load()
-        on_disk = json.loads(policy_path.read_text())
-        self.assertEqual(saved.get("choice"), "read-only")
-        self.assertEqual(saved.get("reporting"), "later")
-        self.assertNotEqual(on_disk.get("decision"), "enabled")
 
     def test_user_disable_survives_a_concurrent_settings_stamp(self):
         """A settings stamp must not write back enabled=true over a user disable."""

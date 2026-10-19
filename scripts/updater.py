@@ -398,7 +398,7 @@ def build_host_package(
     launcher_dir.mkdir(parents=True, exist_ok=True)
     launcher = launcher_dir / LAUNCHER
     if not launcher.is_file():
-        for name in (LAUNCHER, "bounded.py", "diagnostic_support.py"):
+        for name in (LAUNCHER, "bounded.py", "diagnostic_support.py", "paths.py"):
             shutil.copy2(generation / "scripts" / name, launcher_dir / name)
     package = package_dir if package_dir is not None else generation / "host-package"
     if package.exists():

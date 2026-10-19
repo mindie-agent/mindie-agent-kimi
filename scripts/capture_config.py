@@ -23,5 +23,5 @@ def prepare(python, scripts):
         "capture_mode": "public-transcript",
         "redactor_executable": path,
         "summary_command": [str(python), str(Path(scripts) / "organizer.py")],
-        "service_launch_context": {"paths": {}, "environment": ["MINDIE_KIMI_BIN", "MINDIE_GIT_BIN"]},
+        "service_launch_context": {"paths": {}, "environment": ["MINDIE_KIMI_BIN", "MINDIE_GIT_BIN", "MINDIE_DIAGNOSTICS_CONFIG"]},
     }

@@ -131,23 +131,6 @@ def load() -> dict:
     return consent_store.read(consent_path())
 
 
-def _repair_corrupt_and_update(path: Path, **updates) -> None:
-    with _shared_file_lock(path):
-        doc = {}
-        try:
-            parsed = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(parsed, dict):
-                doc = {
-                    k: v for k, v in parsed.items()
-                    if (k != "choice" or v in CHOICES) and (k != "reporting" or v in REPORTING)
-                }
-        except Exception:
-            doc = {}
-        doc["schema"] = SCHEMA
-        doc.update(updates)
-        _store(path, doc)
-
-
 def record_choice(choice: str) -> str:
     if choice not in CHOICES:
         raise ValueError("choice must be contribute, read-only, later or disabled")
@@ -155,25 +138,10 @@ def record_choice(choice: str) -> str:
     try:
         consent_store.record_choice(path, choice)
     except consent_store.ConsentError as exc:
-        if exc.state == "corrupt":
-            _repair_corrupt_and_update(path, choice=choice, choice_at=time.time())
-        else:
-            raise ConsentDamaged(exc.state, str(exc)) from None
+        raise ConsentDamaged(exc.state, str(exc)) from None
     return choice
 
 
-def record_reporting(value: str) -> str:
-    if value not in REPORTING:
-        raise ValueError("reporting must be enabled, disabled or later")
-    path = consent_path()
-    try:
-        consent_store.record_reporting(path, value)
-    except consent_store.ConsentError as exc:
-        if exc.state == "corrupt":
-            _repair_corrupt_and_update(path, reporting=value, reporting_at=time.time())
-        else:
-            raise ConsentDamaged(exc.state, str(exc)) from None
-    return value
 
 
 def marker_exists() -> bool:

@@ -14,6 +14,9 @@ from paths import engine_config_path, load_adapter_config, resolve_git_bin, reso
 
 
 def prepare_service_env(config=None):
+    from diagnostic_support import bind_environment
+
+    bind_environment()
     try:
         if config is None:
             try:

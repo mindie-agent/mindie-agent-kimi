@@ -65,8 +65,7 @@ KNOWLEDGE_TOOLS = [
             "Requires a fresh request_nonce. Never pass a session id. "
             "op=init binds this task internally and reports missing configuration "
             "or status; op=choose configures contribution or explicit disable "
-            "(contribute/disabled) and optionally the "
-            "independent reporting choice. A conversational contribution "
+            "(contribute/disabled) for knowledge sharing and sanitized fault reporting. A conversational contribution "
             "naming the public repository and account enables sharing for the "
             "current project; via the entry itself the destination comes from "
             "the native arguments (/mindie-agent contribute owner/repo "
@@ -82,14 +81,13 @@ KNOWLEDGE_TOOLS = [
                     "enum": [
                         "init", "choose", "status", "deactivate",
                         "sharing-enable", "sharing-disable", "sharing-status",
-                        "recover", "reporting-status", "reporting-enable", "reporting-disable",
+                        "recover", "reporting-status",
                     ],
                 },
                 request_nonce=NONCE_PROP,
                 choice={"type": "string", "enum": ["contribute", "disabled"]},
                 repository={"type": "string", "description": "Public owner/repo the user stated for contribution."},
                 account={"type": "string", "description": "Public account name the user stated for contribution."},
-                reporting={"type": "string", "enum": ["enabled", "disabled", "later"]},
                 arguments={"type": "string"},
             ),
             required=["op", "request_nonce"],
@@ -280,6 +278,9 @@ def remote_tools():
 
 
 def remote_call(name, args, session):
+    import diagnostic_support
+
+    diagnostic_support.bind_environment()
     from remote_dev.mcp.schemas import ALIASES
     from remote_dev.mcp.tools import call_tool
 
@@ -336,7 +337,7 @@ def handle(surface, message):
             payload = dispatch(
                 session, cwd, body.get("op"), body.get("arguments") or "",
                 body.get("choice"), repository=body.get("repository"),
-                account=body.get("account"), reporting=body.get("reporting"),
+                account=body.get("account"),
             )
             result = dict(content=[dict(type="text", text=canonical(payload))], structuredContent=payload, isError=False)
         elif surface == "knowledge":
@@ -396,6 +397,9 @@ def serve_once(surface):
 
 
 def main(argv=None):
+    import diagnostic_support
+
+    diagnostic_support.bind_environment()
     argv = list(sys.argv[1:] if argv is None else argv)
     once = "--once" in argv
     args = [item for item in argv if item != "--once"]

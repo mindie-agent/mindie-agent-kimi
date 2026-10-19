@@ -13,6 +13,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from support import (
@@ -44,6 +45,10 @@ ENV_KEYS = (
 
 class GenerationAuthorityTests(unittest.TestCase):
     def setUp(self):
+        reporter = patch("mindie_diagnostics.reporting_commands.ensure",
+                         return_value={"status": "degraded", "category": "test_no_native_service"})
+        reporter.start()
+        self.addCleanup(reporter.stop)
         self._scratch = tempfile.TemporaryDirectory(prefix="mindie-gen-authority-")
         self.tmp = Path(self._scratch.name)
         self._saved = {key: os.environ.get(key) for key in ENV_KEYS}

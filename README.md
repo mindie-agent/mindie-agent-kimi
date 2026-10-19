@@ -237,3 +237,7 @@ python3 -m unittest discover -s tests
 ## 许可证
 
 本项目基于 [MIT License](LICENSE) 开源。
+
+## 统一贡献开关
+
+`contribute` 同时开启项目范围内的公开知识共享和经过筛选的产品故障报告；`disabled` 同时关闭两者。旧版选择保持不变，需要用户明确再次选择后才允许故障上传，普通启动不会自动授权。`/mindie-agent:reporting-status` 只读查看 worker 和队列状态。详见[用户须知](skills/mindie-agent/references/user-notice.md)。

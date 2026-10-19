@@ -17,7 +17,7 @@ under the shared `operation.lock` and dispatches one-shot children.
 
 [Timeouts & Locks]
 - `HOOK_TOTAL = 10.0s`, `HOOK_LOCK_BUDGET = 2.0s`, `BOOTSTRAP_TOTAL = 540.0s`,
-  `CALL_LOCK_BUDGET = 5.0s`, `CALL_CHILD_BUDGET = 60.0s`, `EOF_JOIN = 3.0s`,
+  `CALL_LOCK_BUDGET = 5.0s`, `CALL_CHILD_BUDGET = 60.0s` (180s for explicit entry activation/configuration including 75s reporter startup), `EOF_JOIN = 3.0s`,
   `OUTPUT_BUDGET = 1.0s`.
 - Acquires shared `operation.lock` (`fcntl.flock` / `msvcrt.locking`) before
   reading `current.json` and holds it across child execution.
@@ -67,6 +67,7 @@ def _load_diagnostic_support():
             raise
         return module
 
+    load("paths")
     return load("diagnostic_support")
 
 
@@ -255,6 +256,7 @@ def _child_env(current: dict) -> dict:
     env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
     env["PYTHONIOENCODING"] = "utf-8"
     env["MINDIE_KIMI_CONFIG"] = current["adapter_config"]
+    env["MINDIE_DIAGNOSTICS_CONFIG"] = str(diagnostic_support.reporting_config_path())
     return env
 
 
@@ -446,6 +448,16 @@ def _stage_error(ident, message, stage: str, surface: str):
     )
 
 
+def _call_budget(raw):
+    message = json.loads(raw)
+    arguments = (message.get("params") or {}).get("arguments") or {}
+    if _local_tool_name(message) == "mindie_entry" and arguments.get("op") in {
+        "init", "choose", "sharing-enable", "sharing-disable",
+    }:
+        return 180.0
+    return CALL_CHILD_BUDGET
+
+
 def _dispatch(surface: str, raw: bytes, ident, cancel=None):
     if cancel is not None and cancel.is_set():
         raise bounded.CommandCancelled("command cancelled")
@@ -463,7 +475,7 @@ def _dispatch(surface: str, raw: bytes, ident, cancel=None):
         try:
             out = bounded.run(
                 [current["python"], str(script), surface, "--once"],
-                payload, timeout=CALL_CHILD_BUDGET, env=_child_env(current),
+                payload, timeout=_call_budget(raw), env=_child_env(current),
                 cwd=str(Path(current["generation"])), cancel=cancel,
                 **({"max_output": KNOWLEDGE_MAX_OUTPUT} if surface == "knowledge" else {}),
             )
@@ -691,6 +703,7 @@ def main(argv=None) -> int:
     _CONFIG_FILE = None
     if len(argv) >= 2 and argv[0] == "--config":
         _CONFIG_FILE = argv[1]
+        os.environ["MINDIE_KIMI_CONFIG"] = _CONFIG_FILE
         argv = argv[2:]
     kind = argv[0] if argv else ""
     name = argv[1] if len(argv) > 1 else ""

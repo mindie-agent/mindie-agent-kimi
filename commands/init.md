@@ -17,3 +17,5 @@ then follow [optional workspace setup](../skills/mindie-agent/references/workspa
 Reuse the user's creation and initialization decisions.
 
 $ARGUMENTS
+
+The contribution choice applies to both public knowledge sharing and sanitized product-fault reporting. Show worker activation status honestly; saved consent alone does not prove readiness. Legacy choices require explicit confirmation before reporting.

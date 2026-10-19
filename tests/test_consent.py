@@ -301,8 +301,8 @@ class ConsentTests(unittest.TestCase):
     def test_field_updates_merge_and_never_wipe_the_sibling(self):
         import consent
 
-        consent.record_choice("read-only")
-        consent.record_reporting("disabled")
+        self._consent_path().write_text(json.dumps({"schema": "mindie-consent/1",
+                                                   "choice": "read-only", "reporting": "disabled"}))
         saved = json.loads(self._consent_path().read_text())
         self.assertEqual(saved["choice"], "read-only")
         self.assertEqual(saved["reporting"], "disabled")
@@ -311,27 +311,6 @@ class ConsentTests(unittest.TestCase):
         self.assertEqual(saved["choice"], "contribute")
         self.assertEqual(saved["reporting"], "disabled")
 
-    def test_cross_process_field_updates_keep_both_fields(self):
-        """Concurrent record_choice/record_reporting from two processes
-        (e.g. two adapters in one profile) must not lose a field."""
-        import consent
-
-        consent.record_choice("read-only")
-        code = (
-            "import sys;sys.path.insert(0,sys.argv[1]);"
-            "import consent;consent.record_reporting('enabled')"
-        )
-        env = dict(os.environ)
-        for round in range(5):
-            result = subprocess.run(
-                [sys.executable, "-c", code, str(SCRIPTS)],
-                env=env, capture_output=True, text=True, timeout=15,
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            consent.record_choice("later" if round % 2 else "read-only")
-        saved = json.loads(self._consent_path().read_text())
-        self.assertIn(saved["choice"], {"read-only", "later"})
-        self.assertEqual(saved["reporting"], "enabled")
 
 
 if __name__ == "__main__":

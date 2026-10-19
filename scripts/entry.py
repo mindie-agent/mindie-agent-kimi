@@ -3,7 +3,7 @@
 [Role]
 Implements `dispatch` (`init`, `choose`, `status`, `deactivate`,
 `sharing-enable`, `sharing-disable`, `sharing-status`, `recover`,
-`reporting-status`, `reporting-enable`, `reporting-disable`) after `mcp_server`
+`reporting-status`) after `mcp_server`
 claims the native `PreToolUse` nonce.
 
 [Invariants]
@@ -310,18 +310,10 @@ def _knowledge_status_payload(session=None):
 
 
 def status_payload(session=None):
-    import consent as consent_mod
     import diagnostic_support
 
     payload = dict(_knowledge_status_payload(session))
     payload["reporting"] = diagnostic_support.reporting_status()
-    saved = consent_mod.load()
-    if (
-        payload["reporting"].get("status") == "not_configured"
-        and saved["state"] == "missing"
-        and not consent_mod.install_traces()
-    ):
-        payload["reporting_choice"] = diagnostic_support.reporting_hint()
     return payload
 
 
@@ -408,6 +400,10 @@ def _apply_choice(session, cwd, choice, *, repository=None, account=None, branch
         else:
             view = sharing_mod.write_disabled()
     consent_mod.record_choice(choice)
+    import diagnostic_support
+
+    reporting = diagnostic_support.activate_reporting()
+    view = dict(view or {}, reporting=reporting)
     if choice == "contribute" and view is not None:
         from admission import gate
         from knowledge_service import ensure_service
@@ -421,33 +417,7 @@ def _apply_choice(session, cwd, choice, *, repository=None, account=None, branch
     return view
 
 
-def _apply_reporting(value):
-    import consent as consent_mod
-    import diagnostic_support
-
-    if value not in consent_mod.REPORTING:
-        raise ValueError("reporting must be enabled, disabled or later")
-    unreadable = consent_mod.load()["state"] == "unreadable"
-    if unreadable and value == "enabled":
-        raise ValueError("the saved setup state is unreadable; reporting was not enabled")
-    if not _configured():
-        if value == "later":
-            if not unreadable:
-                consent_mod.record_reporting("later")
-            return dict(reporting="later" if not unreadable else "not-recorded")
-        raise ValueError("MindIE is not configured; run scripts/setup.py first")
-    python = load_adapter_config()["python"]
-    expected = value == "enabled"
-    result = diagnostic_support.configure_reporting(expected, python)
-    if result.get("enabled") is not expected:
-        return result
-    if unreadable:
-        return dict(result, preference="not-recorded: the saved setup state is unreadable")
-    consent_mod.record_reporting(value)
-    return result
-
-
-def _configured_init_activation(session, cwd, activation_id):
+def _configured_init_activation(session, cwd, activation_id, *, activate_reporter=True):
     from admission import activate, gate
     from knowledge_service import ensure_service
 
@@ -467,7 +437,11 @@ def _configured_init_activation(session, cwd, activation_id):
             service = "not-requested:configuration-incomplete-or-disabled"
     except Exception as exc:
         service = f"not-started:{type(exc).__name__}"
+    import diagnostic_support
+
     payload = status_payload(session)
+    if activate_reporter:
+        payload["reporting_activation"] = diagnostic_support.activate_reporting()
     payload["binding"] = dict(
         session=lease["session"],
         enabled=bool(lease.get("enabled")),
@@ -513,7 +487,9 @@ def op_init(session, cwd):
             raise ValueError("MindIE is not configured; run scripts/setup.py first")
         return _apply_entry_choice(status_payload(session), session, cwd, native)
     migration = _adopt_install_state()
-    payload = _configured_init_activation(session, cwd, found["activation_id"])
+    payload = _configured_init_activation(
+        session, cwd, found["activation_id"], activate_reporter=native is None,
+    )
     if migration:
         payload["migration"] = migration
     if native is not None:
@@ -521,7 +497,7 @@ def op_init(session, cwd):
     return payload
 
 
-def op_choose(session, choice, cwd=None, *, repository=None, account=None, reporting=None):
+def op_choose(session, choice, cwd=None, *, repository=None, account=None):
     import consent as consent_mod
 
     migration = _adopt_install_state() if _configured() else None
@@ -552,7 +528,6 @@ def op_choose(session, choice, cwd=None, *, repository=None, account=None, repor
                 )
             repository, account = native["repository"], native["account"]
     view = _apply_choice(session, cwd, choice, repository=repository, account=account) if choice is not None else None
-    reporting_view = _apply_reporting(reporting) if reporting is not None else None
     payload = status_payload(session)
     if choice is not None:
         payload["first_use"] = choice
@@ -564,8 +539,6 @@ def op_choose(session, choice, cwd=None, *, repository=None, account=None, repor
             payload["status"] = "degraded"
             payload["experience"] = "unavailable"
             payload["warning"] = f"knowledge capture service could not be started ({view.get('service')})"
-    if reporting_view is not None:
-        payload["reporting_result"] = reporting_view
     if migration:
         payload["migration"] = migration
     return payload
@@ -622,13 +595,8 @@ def op_sharing_disable(session):
     consume_slash(session, "sharing-disable")
     if not _configured():
         return dict(configured=False, enabled=False)
-    import consent as consent_mod
-    import sharing as sharing_mod
-
     _adopt_install_state()
-    result = sharing_mod.write_disabled()
-    consent_mod.record_choice("disabled")
-    return result
+    return _apply_choice(session, None, "disabled")
 
 
 def op_sharing_status(session):
@@ -685,28 +653,22 @@ def op_recover(session, _model_arguments=""):
     return result
 
 
-def op_reporting(session, command):
-    _found, first = consume_slash(session, command)
+def op_reporting(session):
+    consume_slash(session, "reporting-status")
     import diagnostic_support
 
-    if command == "reporting-status":
-        return diagnostic_support.reporting_status()
-    if not first:
-        return dict(diagnostic_support.reporting_status(), already=True)
-    if not _configured():
-        raise ValueError("MindIE is not configured; run scripts/setup.py first")
-    return _apply_reporting("enabled" if command == "reporting-enable" else "disabled")
+    return diagnostic_support.reporting_status()
 
 
-def dispatch(session, cwd, op, arguments="", choice=None, *, repository=None, account=None, reporting=None):
+def dispatch(session, cwd, op, arguments="", choice=None, *, repository=None, account=None):
     if op == "init":
         return op_init(session, cwd)
     if op == "choose":
-        if choice is None and reporting is None:
-            raise ValueError("choose requires a choice or a reporting value")
+        if choice is None:
+            raise ValueError("choose requires the contribution choice")
         if choice is not None and choice not in {"contribute", "read-only", "later", "disabled"}:
             raise ValueError("choose requires choice=contribute, read-only, later or disabled")
-        return op_choose(session, choice, cwd, repository=repository, account=account, reporting=reporting)
+        return op_choose(session, choice, cwd, repository=repository, account=account)
     if op == "status":
         return op_status(session)
     if op == "deactivate":
@@ -719,6 +681,6 @@ def dispatch(session, cwd, op, arguments="", choice=None, *, repository=None, ac
         return op_sharing_status(session)
     if op == "recover":
         return op_recover(session, arguments)
-    if op in {"reporting-status", "reporting-enable", "reporting-disable"}:
-        return op_reporting(session, op)
+    if op == "reporting-status":
+        return op_reporting(session)
     raise ValueError("unknown MindIE entry operation")

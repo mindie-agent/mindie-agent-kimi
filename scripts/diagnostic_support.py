@@ -2,7 +2,7 @@
 
 [Role]
 Bridges Kimi plugin failure recording, incident projection (`reference`/`attach`),
-and reporting consent commands (`reporting_status`/`configure_reporting`) to
+and reporting consent commands (`reporting_status`/`activate_reporting`) to
 `mindie_diagnostics.integration`.
 
 [Invariants]
@@ -14,11 +14,10 @@ and reporting consent commands (`reporting_status`/`configure_reporting`) to
   completed generation metadata only when `diagnostic-build.json` is absent.
 
 [Timeouts & Locks]
-- Pure local file reads (`<= 16 KiB`); no network or subprocess execution.
+- Failure recording is local; explicit contribution activation delegates bounded worker startup to shared consent.
 
 [Side-Effect Policy]
-- `failure` delegates to `record_failure`; `configure_reporting` updates
-  `diagnostics.json` when explicitly invoked via `/mindie-agent:reporting-*`.
+- `failure` delegates to `record_failure`; activation reads the saved contribution choice and starts reporting only when authorized.
 """
 
 from __future__ import annotations
@@ -26,7 +25,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shlex
 import sys
 from pathlib import Path
 
@@ -145,6 +143,7 @@ def _warn():
 def _record():
     from mindie_diagnostics.integration import record_failure
 
+    bind_environment()
     return record_failure
 
 
@@ -204,7 +203,7 @@ def attach(result, diagnostic):
     result = dict(result, diagnostic=projected)
     incident = projected.get("incident_id")
     text = (
-        f"MindIE incident {incident}; read-only local status: /mindie-agent:reporting-status. Upload remains a separate opt-in."
+        f"MindIE incident {incident}; read-only local status: /mindie-agent:reporting-status. Uploads follow the saved contribution choice."
         if incident else _STORAGE
     )
     content = result.get("content")
@@ -216,10 +215,13 @@ def attach(result, diagnostic):
 
 
 def reporting_config_path():
-    if explicit := os.environ.get("MINDIE_DIAGNOSTICS_CONFIG"):
-        return Path(explicit).expanduser().resolve()
-    base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
-    return (base / "mindie-agent" / "diagnostics.json").expanduser().resolve()
+    from paths import profile_config_path
+
+    return profile_config_path().parent / "diagnostics.json"
+
+
+def bind_environment():
+    os.environ["MINDIE_DIAGNOSTICS_CONFIG"] = str(reporting_config_path())
 
 
 def _unavailable(stage, error_type):
@@ -242,49 +244,35 @@ def reporting_status():
         return _unavailable("reporting_status", type(exc).__name__)
 
 
-def ensure_argv(python):
-    if not isinstance(python, str) or not Path(python).is_absolute():
-        raise ValueError("selected runtime requires an absolute interpreter")
-    return [python, "-m", "mindie_diagnostics.cli", "reporting", "ensure", "--config", str(reporting_config_path())]
-
-
-def configure_reporting(enabled, python):
-    if type(enabled) is not bool:
-        return _unavailable("reporting_configure", "TypeError")
+def activate_reporting(*, ensure=True):
     try:
-        command = ensure_argv(python)
-        from mindie_diagnostics.integration import configure_reporting as upstream
+        from consent import consent_path
+        from mindie_knowledge.consent_store import activate_reporting as upstream
 
-        result = upstream(enabled, repository=REPOSITORY, config=reporting_config_path())
-        if not isinstance(result, dict) or result.get("enabled") is not enabled:
-            return _unavailable("reporting_configure", "ConfigurationUnconfirmed")
-        result = dict(result, run_outside_hook=False)
-        if enabled:
-            result.update(
-                run_outside_hook=True, command=command,
-                command_line=shlex.join(command),
-                note=(
-                    "Reporting settings are enabled. Execute this command once outside "
-                    "the Hook and inspect its result before claiming reporter readiness. "
-                    "Report any failure; do not automatically retry."
-                ),
-            )
-        return result
+        bind_environment()
+        return upstream(consent_path(), config=reporting_config_path(), ensure=ensure)
     except Exception as exc:
-        return _unavailable("reporting_configure", type(exc).__name__)
+        return _unavailable("reporting_activation", type(exc).__name__)
 
 
-def reporting_hint():
-    return {
-        "optional": True, "recommended": True,
-        "independent_of_knowledge_contribution": True,
-        "enable": "/mindie-agent:reporting-enable",
-        "status": "/mindie-agent:reporting-status",
-        "disable": "/mindie-agent:reporting-disable",
-        "repository": REPOSITORY,
-        "note": (
-            "Optionally report sanitized product fault code metadata to the public "
-            "repository. Prompts, transcripts, commands, environment and credentials "
-            "are excluded. This is a separate shared user choice; consult its status."
-        ),
-    }
+def main():
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--choice", choices=("contribute", "disabled"))
+    parser.add_argument("--record-setup-failure")
+    args = parser.parse_args()
+    os.environ["MINDIE_KIMI_CONFIG"] = args.config
+    if args.record_setup_failure:
+        print(json.dumps(failure("setup", "setup", args.record_setup_failure)))
+        return
+    if args.choice:
+        from consent import record_choice
+
+        record_choice(args.choice)
+    print(json.dumps(activate_reporting()))
+
+
+if __name__ == "__main__":
+    main()

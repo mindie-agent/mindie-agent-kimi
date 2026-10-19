@@ -237,3 +237,7 @@ Detailed engineering guides and verification specifications are available in [`d
 ## License
 
 Released under the [MIT License](LICENSE).
+
+## Unified contribution choice
+
+`contribute` enables both scoped public knowledge sharing and sanitized product-fault reporting; `disabled` disables both. Legacy choices remain unchanged and require an explicit choice before fault uploads. Startup does not grant consent. `/mindie-agent:reporting-status` reports worker and queue state without changing settings. See [the user notice](skills/mindie-agent/references/user-notice.md).
