@@ -1,9 +1,11 @@
 import json
 import os
 import plistlib
+import subprocess
 import sys
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from unittest import mock
 
@@ -110,82 +112,65 @@ class WindowsScheduleTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.tmp = Path(self._tmp.name)
-        self.adapter = {"state_dir": str(self.tmp / "state")}
+        self.adapter = {"state_dir": str(self.tmp / "中文 & 100% state")}
+        self.python = self.tmp / "runtime with spaces" / "python.exe"
+        self.python.parent.mkdir()
+        self.pythonw = self.python.with_name("pythonw.exe")
+        self.pythonw.touch()
+        self.command = [str(self.python), str(self.tmp / "long launcher path" / "mindie_launch.py"),
+                        "--config", str(self.tmp / "100% 中文 & kimi.json"), "updater", "check"]
 
     def tearDown(self):
         self._tmp.cleanup()
 
     @property
     def wrapper(self):
-        return genstate.update_dir(self.adapter) / "MindIEKimiUpdate.cmd"
+        return genstate.update_dir(self.adapter) / "MindIEKimiUpdate.pyw"
 
-    def _fake_schtasks(self, calls, query_xml=None):
+    def _fake_scheduler(self, calls, query_xml=None):
         def fake_run(argv, stdin, **kw):
             calls.append(list(argv))
-            if "/Query" in argv:
+            if argv[0] == "powershell":
                 if query_xml is not None:
                     return query_xml
-                return (
-                    "<Task><Actions><Exec>"
-                    f"<Command>{self.wrapper}</Command></Exec></Actions></Task>"
-                )
+                return self.wrapper.with_suffix(".xml").read_text(encoding="utf-16")
             return ""
 
         return fake_run
 
-    def test_wrapper_body_is_complete_quoted_and_percent_doubled(self):
-        command = [
-            sys.executable,
-            str(self.tmp / "long launcher path" / "mindie_launch.py"),
-            "--config",
-            str(self.tmp / "cfg" / "100% kimi.json"),
-            "updater",
-            "check",
-        ]
-        body = updater._wrapper_body(command)
-        self.assertTrue(body.startswith("@echo off"))
-        for item in command:
-            self.assertIn(f'"{item}"'.replace("%", "%%"), body)
-        self.assertIn("100%% kimi.json", body)
-        # The complete tail survives: no truncation at the old /TR edge.
-        self.assertIn('"updater" "check"', body)
-
     def test_registration_references_wrapper_and_verifies_readback(self):
-        command = [
-            sys.executable,
-            str(self.tmp / "launch" / "mindie_launch.py"),
-            "--config",
-            str(self.tmp / "cfg" / "kimi.json"),
-            "updater",
-            "check",
-        ]
         calls = []
         with mock.patch.object(
-            updater, "bounded_run", side_effect=self._fake_schtasks(calls)
+            updater, "bounded_run", side_effect=self._fake_scheduler(calls)
         ):
-            payload = updater._register_windows_schedule(self.adapter, command)
+            payload = updater._register_windows_schedule(self.adapter, self.command)
         create = next(argv for argv in calls if "/Create" in argv)
         # /F overwrite heals an existing (e.g. truncated) registration.
         self.assertIn("/F", create)
-        action = create[create.index("/TR") + 1]
-        self.assertEqual(action, f'"{self.wrapper}"')
-        # The old long inline form is gone: /TR is exactly the wrapper.
-        self.assertLess(len(action), 120)
+        self.assertNotIn("/TR", create)
+        definition = ET.parse(create[create.index("/XML") + 1])
+        action = definition.find("./{*}Actions/{*}Exec")
+        self.assertEqual(action.findtext("{*}Command"), str(self.pythonw))
+        self.assertEqual(action.findtext("{*}Arguments"), subprocess.list2cmdline([str(self.wrapper)]))
+        self.assertEqual(definition.findtext("./{*}Triggers/{*}TimeTrigger/{*}Repetition/{*}Interval"), "PT5M")
         self.assertEqual(payload["verified"], True)
         self.assertEqual(payload["action"], str(self.wrapper))
-        body = self.wrapper.read_text(encoding="utf-8")
-        for item in command:
-            self.assertIn(f'"{item}"', body)
+
+    def test_long_interpreter_and_config_paths_survive_registration(self):
+        self.command[0] = str(self.tmp / ("a" * 100) / ("b" * 100) / "python.exe")
+        self.pythonw = Path(self.command[0]).with_name("pythonw.exe")
+        self.pythonw.parent.mkdir(parents=True)
+        self.pythonw.touch()
+        self.command[3] = str(self.tmp / ("c" * 100) / ("d" * 100) / "中文.json")
+        self.test_registration_references_wrapper_and_verifies_readback()
+
+    def test_missing_pythonw_does_not_replace_existing_task(self):
+        self.pythonw.unlink()
+        with mock.patch.object(updater, "bounded_run") as run, self.assertRaises(SystemExit):
+            updater._register_windows_schedule(self.adapter, self.command)
+        run.assert_not_called()
 
     def test_truncated_readback_is_a_loud_failure(self):
-        command = [
-            sys.executable,
-            str(self.tmp / "launch" / "mindie_launch.py"),
-            "--config",
-            str(self.tmp / "cfg" / "kimi.json"),
-            "updater",
-            "check",
-        ]
         truncated = (
             '<Task><Actions><Exec><Command>"updater" "che</Command>'
             "</Exec></Actions></Task>"
@@ -193,10 +178,19 @@ class WindowsScheduleTests(unittest.TestCase):
         calls = []
         with mock.patch.object(
             updater, "bounded_run",
-            side_effect=self._fake_schtasks(calls, query_xml=truncated),
+            side_effect=self._fake_scheduler(calls, query_xml=truncated),
         ), self.assertRaises(SystemExit) as caught:
-            updater._register_windows_schedule(self.adapter, command)
+            updater._register_windows_schedule(self.adapter, self.command)
         self.assertIn("not trusted", str(caught.exception))
+
+    def test_console_python_readback_is_rejected_even_with_correct_wrapper(self):
+        task = ET.Element("Task")
+        action = ET.SubElement(ET.SubElement(task, "Actions"), "Exec")
+        ET.SubElement(action, "Command").text = str(self.python)
+        ET.SubElement(action, "Arguments").text = subprocess.list2cmdline([str(self.wrapper)])
+        with mock.patch.object(updater, "bounded_run", side_effect=self._fake_scheduler(
+                [], query_xml=ET.tostring(task, encoding="unicode"))), self.assertRaises(SystemExit):
+            updater._register_windows_schedule(self.adapter, self.command)
 
 
 if __name__ == "__main__":

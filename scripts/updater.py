@@ -33,6 +33,7 @@ readback, and runs independent knowledge feed sync.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timedelta
 import json
 import os
 import random
@@ -43,6 +44,7 @@ import stat
 import subprocess
 import sys
 import time
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -1145,43 +1147,76 @@ def recover() -> int:
 
 
 def _wrapper_body(command) -> str:
-    return "@echo off\r\n" + " ".join(f'"{item}"' for item in command).replace("%", "%%") + "\r\n"
+    # Keep a hidden console for the launcher and its ordinary console children.
+    # CREATE_NO_WINDOW alone would let those children allocate a visible console.
+    return (
+        "import subprocess\n"
+        "startup = subprocess.STARTUPINFO()\n"
+        "startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW\n"
+        "startup.wShowWindow = subprocess.SW_HIDE\n"
+        f"raise SystemExit(subprocess.call({list(command)!r},\n"
+        "    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,\n"
+        "    startupinfo=startup, creationflags=subprocess.CREATE_NEW_CONSOLE))\n"
+    )
 
 
 def _schedule_wrapper(adapter: dict, command) -> Path:
-    wrapper = update_dir(adapter) / "MindIEKimiUpdate.cmd"
+    wrapper = update_dir(adapter) / "MindIEKimiUpdate.pyw"
     update_dir(adapter).mkdir(parents=True, exist_ok=True)
     body = _wrapper_body(command)
-    try:
-        raw = body.encode("mbcs" if os.name == "nt" else "utf-8")
-    except UnicodeEncodeError:
-        raise SystemExit(
-            "launcher or config path is not representable in the Windows "
-            "console codepage; the scheduled task was not registered"
-        ) from None
     tmp = wrapper.with_name(wrapper.name + f".tmp-{os.getpid()}")
-    tmp.write_bytes(raw)
+    tmp.write_text(body, encoding="utf-8")
     os.replace(tmp, wrapper)
     return wrapper
 
 
-def _verify_scheduled_task(wrapper: Path) -> None:
-    output = bounded_run(["schtasks", "/Query", "/TN", "MindIEKimiUpdate", "/XML"], "", timeout=30)
-    needle = str(wrapper)
-    if needle not in output and needle.replace("&", "&amp;") not in output:
+def _verify_scheduled_task(wrapper: Path, pythonw: Path) -> None:
+    # schtasks writes its XML in the console codepage. Export Unicode directly
+    # so bounded_run's UTF-8 transport also preserves non-ASCII paths.
+    output = bounded_run([
+        "powershell", "-NoProfile", "-NonInteractive", "-Command",
+        "[Console]::OutputEncoding = [Text.UTF8Encoding]::new(); "
+        "Export-ScheduledTask -TaskName MindIEKimiUpdate -ErrorAction Stop",
+    ], "", timeout=30)
+    try:
+        actions = ET.fromstring(output).findall("./{*}Actions/{*}Exec")
+    except ET.ParseError:
+        actions = []
+    if (len(actions) != 1
+            or actions[0].findtext("{*}Command") != str(pythonw)
+            or actions[0].findtext("{*}Arguments") != subprocess.list2cmdline([str(wrapper)])):
         raise SystemExit(
-            "scheduled task readback does not reference the wrapper action; "
+            "scheduled task readback does not match the windowless wrapper action; "
             "the registration is not trusted"
         )
 
 
 def _register_windows_schedule(adapter: dict, command) -> dict:
+    pythonw = Path(command[0]).with_name("pythonw.exe")
+    if not pythonw.is_file():
+        raise SystemExit(f"windowless Python is unavailable at {pythonw}; task was not registered")
     wrapper = _schedule_wrapper(adapter, command)
+    # XML keeps the interpreter and wrapper paths separate, without /TR's
+    # command-line length limit or cmd.exe's codepage and metacharacter parsing.
+    task = ET.Element("Task", xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task", version="1.2")
+    trigger = ET.SubElement(ET.SubElement(task, "Triggers"), "TimeTrigger")
+    start = datetime.now() + timedelta(seconds=INTERVAL_SECONDS)
+    ET.SubElement(trigger, "StartBoundary").text = start.isoformat(timespec="seconds")
+    ET.SubElement(ET.SubElement(trigger, "Repetition"), "Interval").text = "PT5M"
+    principal = ET.SubElement(ET.SubElement(task, "Principals"), "Principal", id="Author")
+    ET.SubElement(principal, "LogonType").text = "InteractiveToken"
+    settings = ET.SubElement(task, "Settings")
+    ET.SubElement(settings, "MultipleInstancesPolicy").text = "IgnoreNew"
+    action = ET.SubElement(ET.SubElement(task, "Actions", Context="Author"), "Exec")
+    ET.SubElement(action, "Command").text = str(pythonw)
+    ET.SubElement(action, "Arguments").text = subprocess.list2cmdline([str(wrapper)])
+    definition = wrapper.with_suffix(".xml")
+    ET.ElementTree(task).write(definition, encoding="utf-16", xml_declaration=True)
     bounded_run(
-        ["schtasks", "/Create", "/F", "/TN", "MindIEKimiUpdate", "/SC", "MINUTE", "/MO", "5", "/TR", f'"{wrapper}"'],
+        ["schtasks", "/Create", "/F", "/TN", "MindIEKimiUpdate", "/XML", str(definition)],
         "", timeout=30,
     )
-    _verify_scheduled_task(wrapper)
+    _verify_scheduled_task(wrapper, pythonw)
     return {"result": "scheduled", "task": "MindIEKimiUpdate", "action": str(wrapper), "verified": True}
 
 

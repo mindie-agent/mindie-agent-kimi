@@ -27,6 +27,8 @@ python3 scripts/updater.py install-schedule    # 注册系统定时更新任务
 python3 scripts/updater.py uninstall-schedule  # 移除系统定时更新任务（卸载插件前执行）
 ```
 
+Windows 任务使用同一 Python 安装中的 `pythonw.exe` 启动 UTF-8 包装脚本，更新器及其控制台子进程在隐藏窗口中运行。已安装的 `.cmd` 任务需要重新执行 `install-schedule` 才会替换；缺少 `pythonw.exe` 时注册会明确失败，保留已有任务。
+
 ---
 
 ## 3. 容错退避与宿主重载边界
