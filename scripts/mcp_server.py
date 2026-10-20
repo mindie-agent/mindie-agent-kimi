@@ -19,7 +19,8 @@ Serves JSON-RPC 2.0 MCP requests (`initialize`, `ping`, `tools/list`,
   engine's own admission store; default-domain authority is never forwarded.
 - Remote failures preserve `submission_state` (`not_sent`, `uncertain`,
   `acknowledged`) and job references so callers never blindly replay writes.
-- Only the successful nonce claimant finalizes its receipt.
+- Only the successful nonce claimant finalizes its receipt. Accounting failures
+  add `bind_warning` and `diagnostic_ref` without changing the tool outcome.
 
 [Timeouts & Locks]
 - Clamps `remote-dev` `yield_time_ms` to `MAX_YIELD_TIME_MS = 30000` (30s).
@@ -38,6 +39,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -603,6 +605,7 @@ def handle(surface, message):
     nonce = None
     claimed = False
     succeeded = False
+    result = {}
     try:
         if not isinstance(args, dict):
             raise ValueError("invalid tool arguments")
@@ -640,7 +643,8 @@ def handle(surface, message):
             try:
                 payload = remote_call(name, body, session)
             except (ValueError, OSError, RuntimeError, KeyError, TypeError) as exc:
-                return dict(jsonrpc="2.0", id=ident, result=remote_stage_failure(body, name, "helper_failed", exc))
+                result = remote_stage_failure(body, name, "helper_failed", exc)
+                return dict(jsonrpc="2.0", id=ident, result=result)
             text = payload.get("text") if isinstance(payload, dict) else canonical(payload)
             result = dict(
                 content=[dict(type="text", text=text if isinstance(text, str) else canonical(payload))],
@@ -650,13 +654,22 @@ def handle(surface, message):
         succeeded = result.get("isError") is not True
         return dict(jsonrpc="2.0", id=ident, result=result)
     except (ValueError, OSError, RuntimeError, KeyError, TypeError, ImportError) as exc:
-        return dict(jsonrpc="2.0", id=ident, result=failure(exc))
+        result = failure(exc)
+        return dict(jsonrpc="2.0", id=ident, result=result)
     finally:
         if claimed:
             try:
                 finish_nonce(nonce, succeeded)
-            except Exception:
-                pass
+            except (OSError, sqlite3.Error) as exc:
+                from diagnostic_support import failure as record_failure
+
+                diagnostic = record_failure("mcp.call", "finish_nonce", "local_storage", exception=exc)
+                warning = "Local bind receipt could not be saved. The tool result is unchanged; do not repeat the call."
+                result["structuredContent"] = dict(
+                    result.get("structuredContent") or {},
+                    bind_warning=warning, diagnostic_ref=diagnostic,
+                )
+                result["content"] = [*result.get("content", []), dict(type="text", text=warning)]
 
 
 def serve(surface):

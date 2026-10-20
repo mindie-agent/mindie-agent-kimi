@@ -530,10 +530,9 @@ def claim_nonce(nonce: str, tool_name: str, arguments, *, config=None) -> str:
 
 
 def finish_nonce(nonce: str, succeeded: bool, *, config=None) -> None:
+    """Persist the claimant's result; storage failures remain visible to MCP."""
     nonce = require_nonce(nonce)
     path = bind_db_path(config)
-    if not path.is_file():
-        return
     db = _connect(path, create=False)
     try:
         with db:
@@ -541,7 +540,5 @@ def finish_nonce(nonce: str, succeeded: bool, *, config=None) -> None:
                 "UPDATE binds SET status=?, updated=? WHERE nonce=? AND status='claimed'",
                 ("succeeded" if succeeded else "failed", time.time(), nonce),
             )
-    except sqlite3.Error:
-        pass
     finally:
         db.close()
