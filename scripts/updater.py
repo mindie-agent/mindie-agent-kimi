@@ -91,14 +91,6 @@ SHA = r"[0-9a-f]{40}"
 COMPLETE = ".mindie-generation-complete"
 LAUNCHER = "mindie_launch.py"
 MIN_PYTHON = (3, 12) if os.name == "nt" else (3, 11)
-GIT_ENV = dict(os.environ, GIT_TERMINAL_PROMPT="0")
-PIP_ENV = dict(
-    os.environ,
-    PIP_RETRIES="0",
-    PIP_NO_INPUT="1",
-    PIP_DISABLE_PIP_VERSION_CHECK="1",
-)
-UV_ENV = dict(os.environ, GIT_TERMINAL_PROMPT="0")
 
 _FEED_OK = frozenset({"synced", "unchanged"})
 _FEED_PENDING = frozenset({"busy", "deferred"})
@@ -198,7 +190,7 @@ def _git(args, *, timeout, deadline, cwd=None, transport=False):
     return bounded_run(
         [_git_bin(), *args], "",
         timeout=min(timeout, _remaining(deadline, RESERVE)),
-        cwd=cwd, env=GIT_ENV, transport=transport,
+        cwd=cwd, env=dict(os.environ, GIT_TERMINAL_PROMPT="0"), transport=transport,
     )
 
 
@@ -247,28 +239,17 @@ def build_runtime(generation: Path, deadline: float) -> Path:
     venv = generation / ".venv"
     python = _venv_python(venv)
     uv = shutil.which("uv")
-    from setup import ensurepip_available
+    from setup import installer_environment
 
-    if ensurepip_available():
-        bounded_run([sys.executable, "-m", "venv", str(venv)], "", timeout=min(180, _remaining(deadline, RESERVE)))
-    elif uv is not None:
-        bounded_run([uv, "venv", "--seed", str(venv)], "", timeout=min(180, _remaining(deadline, RESERVE)))
-    else:
-        raise CheckFailed(
-            "python venv support is missing (ensurepip unavailable) and uv is "
-            "not on PATH; install python3-venv or uv, then recover"
-        )
-    if uv is not None:
-        bounded_run(
-            [uv, "pip", "install", "--python", str(python), "-r", str(requirements)],
-            "", timeout=min(600, _remaining(deadline, RESERVE)),
-            max_output=512 * 1024, env=UV_ENV, transport=True,
-        )
-        return python
+    if uv is None:
+        raise CheckFailed("uv is required to prepare the MindIE runtime")
+    env = installer_environment()
+    bounded_run([uv, "venv", "--python", sys.executable, str(venv)], "",
+                timeout=min(180, _remaining(deadline, RESERVE)), env=env)
     bounded_run(
-        [str(python), "-m", "pip", "install", "-r", str(requirements)],
+        [uv, "pip", "install", "--python", str(python), "-r", str(requirements)],
         "", timeout=min(600, _remaining(deadline, RESERVE)),
-        max_output=512 * 1024, env=PIP_ENV, transport=True,
+        max_output=512 * 1024, env=env, transport=True,
     )
     return python
 
@@ -1218,6 +1199,8 @@ def install_schedule(config_file=None) -> int:
     if not launcher.is_file() or not (launcher.parent / "bounded.py").is_file():
         raise SystemExit(f"no launcher available at {launcher.parent}")
     command = schedule_command(launcher, config_file)
+    from mindie_diagnostics.service_environment import prepare
+    prepare(update_dir(adapter))
     if sys.platform == "darwin":
         import plistlib
 
@@ -1402,6 +1385,12 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     if args.config is not None:
         os.environ["MINDIE_KIMI_CONFIG"] = str(args.config.expanduser().absolute())
+    if args.op in {"check", "recover"}:
+        from mindie_diagnostics.service_environment import read
+        network = update_dir(load_adapter_config()) / "mindie-network.env"
+        if network.is_file():
+            for key, value in read(network).items():
+                os.environ.setdefault(key, value)
     if args.op == "check":
         return check()
     if args.op == "status":

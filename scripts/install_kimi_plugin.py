@@ -146,7 +146,8 @@ def call(port, token, method, path, data=None):
         headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=15) as res:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(req, timeout=15) as res:
             return {"http": res.status, "body": json.load(res)}
     except urllib.error.HTTPError as exc:
         return {"http": exc.code, "body": json.loads(exc.read())}
