@@ -105,10 +105,12 @@ class KnowledgePageTests(unittest.TestCase):
 
         explain = next(item for item in mcp_server.KNOWLEDGE_TOOLS if item["name"] == "knowledge_explain")
         query = next(item for item in mcp_server.KNOWLEDGE_TOOLS if item["name"] == "knowledge_query")
+        feedback = next(item for item in mcp_server.KNOWLEDGE_TOOLS if item["name"] == "knowledge_feedback")
         self.assertEqual(
-            set(explain["inputSchema"]["properties"]), {"ref", "request_nonce"}
+            set(explain["inputSchema"]["properties"]),
+            {"ref", "refs", "conditions", "known_refs", "token_budget", "request_nonce"},
         )
-        self.assertEqual(explain["inputSchema"]["required"], ["ref", "request_nonce"])
+        self.assertEqual(explain["inputSchema"]["required"], ["request_nonce"])
         self.assertIn("next_block_ref", explain["description"])
         self.assertIn("slice", explain["description"])
         self.assertNotIn("offset", query["inputSchema"]["properties"])
@@ -117,13 +119,22 @@ class KnowledgePageTests(unittest.TestCase):
             set(query["inputSchema"]["properties"]),
             {
                 "query", "limit", "conditions", "continuation", "domain",
-                "domain_path", "token_budget", "include_unknown", "request_nonce",
+                "domain_path", "token_budget", "include_unknown", "include_archived",
+                "request_nonce",
             },
         )
+        self.assertEqual(
+            set(feedback["inputSchema"]["properties"]),
+            {
+                "ref", "rating", "reason", "event_type", "run_id", "step_id",
+                "outcome", "request_nonce",
+            },
+        )
+        self.assertEqual(feedback["inputSchema"]["required"], ["ref", "request_nonce"])
         distill = next(item for item in mcp_server.KNOWLEDGE_TOOLS if item["name"] == "knowledge_distill")
         self.assertEqual(
             set(distill["inputSchema"]["properties"]),
-            {"inputs", "task_state", "domain", "request_nonce"},
+            {"inputs", "task_state", "related_refs", "proposal", "domain", "request_nonce"},
         )
         self.assertEqual(
             distill["inputSchema"]["required"],

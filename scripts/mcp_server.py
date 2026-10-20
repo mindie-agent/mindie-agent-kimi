@@ -118,12 +118,13 @@ KNOWLEDGE_TOOLS = [
     dict(
         name="knowledge_query",
         description=(
-            "Search graded rules and task material in the selected domain. Each match has a readable ref "
+            "Search graded rules and task material in the selected domain. Returns bounded navigation "
+            "cards plus foundation_cards (compatible results also follow); each card has a readable ref "
             "and feedback_ref for its observed revision. Pass known task conditions to filter graded rules. "
             "For related task blocks, pass related_next as continuation without query. "
-            "A changed corpus rejects the continuation. Pass domain only when the install "
-            "configures that domain; an unknown domain fails instead of using the default. "
-            "References are advisory."
+            "A changed corpus rejects the continuation. Archived or superseded units stay hidden unless "
+            "include_archived is true. Pass domain only when the install configures that domain; an unknown "
+            "domain fails instead of using the default. References are advisory."
         ),
         inputSchema=dict(
             type="object",
@@ -139,6 +140,7 @@ KNOWLEDGE_TOOLS = [
                 domain_path={"type": "string"},
                 token_budget={"type": "integer", "minimum": 1, "maximum": 16000},
                 include_unknown={"type": "boolean"},
+                include_archived={"type": "boolean"},
                 request_nonce=NONCE_PROP,
             ),
             required=["request_nonce"],
@@ -151,8 +153,11 @@ KNOWLEDGE_TOOLS = [
             "Distill explicitly selected, already authorized evidence into graded "
             "knowledge. Requires an active /mindie-agent task in the selected domain, "
             "a fresh request_nonce, and an explicit task_state; ordinary Stop is not "
-            "completion. Inputs are the selected sanitized evidence only. The shared "
-            "runtime owns redaction, SummaryLedger, local admission, and any publication plan."
+            "completion. Inputs are the selected sanitized evidence only. Optional "
+            "related_refs select existing units for delta comparison, and proposal "
+            "submits a mindie-distill-decision/1 foreground decision for deterministic "
+            "validation without a model call. The shared runtime owns redaction, "
+            "SummaryLedger, local admission, and any publication plan."
         ),
         inputSchema=dict(
             type="object",
@@ -195,6 +200,11 @@ KNOWLEDGE_TOOLS = [
                     "type": "string",
                     "enum": ["in_flight", "verified_milestone", "completed"],
                 },
+                related_refs={
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                proposal={"type": "object"},
                 domain={
                     "type": "string",
                     "description": "Installed canonical domain to distill into; omit for the default domain.",
@@ -208,34 +218,57 @@ KNOWLEDGE_TOOLS = [
     dict(
         name="knowledge_explain",
         description=(
-            "Read one domain reference: a graded-unit ref returns its exact current revision and conditions; "
-            "a task ref returns the current navigation and "
-            "first_block_ref; a block ref returns that immutable block with "
-            "previous_block_ref/next_block_ref for walking the task. "
-            "The content is a reference slice, not the full case or a verified report."
+            "Read one reference or a batch of graded references. Use the cards returned by "
+            "knowledge_query for navigation, then load only the selected units. Pass ref or "
+            "refs with observed conditions, known_refs that are already fully visible, and an "
+            "optional token_budget. Shared prerequisites expand once in requires; primary units "
+            "return complete units. A single ref keeps the exact current revision and legacy "
+            "task/block navigation; a block ref returns that immutable block with "
+            "previous_block_ref/next_block_ref for walking the task. The content is a reference "
+            "slice, not the full case or a verified report."
         ),
         inputSchema=dict(
             type="object",
             properties=dict(
                 ref={"type": "string"},
+                refs={"type": "array", "items": {"type": "string"}},
+                conditions={"type": "object"},
+                known_refs={"type": "array", "items": {"type": "string"}},
+                token_budget={"type": "integer", "minimum": 1, "maximum": 16000},
                 request_nonce=NONCE_PROP,
             ),
-            required=["ref", "request_nonce"],
+            required=["request_nonce"],
             additionalProperties=False,
         ),
     ),
     dict(
         name="knowledge_feedback",
-        description="Optional up/down vote: copy the exact feedback_ref returned by query/explain into ref. Never required.",
+        description=(
+            "Record optional usage evidence for the exact feedback_ref returned by query/explain. "
+            "Keep rating=up|down as the legacy vote; rating is optional when event_type is supplied. "
+            "event_type tracks discovered -> loaded -> applied -> evaluated; evaluated requires a "
+            "run_id and outcome=supported|refuted|inconclusive. step_id binds the stage to a step. "
+            "Never required."
+        ),
         inputSchema=dict(
             type="object",
             properties=dict(
                 ref={"type": "string"},
                 rating={"type": "string", "enum": ["up", "down"]},
                 reason={"type": "string"},
+                event_type={
+                    "type": "string",
+                    "enum": ["discovered", "loaded", "applied", "evaluated"],
+                },
+                run_id={"type": "string"},
+                step_id={"type": "string"},
+                outcome={
+                    "type": "string",
+                    "enum": ["supported", "refuted", "inconclusive"],
+                },
                 request_nonce=NONCE_PROP,
             ),
-            required=["ref", "rating", "request_nonce"],
+            required=["ref", "request_nonce"],
             additionalProperties=False,
         ),
     ),
@@ -354,6 +387,34 @@ def _select_engine_path(*, domain=None, ref=None):
     ), True
 
 
+def _explain_route_ref(body):
+    """Return the reference that selects the engine for a single or batch read.
+
+    Batch refs must agree on their ``mindie://`` domain authority. The route
+    follows ``ref`` when present and otherwise the first ``refs`` item; the
+    complete list stays in the payload for the shared closure assembler.
+    """
+    ref = body.get("ref")
+    refs = body.get("refs")
+    if ref is not None and not isinstance(ref, str):
+        raise ValueError("ref must be a reference string")
+    if refs is not None:
+        if not isinstance(refs, list):
+            raise ValueError("refs must be an array of reference strings")
+        if any(not isinstance(item, str) or not item.strip() for item in refs):
+            raise ValueError("refs must contain nonempty reference strings")
+    requested = list(refs or ())
+    if ref is not None and ref not in requested:
+        requested.insert(0, ref)
+    if not requested:
+        raise ValueError("knowledge_explain requires ref or refs")
+    authorities = {domain_from_ref(item) for item in requested}
+    authorities.discard(None)
+    if len(authorities) > 1:
+        raise ValueError("knowledge_explain references must not mix mindie:// domain authorities")
+    return ref if ref is not None else refs[0]
+
+
 def _engine_for_call(name, body):
     """Resolve the target engine before reading its admission or public data."""
     if name in {"knowledge_query", "knowledge_distill"}:
@@ -362,7 +423,7 @@ def _engine_for_call(name, body):
             path, routed = _select_engine_path(domain=requested)
             return path, load_engine_config_at(path), routed
     elif name in {"knowledge_explain", "knowledge_feedback"}:
-        ref = body.get("ref")
+        ref = _explain_route_ref(body) if name == "knowledge_explain" else body.get("ref")
         supplied = body.pop("domain", None)
         if supplied is not None:
             path, routed = _select_engine_path(domain=supplied, ref=ref)
@@ -372,6 +433,30 @@ def _engine_for_call(name, body):
             return path, load_engine_config_at(path), routed
     path = engine_config_path()
     return path, load_engine_config_at(path), False
+
+
+def _knowledge_distill_call(engine_path, connection, body, session, token):
+    """Forward selected evidence with optional related refs or a proposal.
+
+    The historical paired helper accepts only the four base identity keys, so
+    optional delta/proposal fields use the same authenticated service route
+    directly. Calls without those fields keep their exact prior wire shape.
+    """
+    from mindie_knowledge.loop.cli import distill_selected, rpc
+
+    payload = {
+        "inputs": body.get("inputs"),
+        "task_state": body.get("task_state"),
+        "_session_id": session,
+        "_activation": token,
+    }
+    optional = {key: body[key] for key in ("related_refs", "proposal") if key in body}
+    if not optional:
+        return distill_selected(engine_path, payload)
+    payload.update(optional)
+    from mindie_knowledge.loop import summary_budget
+
+    return rpc(connection, "distill", payload, timeout=summary_budget.distill_rpc_timeout())
 
 
 def knowledge_call(name, args, session):
@@ -400,18 +485,19 @@ def knowledge_call(name, args, session):
             "task — the saved install-level choice is reused, nothing is re-asked"
         )
     method = name.removeprefix("knowledge_")
-    distill_selected = None
     token = None
     if method == "distill":
-        if set(body) != {"inputs", "task_state"}:
+        allowed = {"inputs", "task_state", "related_refs", "proposal"}
+        if not {"inputs", "task_state"} <= set(body) or not set(body) <= allowed:
             raise ValueError(
-                "knowledge_distill accepts only inputs, task_state and an optional domain"
+                "knowledge_distill accepts inputs, task_state and optional "
+                "related_refs/proposal plus an optional domain"
             )
         token = lease.get("token")
         if not isinstance(token, str) or not token:
             raise ValueError("distill requires an active capture lease")
         try:
-            from mindie_knowledge.loop.cli import distill_selected
+            from mindie_knowledge.loop.cli import distill_selected  # noqa: F401
         except ImportError as exc:
             raise ValueError("knowledge distill is unavailable in the installed runtime") from exc
     try:
@@ -419,15 +505,7 @@ def knowledge_call(name, args, session):
     except (OSError, ValueError, RuntimeError):
         connection = ensure_service(engine_path)
     if method == "distill":
-        return distill_selected(
-            engine_path,
-            {
-                "inputs": body.get("inputs"),
-                "task_state": body.get("task_state"),
-                "_session_id": session,
-                "_activation": token,
-            },
-        )
+        return _knowledge_distill_call(engine_path, connection, body, session, token)
     payload = dict(body, _session_id=session, _session_verified=True)
     if routed:
         payload["domain"] = engine["domain"]

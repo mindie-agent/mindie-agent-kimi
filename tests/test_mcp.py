@@ -328,7 +328,7 @@ class McpTests(unittest.TestCase):
 
             args = dict(
                 query="fixture", domain_path="ops/probes",
-                token_budget=123, include_unknown=True,
+                token_budget=123, include_unknown=True, include_archived=True,
             )
             with patch("knowledge_service.existing_service",
                        return_value={"url": "http://127.0.0.1:1", "token": "synthetic"}), \
@@ -339,9 +339,122 @@ class McpTests(unittest.TestCase):
             self.assertEqual(captured["payload"]["domain_path"], "ops/probes")
             self.assertEqual(captured["payload"]["token_budget"], 123)
             self.assertIs(captured["payload"]["include_unknown"], True)
+            self.assertIs(captured["payload"]["include_archived"], True)
             self.assertEqual(captured["payload"]["_session_id"], "ses_query")
             self.assertIs(captured["payload"]["_session_verified"], True)
             self.assertIsNone(captured["timeout"])
+
+    def test_knowledge_explain_batch_forwards_closure_arguments(self):
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            config = self.config(tmp)
+            os.environ["MINDIE_KIMI_CONFIG"] = str(config)
+            sys.path.insert(0, str(SCRIPTS))
+            import admission
+            import mcp_server
+
+            admission.activate("ses_explain", project_root=str(tmp.resolve()))
+            refs = [
+                "mindie://vllm-ascend/units/unit-a@1",
+                "mindie://vllm-ascend/units/unit-b@2",
+            ]
+            captured = {}
+
+            def fake_rpc(connection, method, payload, *, timeout=None):
+                captured.update(method=method, payload=payload, timeout=timeout)
+                return {"units": []}
+
+            args = dict(
+                refs=refs,
+                conditions={"soc": "Ascend910B"},
+                known_refs=[refs[0]],
+                token_budget=2048,
+            )
+            with patch("knowledge_service.existing_service",
+                       return_value={"url": "http://127.0.0.1:1", "token": "synthetic"}), \
+                    patch("mindie_knowledge.loop.cli.rpc", fake_rpc):
+                result = mcp_server.knowledge_call("knowledge_explain", args, "ses_explain")
+            self.assertEqual(result, {"units": []})
+            self.assertEqual(captured["method"], "explain")
+            self.assertEqual(captured["payload"]["refs"], refs)
+            self.assertEqual(captured["payload"]["conditions"], {"soc": "Ascend910B"})
+            self.assertEqual(captured["payload"]["known_refs"], [refs[0]])
+            self.assertEqual(captured["payload"]["token_budget"], 2048)
+            self.assertEqual(captured["payload"]["_session_id"], "ses_explain")
+            self.assertNotIn("request_nonce", captured["payload"])
+
+    def test_knowledge_explain_rejects_mixed_domain_authorities(self):
+        with tempfile.TemporaryDirectory() as raw:
+            config = self.config(Path(raw))
+            os.environ["MINDIE_KIMI_CONFIG"] = str(config)
+            sys.path.insert(0, str(SCRIPTS))
+            import mcp_server
+
+            args = {
+                "refs": [
+                    "mindie://vllm-ascend/units/unit-a@1",
+                    "mindie://operators/units/unit-b@2",
+                ],
+            }
+            with patch("knowledge_service.existing_service") as existing, \
+                    patch("knowledge_service.ensure_service") as ensure, \
+                    patch("mindie_knowledge.loop.cli.rpc") as rpc:
+                with self.assertRaisesRegex(ValueError, "domain authorities"):
+                    mcp_server.knowledge_call("knowledge_explain", args, "ses_explain")
+                existing.assert_not_called()
+                ensure.assert_not_called()
+                rpc.assert_not_called()
+
+    def test_knowledge_distill_forwards_related_refs_and_proposal(self):
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            config = self.config(tmp)
+            os.environ["MINDIE_KIMI_CONFIG"] = str(config)
+            sys.path.insert(0, str(SCRIPTS))
+            import admission
+            import mcp_server
+
+            lease = admission.activate("ses_distill_delta", project_root=str(tmp.resolve()))
+            proposal = {
+                "schema_version": "mindie-distill-decision/1",
+                "session_digest": "a" * 64,
+                "evidence_inputs": ["authorized_transcript"],
+                "action": "noop",
+                "drop_reason": "already_covered",
+                "units": [],
+            }
+            args = dict(
+                inputs=[{
+                    "kind": "authorized_transcript",
+                    "outcome": "verified",
+                    "source_locator": "fixture@abcdef1:probe.txt",
+                    "content": "verified fixture",
+                    "evidence_refs": ["fixture-observation"],
+                }],
+                task_state="verified_milestone",
+                related_refs=["unit-a", "mindie://vllm-ascend/units/unit-b@2"],
+                proposal=proposal,
+            )
+            captured = {}
+
+            def fake_rpc(connection, method, payload, *, timeout=None):
+                captured.update(method=method, payload=payload, timeout=timeout)
+                return {"status": "noop", "model_calls": 0}
+
+            with patch("knowledge_service.existing_service",
+                       return_value={"url": "http://127.0.0.1:1", "token": "synthetic"}), \
+                    patch("mindie_knowledge.loop.cli.rpc", fake_rpc):
+                result = mcp_server.knowledge_call(
+                    "knowledge_distill", args, "ses_distill_delta"
+                )
+            self.assertEqual(result["status"], "noop")
+            self.assertEqual(captured["method"], "distill")
+            self.assertEqual(captured["payload"]["related_refs"], args["related_refs"])
+            self.assertEqual(captured["payload"]["proposal"], proposal)
+            self.assertEqual(captured["payload"]["_session_id"], "ses_distill_delta")
+            self.assertEqual(captured["payload"]["_activation"], lease["token"])
+            self.assertNotIn("request_nonce", captured["payload"])
+            self.assertIsNotNone(captured["timeout"])
 
     def test_tool_arguments_reject_internal_identity_fields(self):
         import mcp_server
@@ -355,11 +468,11 @@ class McpTests(unittest.TestCase):
         )
         tools = {item["name"]: item for item in mcp_server.KNOWLEDGE_TOOLS}
         self.assertTrue({
-            "domain_path", "token_budget", "include_unknown",
+            "domain_path", "token_budget", "include_unknown", "include_archived",
         } <= set(tools["knowledge_query"]["inputSchema"]["properties"]))
         self.assertEqual(
             set(tools["knowledge_distill"]["inputSchema"]["properties"]),
-            {"inputs", "task_state", "domain", "request_nonce"},
+            {"inputs", "task_state", "related_refs", "proposal", "domain", "request_nonce"},
         )
         for field in ("_session_id", "_session_verified", "_activation", "mindie_activation"):
             with self.subTest(field=field), self.assertRaises(ValueError):
