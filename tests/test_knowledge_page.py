@@ -108,7 +108,7 @@ class KnowledgePageTests(unittest.TestCase):
         feedback = next(item for item in mcp_server.KNOWLEDGE_TOOLS if item["name"] == "knowledge_feedback")
         self.assertEqual(
             set(explain["inputSchema"]["properties"]),
-            {"ref", "refs", "conditions", "known_refs", "token_budget", "request_nonce"},
+            {"ref", "refs", "conditions", "known_refs", "token_budget", "run_id", "request_nonce"},
         )
         self.assertEqual(explain["inputSchema"]["required"], ["request_nonce"])
         self.assertIn("next_block_ref", explain["description"])
@@ -120,14 +120,14 @@ class KnowledgePageTests(unittest.TestCase):
             {
                 "query", "limit", "conditions", "continuation", "domain",
                 "domain_path", "token_budget", "include_unknown", "include_archived",
-                "request_nonce",
+                "navigation_only", "run_id", "request_nonce",
             },
         )
         self.assertEqual(
             set(feedback["inputSchema"]["properties"]),
             {
                 "ref", "rating", "reason", "event_type", "run_id", "step_id",
-                "outcome", "request_nonce",
+                "outcome", "evidence_source", "request_nonce",
             },
         )
         self.assertEqual(feedback["inputSchema"]["required"], ["ref", "request_nonce"])
