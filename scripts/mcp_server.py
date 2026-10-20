@@ -4,24 +4,32 @@
 [Role]
 Serves JSON-RPC 2.0 MCP requests (`initialize`, `ping`, `tools/list`,
 `tools/call`) for `mindie_entry`, `knowledge_query`, `knowledge_explain`,
-`knowledge_feedback`, and `remote-dev` tools.
+`knowledge_feedback`, `knowledge_distill`, and `remote-dev` tools.
 
 [Invariants]
 - Native task identity is never accepted from tool arguments (`sessionId`,
-  `thread_id`, or `session_id` on the `knowledge` surface are rejected).
+  `thread_id`, `session_id`, `_session_id`, `_session_verified`, `_activation`,
+  and `mindie_activation` on the `knowledge` surface are rejected).
 - Every `tools/call` requires a fresh `request_nonce` bound by native
   `PreToolUse` and claimed atomically before execution (`claim_nonce`).
+- Explicit knowledge domains select only the trusted install-level
+  `domain_configs` engine path; arbitrary paths and maps never enter tool
+  arguments. Unknown or conflicting domains fail instead of using the default.
+- Distillation requires an active capture lease from the selected target
+  engine's own admission store; default-domain authority is never forwarded.
 - Remote failures preserve `submission_state` (`not_sent`, `uncertain`,
   `acknowledged`) and job references so callers never blindly replay writes.
 
 [Timeouts & Locks]
 - Clamps `remote-dev` `yield_time_ms` to `MAX_YIELD_TIME_MS = 30000` (30s).
+- Distill forwarding uses the shared `distill_selected` summary budget plus
+  ledger/cleanup reserve, never the query deadline or an unbounded timeout.
 - Nonce claim uses SQLite `BEGIN IMMEDIATE` (`busy_timeout=5000`).
 
 [Side-Effect Policy]
 - Persists nonce claim/completion in `mcp-binds.sqlite3`, dispatches knowledge
-  RPCs to the local knowledge service, and creates `<state_dir>/remote/<session>`
-  directories for `remote-dev` calls.
+  RPCs to the selected local knowledge service, and creates
+  `<state_dir>/remote/<session>` directories for `remote-dev` calls.
 """
 
 from __future__ import annotations
@@ -37,7 +45,13 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 from identity import claim_nonce, finish_nonce, require_nonce
-from paths import load_engine_config, state_dir
+from paths import (
+    domain_configs,
+    domain_from_ref,
+    engine_config_path,
+    load_engine_config_at,
+    state_dir,
+)
 
 MAX_YIELD_TIME_MS = 30000
 REMOTE_ERROR_CATEGORIES = frozenset({
@@ -64,7 +78,9 @@ KNOWLEDGE_TOOLS = [
             "invocation; op=status can diagnose an already bound task. "
             "Requires a fresh request_nonce. Never pass a session id. "
             "op=init binds this task internally and reports missing configuration "
-            "or status; op=choose configures contribution or explicit disable "
+            "or status; an optional configured domain binds that target domain "
+            "separately without replacing the default-domain lease. op=choose "
+            "configures contribution or explicit disable "
             "(contribute/disabled) for knowledge sharing and sanitized fault reporting. A conversational contribution "
             "naming the public repository and account enables sharing for the "
             "current project; via the entry itself the destination comes from "
@@ -89,6 +105,10 @@ KNOWLEDGE_TOOLS = [
                 choice={"type": "string", "enum": ["contribute", "disabled"]},
                 repository={"type": "string", "description": "Public owner/repo the user stated for contribution."},
                 account={"type": "string", "description": "Public account name the user stated for contribution."},
+                domain={
+                    "type": "string",
+                    "description": "Installed canonical target domain to bind additionally; valid only with op=init.",
+                },
                 arguments={"type": "string"},
             ),
             required=["op", "request_nonce"],
@@ -98,10 +118,12 @@ KNOWLEDGE_TOOLS = [
     dict(
         name="knowledge_query",
         description=(
-            "Search the selected domain's knowledge and experience. Each match has a "
-            "readable block ref and a feedback_ref. For more related matches, pass "
-            "related_next as continuation without query. A changed corpus rejects "
-            "the continuation. References are advisory."
+            "Search graded rules and task material in the selected domain. Each match has a readable ref "
+            "and feedback_ref for its observed revision. Pass known task conditions to filter graded rules. "
+            "For related task blocks, pass related_next as continuation without query. "
+            "A changed corpus rejects the continuation. Pass domain only when the install "
+            "configures that domain; an unknown domain fails instead of using the default. "
+            "References are advisory."
         ),
         inputSchema=dict(
             type="object",
@@ -110,6 +132,13 @@ KNOWLEDGE_TOOLS = [
                 limit={"type": "integer", "minimum": 1, "maximum": 20},
                 conditions={"type": "object"},
                 continuation={"type": "string"},
+                domain={
+                    "type": "string",
+                    "description": "Installed canonical domain to search; omit for the default domain.",
+                },
+                domain_path={"type": "string"},
+                token_budget={"type": "integer", "minimum": 1, "maximum": 16000},
+                include_unknown={"type": "boolean"},
                 request_nonce=NONCE_PROP,
             ),
             required=["request_nonce"],
@@ -117,9 +146,70 @@ KNOWLEDGE_TOOLS = [
         ),
     ),
     dict(
+        name="knowledge_distill",
+        description=(
+            "Distill explicitly selected, already authorized evidence into graded "
+            "knowledge. Requires an active /mindie-agent task in the selected domain, "
+            "a fresh request_nonce, and an explicit task_state; ordinary Stop is not "
+            "completion. Inputs are the selected sanitized evidence only. The shared "
+            "runtime owns redaction, SummaryLedger, local admission, and any publication plan."
+        ),
+        inputSchema=dict(
+            type="object",
+            properties=dict(
+                inputs={
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "kind": {
+                                "type": "string",
+                                "description": (
+                                    "experiment_ledger | run_manifest | authorized_transcript | "
+                                    "ecosystem_repo | hardware_spec | ablation_receipt"
+                                ),
+                            },
+                            "outcome": {
+                                "type": "string",
+                                "description": (
+                                    "observed | verified | compile_failed | infra_failed | "
+                                    "measurement_invalid | in_flight"
+                                ),
+                            },
+                            "source_locator": {"type": "string"},
+                            "content": {"type": "string"},
+                            "evidence_refs": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                            "repetitions": {"type": "integer", "minimum": 1},
+                        },
+                        "required": [
+                            "kind", "outcome", "source_locator", "content", "evidence_refs",
+                        ],
+                        "additionalProperties": False,
+                    },
+                },
+                task_state={
+                    "type": "string",
+                    "enum": ["in_flight", "verified_milestone", "completed"],
+                },
+                domain={
+                    "type": "string",
+                    "description": "Installed canonical domain to distill into; omit for the default domain.",
+                },
+                request_nonce=NONCE_PROP,
+            ),
+            required=["inputs", "task_state", "request_nonce"],
+            additionalProperties=False,
+        ),
+    ),
+    dict(
         name="knowledge_explain",
         description=(
-            "Read one domain reference: a task ref returns the current navigation and "
+            "Read one domain reference: a graded-unit ref returns its exact current revision and conditions; "
+            "a task ref returns the current navigation and "
             "first_block_ref; a block ref returns that immutable block with "
             "previous_block_ref/next_block_ref for walking the task. "
             "The content is a reference slice, not the full case or a verified report."
@@ -136,7 +226,7 @@ KNOWLEDGE_TOOLS = [
     ),
     dict(
         name="knowledge_feedback",
-        description="Optional up/down vote for a consulted reference. Never required.",
+        description="Optional up/down vote: copy the exact feedback_ref returned by query/explain into ref. Never required.",
         inputSchema=dict(
             type="object",
             properties=dict(
@@ -223,7 +313,15 @@ def clamp_remote_args(args):
 
 
 def reject_native_identity_args(args, surface):
-    if "sessionId" in args or "thread_id" in args or ("session_id" in args and surface != "remote"):
+    if (
+        "sessionId" in args
+        or "thread_id" in args
+        or ("session_id" in args and surface != "remote")
+        or "_session_id" in args
+        or "_session_verified" in args
+        or "_activation" in args
+        or "mindie_activation" in args
+    ):
         raise ValueError("tool arguments must not include native session identity")
 
 
@@ -234,28 +332,106 @@ def strip_nonce(args, surface=None):
     return nonce, args
 
 
+def _select_engine_path(*, domain=None, ref=None):
+    """Select one trusted configured engine config without exposing path arguments."""
+    default = engine_config_path()
+    try:
+        from mindie_knowledge.loop.domain_routes import select_engine_config
+    except ModuleNotFoundError as exc:
+        if exc.name != "mindie_knowledge.loop.domain_routes":
+            raise
+        ref_domain = domain_from_ref(ref)
+        if domain is None and ref_domain is not None:
+            default_engine = load_engine_config_at(default)
+            if ref_domain == default_engine.get("domain"):
+                return default, False
+        raise ValueError(
+            "knowledge domain routing is unavailable in the installed runtime; "
+            "no default-domain substitution was attempted"
+        ) from exc
+    return select_engine_config(
+        default, domain=domain, ref=ref, domain_configs=domain_configs()
+    ), True
+
+
+def _engine_for_call(name, body):
+    """Resolve the target engine before reading its admission or public data."""
+    if name in {"knowledge_query", "knowledge_distill"}:
+        requested = body.pop("domain", None)
+        if requested is not None:
+            path, routed = _select_engine_path(domain=requested)
+            return path, load_engine_config_at(path), routed
+    elif name in {"knowledge_explain", "knowledge_feedback"}:
+        ref = body.get("ref")
+        supplied = body.pop("domain", None)
+        if supplied is not None:
+            path, routed = _select_engine_path(domain=supplied, ref=ref)
+            return path, load_engine_config_at(path), routed
+        if domain_from_ref(ref) is not None:
+            path, routed = _select_engine_path(ref=ref)
+            return path, load_engine_config_at(path), routed
+    path = engine_config_path()
+    return path, load_engine_config_at(path), False
+
+
 def knowledge_call(name, args, session):
     from knowledge_service import ensure_service, existing_service
     from mindie_knowledge.loop.activation import Admission
     from mindie_knowledge.loop.cli import rpc
-    from paths import admission_path, engine_config_path
+    from paths import admission_path
 
+    body = dict(args)
     if name == "knowledge_query":
         from mindie_knowledge.materials.provenance import query_request
 
-        query_request(args.get("query"), args.get("limit", 5), args.get("conditions"), args.get("continuation"))
-    engine = load_engine_config()
-    if Admission(admission_path(engine)).active_lease(session) is None:
+        query_request(body.get("query"), body.get("limit", 5), body.get("conditions"), body.get("continuation"))
+    engine_path, engine, routed = _engine_for_call(name, body)
+    lease = Admission(admission_path(engine)).active_lease(session)
+    # A bound native task may read a configured public domain without granting
+    # that domain contribution rights. Mutations still need its own lease.
+    read_bound = False
+    if lease is None and routed and name in {"knowledge_query", "knowledge_explain"}:
+        default_engine = load_engine_config_at(engine_config_path())
+        read_bound = Admission(admission_path(default_engine)).active_lease(session) is not None
+    if lease is None and not read_bound:
+        domain_note = f" for domain {engine['domain']}" if routed else ""
         raise ValueError(
-            "this task is not bound yet; invoke /mindie-agent once in this "
+            f"this task is not bound yet{domain_note}; invoke /mindie-agent once in this "
             "task — the saved install-level choice is reused, nothing is re-asked"
         )
     method = name.removeprefix("knowledge_")
+    distill_selected = None
+    token = None
+    if method == "distill":
+        if set(body) != {"inputs", "task_state"}:
+            raise ValueError(
+                "knowledge_distill accepts only inputs, task_state and an optional domain"
+            )
+        token = lease.get("token")
+        if not isinstance(token, str) or not token:
+            raise ValueError("distill requires an active capture lease")
+        try:
+            from mindie_knowledge.loop.cli import distill_selected
+        except ImportError as exc:
+            raise ValueError("knowledge distill is unavailable in the installed runtime") from exc
     try:
-        connection = existing_service(engine_config_path())
+        connection = existing_service(engine_path)
     except (OSError, ValueError, RuntimeError):
-        connection = ensure_service(engine_config_path())
-    return rpc(connection, method, dict(args, _session_id=session, _session_verified=True), timeout=None)
+        connection = ensure_service(engine_path)
+    if method == "distill":
+        return distill_selected(
+            engine_path,
+            {
+                "inputs": body.get("inputs"),
+                "task_state": body.get("task_state"),
+                "_session_id": session,
+                "_activation": token,
+            },
+        )
+    payload = dict(body, _session_id=session, _session_verified=True)
+    if routed:
+        payload["domain"] = engine["domain"]
+    return rpc(connection, method, payload, timeout=None)
 
 
 def remote_tools():
@@ -303,7 +479,7 @@ def handle(surface, message):
             result=dict(
                 protocolVersion="2025-11-25",
                 capabilities={"tools": {}},
-                serverInfo={"name": f"mindie-kimi-{surface}", "version": "0.0.2"},
+                serverInfo={"name": f"mindie-kimi-{surface}", "version": "0.0.3"},
             ),
         )
     if method == "ping":
@@ -338,12 +514,20 @@ def handle(surface, message):
             payload = dispatch(
                 session, cwd, body.get("op"), body.get("arguments") or "",
                 body.get("choice"), repository=body.get("repository"),
-                account=body.get("account"),
+                account=body.get("account"), domain=body.get("domain"),
             )
-            result = dict(content=[dict(type="text", text=canonical(payload))], structuredContent=payload, isError=False)
+            result = dict(
+                content=[dict(type="text", text=canonical(payload))],
+                structuredContent=payload,
+                isError=body.get("op") == "deactivate" and payload.get("status") == "partial",
+            )
         elif surface == "knowledge":
             payload = knowledge_call(name, body, session)
-            result = dict(content=[dict(type="text", text=canonical(payload))], structuredContent=payload, isError=False)
+            is_error = False
+            if name == "knowledge_distill":
+                from mindie_knowledge.graded.distill import result_view
+                payload, is_error = result_view(payload)
+            result = dict(content=[dict(type="text", text=canonical(payload))], structuredContent=payload, isError=is_error)
         else:
             try:
                 payload = remote_call(name, body, session)
@@ -357,7 +541,7 @@ def handle(surface, message):
             )
         succeeded = result.get("isError") is not True
         return dict(jsonrpc="2.0", id=ident, result=result)
-    except (ValueError, OSError, RuntimeError, KeyError, TypeError) as exc:
+    except (ValueError, OSError, RuntimeError, KeyError, TypeError, ImportError) as exc:
         return dict(jsonrpc="2.0", id=ident, result=failure(exc))
     finally:
         if nonce is not None:

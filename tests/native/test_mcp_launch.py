@@ -74,7 +74,7 @@ class NativeMcpLaunchTests(unittest.TestCase):
             genstate.write_current(dict(generation=str(TESTS.parent), python=sys.executable,
                                         adapter_config=str(config), sha=sha), adapter)
             manifest = json.loads((package / "kimi.plugin.json").read_text())
-            expected = {"knowledge": {"mindie_entry", "knowledge_query", "knowledge_explain"},
+            expected = {"knowledge": {"mindie_entry", "knowledge_query", "knowledge_explain", "knowledge_distill"},
                         "remote": {"remote_read", "remote_bash", "remote_job_status"}}
             for surface, server in manifest["mcpServers"].items():
                 with self.subTest(surface=surface):

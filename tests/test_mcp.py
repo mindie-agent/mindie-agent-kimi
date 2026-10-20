@@ -5,11 +5,18 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from support import SCRIPTS, env_for, make_config, plugin_origin, turn_records, write_session
 
 
 class McpTests(unittest.TestCase):
+    def config(self, tmp):
+        import support
+
+        with patch.object(support, "redactor_executable", return_value=sys.executable):
+            return make_config(tmp)
+
     def rpc(self, proc, message):
         proc.stdin.write(json.dumps(message) + "\n")
         proc.stdin.flush()
@@ -42,7 +49,10 @@ class McpTests(unittest.TestCase):
                 names = {item["name"] for item in listed["result"]["tools"]}
                 self.assertEqual(
                     names,
-                    {"mindie_entry", "knowledge_query", "knowledge_explain", "knowledge_feedback"},
+                    {
+                        "mindie_entry", "knowledge_query", "knowledge_explain",
+                        "knowledge_feedback", "knowledge_distill",
+                    },
                 )
                 missing = self.rpc(
                     proc,
@@ -182,6 +192,178 @@ class McpTests(unittest.TestCase):
                 proc.stdin.close()
                 proc.kill()
                 proc.wait(timeout=2)
+
+    def test_knowledge_distill_forwards_capture_lease_from_registered_entry(self):
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            config = self.config(tmp)
+            os.environ["MINDIE_KIMI_CONFIG"] = str(config)
+            sys.path.insert(0, str(SCRIPTS))
+            import admission
+            import identity
+            import mcp_server
+
+            lease = admission.activate("ses_distill", project_root=str(tmp.resolve()))
+            args = dict(
+                inputs=[{
+                    "kind": "authorized_transcript",
+                    "outcome": "in_flight",
+                    "source_locator": "fixture@abcdef1:probe.txt",
+                    "content": "in-flight fixture",
+                    "evidence_refs": ["fixture-observation"],
+                    "repetitions": 1,
+                }],
+                task_state="in_flight",
+                request_nonce="nonce-distill1",
+            )
+            identity.publish_nonce_bind(
+                "ses_distill",
+                "nonce-distill1",
+                "mcp__plugin-mindie-agent_knowledge__knowledge_distill",
+                "tool_distill1",
+                args,
+            )
+            captured = {}
+
+            def fake_distill(path, payload):
+                captured.update(path=path, payload=payload)
+                return {"status": "noop", "model_calls": 0}
+
+            with patch("knowledge_service.existing_service",
+                       return_value={"url": "http://127.0.0.1:1", "token": "synthetic"}), \
+                    patch("mindie_knowledge.loop.cli.distill_selected", fake_distill):
+                response = mcp_server.handle("knowledge", dict(
+                    jsonrpc="2.0", id=30, method="tools/call",
+                    params=dict(name="knowledge_distill", arguments=args),
+                ))
+            self.assertFalse(response["result"]["isError"], response)
+            self.assertEqual(response["result"]["structuredContent"]["status"], "noop")
+            self.assertEqual(response["result"]["structuredContent"]["model_calls"], 0)
+            self.assertEqual(response["result"]["structuredContent"]["operation_status"], "completed")
+            self.assertEqual(captured["payload"], {
+                "inputs": args["inputs"],
+                "task_state": "in_flight",
+                "_session_id": "ses_distill",
+                "_activation": lease["token"],
+            })
+            self.assertNotIn("_session_verified", captured["payload"])
+            self.assertNotIn("request_nonce", captured["payload"])
+
+    def test_distill_status_preserves_paid_result_and_rejects_uncertain_execution(self):
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            os.environ["MINDIE_KIMI_CONFIG"] = str(self.config(tmp))
+            sys.path.insert(0, str(SCRIPTS))
+            import admission
+            import identity
+            import mcp_server
+
+            admission.activate("ses_distill", project_root=str(tmp.resolve()))
+            for number, status in enumerate(("failed", "outcome_unknown", "invoking",
+                                            "local_receipt_failed", "local_application_failed"), 50):
+                preserved = status.startswith("local_")
+                args = dict(inputs=[{"kind": "authorized_transcript", "outcome": "observed",
+                                     "source_locator": "fixture@abcdef1:probe.txt", "content": "Fixture.",
+                                     "evidence_refs": ["fixture-observation"]}],
+                            task_state="completed", request_nonce=f"nonce-distill{number}")
+                identity.publish_nonce_bind("ses_distill", args["request_nonce"],
+                    "mcp__plugin-mindie-agent_knowledge__knowledge_distill", f"tool_distill{number}", args)
+                payload = {"status": status, "attempt_id": "fixture-attempt", "model_replayed": False}
+                if preserved:
+                    payload.update(model_execution="completed", model_status="returned",
+                        local_error={"stage": "receipt", "message": "controlled storage failure"},
+                        result={"schema_version": "mindie-distill-decision/1", "session_digest": "a" * 64,
+                                "evidence_inputs": [], "action": "noop", "drop_reason": "already_covered", "units": []})
+                with self.subTest(status=status), \
+                        patch("knowledge_service.existing_service", return_value={"url": "http://127.0.0.1:1", "token": "fixture"}), \
+                        patch("mindie_knowledge.loop.cli.distill_selected", return_value=payload):
+                    response = mcp_server.handle("knowledge", dict(jsonrpc="2.0", id=number, method="tools/call",
+                        params=dict(name="knowledge_distill", arguments=args)))["result"]
+                    self.assertIs(response["isError"], not preserved)
+                    self.assertEqual(response["structuredContent"]["operation_status"], status)
+                    if preserved:
+                        self.assertEqual(response["structuredContent"]["result"], payload["result"])
+                        self.assertIn("do not repeat", response["structuredContent"]["operation_message"])
+
+    def test_knowledge_distill_unbound_never_starts_service_or_model(self):
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            config = self.config(tmp)
+            os.environ["MINDIE_KIMI_CONFIG"] = str(config)
+            sys.path.insert(0, str(SCRIPTS))
+            import mcp_server
+
+            args = dict(
+                inputs=[{
+                    "kind": "authorized_transcript", "outcome": "in_flight",
+                    "source_locator": "fixture@abcdef1:probe.txt",
+                    "content": "in-flight fixture", "evidence_refs": ["fixture-observation"],
+                }],
+                task_state="in_flight",
+            )
+            with patch("knowledge_service.existing_service") as existing, \
+                    patch("knowledge_service.ensure_service") as ensure, \
+                    patch("mindie_knowledge.loop.cli.distill_selected") as distill:
+                with self.assertRaisesRegex(ValueError, "not bound"):
+                    mcp_server.knowledge_call("knowledge_distill", args, "ses_unbound")
+                existing.assert_not_called()
+                ensure.assert_not_called()
+                distill.assert_not_called()
+
+    def test_knowledge_query_forwards_graded_filters_to_shared_runtime(self):
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            config = self.config(tmp)
+            os.environ["MINDIE_KIMI_CONFIG"] = str(config)
+            sys.path.insert(0, str(SCRIPTS))
+            import admission
+            import mcp_server
+
+            admission.activate("ses_query", project_root=str(tmp.resolve()))
+            captured = {}
+
+            def fake_rpc(connection, method, payload, *, timeout=None):
+                captured.update(method=method, payload=payload, timeout=timeout)
+                return {"results": []}
+
+            args = dict(
+                query="fixture", domain_path="ops/probes",
+                token_budget=123, include_unknown=True,
+            )
+            with patch("knowledge_service.existing_service",
+                       return_value={"url": "http://127.0.0.1:1", "token": "synthetic"}), \
+                    patch("mindie_knowledge.loop.cli.rpc", fake_rpc):
+                result = mcp_server.knowledge_call("knowledge_query", args, "ses_query")
+            self.assertEqual(result, {"results": []})
+            self.assertEqual(captured["method"], "query")
+            self.assertEqual(captured["payload"]["domain_path"], "ops/probes")
+            self.assertEqual(captured["payload"]["token_budget"], 123)
+            self.assertIs(captured["payload"]["include_unknown"], True)
+            self.assertEqual(captured["payload"]["_session_id"], "ses_query")
+            self.assertIs(captured["payload"]["_session_verified"], True)
+            self.assertIsNone(captured["timeout"])
+
+    def test_tool_arguments_reject_internal_identity_fields(self):
+        import mcp_server
+
+        self.assertEqual(
+            {item["name"] for item in mcp_server.KNOWLEDGE_TOOLS},
+            {
+                "mindie_entry", "knowledge_query", "knowledge_explain",
+                "knowledge_feedback", "knowledge_distill",
+            },
+        )
+        tools = {item["name"]: item for item in mcp_server.KNOWLEDGE_TOOLS}
+        self.assertTrue({
+            "domain_path", "token_budget", "include_unknown",
+        } <= set(tools["knowledge_query"]["inputSchema"]["properties"]))
+        self.assertEqual(
+            set(tools["knowledge_distill"]["inputSchema"]["properties"]),
+            {"inputs", "task_state", "domain", "request_nonce"},
+        )
+        for field in ("_session_id", "_session_verified", "_activation", "mindie_activation"):
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                mcp_server.reject_native_identity_args({field: "spoof"}, "knowledge")
 
     def test_unconfigured_mindie_entry_init_returns_choices(self):
         with tempfile.TemporaryDirectory() as raw:

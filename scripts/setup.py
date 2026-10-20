@@ -362,13 +362,12 @@ def main():
             **__import__("capture_config").prepare(python, bootstrap_root / "scripts"),
             community_config=str(community_config),
         )
-        if args.domain == "vllm-ascend" and not args.no_public_feed:
-            value["feeds"] = [
-                dict(
-                    repository="mindie-agent/knowledge-vllm-ascend",
-                    ref="main", domain="vllm-ascend", interval_seconds=300,
-                )
-            ]
+        if not args.no_public_feed:
+            from capture_config import PUBLIC_FEEDS
+
+            feed = next((dict(row) for row in PUBLIC_FEEDS if row["domain"] == args.domain), None)
+            if feed is not None:
+                value["feeds"] = [feed]
         write_private(engine_config, value)
         kimi_home = (
             args.kimi_home.expanduser().absolute()
@@ -399,6 +398,11 @@ def main():
             git_bin = None
         if git_bin is not None:
             adapter_value["git_bin"] = git_bin
+        from capture_config import prepare_domains
+        adapter_value['domain_configs'] = prepare_domains(
+            python, adapter_value, value, config_directory=str(config.with_name(config.stem + '.domains')),
+            authority_directory=str(config.parent / 'knowledge-domains'),
+            consent_config=str(config.with_name('mindie-consent.json')), public_feeds=not args.no_public_feed)
         write_private(config, adapter_value)
         sharing = write_community(
             community_config, community,

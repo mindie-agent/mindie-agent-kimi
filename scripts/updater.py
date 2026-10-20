@@ -307,6 +307,10 @@ def _profile_authority_sources(adapter: dict):
 
 
 def write_generation_configs(generation: Path, python: Path, adapter: dict) -> Path:
+    current = read_current(adapter)
+    active = read_json(Path(current['adapter_config']))
+    if active is not None:
+        adapter = active
     engine = load_engine_config(adapter)
     engine.pop("agent_command", None)
     padapter, pengine = _profile_authority_sources(adapter)
@@ -359,6 +363,13 @@ def write_generation_configs(generation: Path, python: Path, adapter: dict) -> P
             git_bin = None
     if isinstance(git_bin, str) and git_bin:
         gen_adapter_value["git_bin"] = git_bin
+    gen_adapter_value['domain_source_configs'] = dict(adapter.get('domain_configs') or {})
+    from capture_config import prepare_domains
+    gen_adapter_value['domain_configs'] = prepare_domains(
+        python, gen_adapter_value, read_json(gen_engine), config_directory=str(config_dir / 'domains'),
+        authority_directory=str(Path(profile).parent / 'knowledge-domains'),
+        consent_config=str(Path(profile).with_name('mindie-consent.json')),
+        public_feeds=bool(engine.get('feeds')))
     atomic_write(gen_adapter, gen_adapter_value)
     return gen_adapter
 
@@ -463,6 +474,16 @@ def stage_generation(
         python = _venv_python(target / ".venv")
         gen_adapter = target / "config" / "kimi.adapter.json"
         if python.exists() and gen_adapter.is_file():
+            current = read_current(adapter)
+            active, candidate = read_json(Path(current['adapter_config'])), read_json(gen_adapter)
+            if (current.get('sha') != sha and active is not None and candidate is not None
+                    and candidate.get('domain_source_configs') != (active.get('domain_configs') or {})):
+                # A refreshed but unpublished generation is complete only
+                # after both its binding and host package were rebuilt.
+                (target / COMPLETE).unlink()
+                gen_adapter = write_generation_configs(target, python, active)
+                build_host_package(target, active, sha, config_file=gen_adapter)
+                (target / COMPLETE).write_text(f"{sha}\n")
             return target, python, gen_adapter
         _remove_owned_tree(target)
     elif target.exists():
@@ -646,8 +667,21 @@ def switch(
         raise LockTimeout("no time left for the exclusive switch lock")
     with OperationLock(adapter).exclusive(timeout=wait):
         try:
+            prior = read_json(Path(current['adapter_config']))
+            next_adapter = read_json(gen_adapter)
+            if ('domain_source_configs' in next_adapter
+                    and (prior.get('domain_configs') or {}) != next_adapter['domain_source_configs']):
+                raise Deferred('domain routes changed during preparation; switch deferred')
             idle_result = idle(adapter, current, deadline)
             stopped = idle_result.get("service") == "stopped"
+            for domain, path in (prior.get('domain_configs') or {}).items():
+                if path == prior['engine_config'] or (next_adapter.get('domain_configs') or {}).get(domain) == path:
+                    continue
+                result = json.loads(bounded_run(
+                    [current['python'], str(HERE / 'service_handoff.py'), 'stop', path], '',
+                    timeout=_op_timeout(deadline, RESERVE, 5)))
+                if result.get('idle') is not True:
+                    raise Deferred('domain ' + domain + ' has active work; switch deferred')
             native_attempted = True
             install(adapter, generation / "host-package", deadline)
             final = {

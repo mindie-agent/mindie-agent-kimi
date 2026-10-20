@@ -1,5 +1,6 @@
 """[Role] Canonical path and binary resolution authority for the Kimi adapter.
 [Invariants] Profile authority paths anchor at profile_config_path() (never per-generation forks); never mutates ~/.kimi.
+[Invariants] domain_configs comes from the selected native generation; profile consent remains shared. Values stay absolute engine-config paths for core selection.
 [Timeouts & Locks] Pure filesystem metadata and JSON config reads; zero locks or subprocesses.
 [Side-Effect Policy] Strictly read-only path and configuration resolution.
 """
@@ -9,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -56,6 +58,27 @@ def profile_config_path() -> Path:
     return path
 
 
+_DOMAIN_REF = re.compile(r"mindie://(?P<domain>[a-z][a-z0-9-]{0,63})/")
+
+
+def domain_from_ref(ref):
+    """Return the canonical authority domain of a mindie reference, if any."""
+    match = _DOMAIN_REF.match(ref) if isinstance(ref, str) else None
+    return match.group("domain") if match else None
+
+
+def domain_configs(config=None) -> dict | None:
+    """Trusted domain map of the generation selected by the native launcher."""
+    if config is None:
+        config = load_adapter_config()
+    value = config.get("domain_configs")
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("adapter configuration domain_configs must be a mapping")
+    return value
+
+
 def load_adapter_config() -> dict:
     path = config_path()
     if not path.is_file():
@@ -74,13 +97,17 @@ def engine_config_path(config=None) -> Path:
     return Path(value)
 
 
-def load_engine_config(config=None) -> dict:
-    data = json.loads(engine_config_path(config).read_text(encoding="utf-8"))
+def load_engine_config_at(path) -> dict:
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(data, dict) or not {"root", "domain"} <= set(data):
         raise ValueError("engine configuration requires root and domain")
     if "session_activation" in data:
         raise ValueError("session_activation was removed; use admission_path")
     return data
+
+
+def load_engine_config(config=None) -> dict:
+    return load_engine_config_at(engine_config_path(config))
 
 
 def admission_path(engine=None) -> Path:
