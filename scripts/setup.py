@@ -15,8 +15,8 @@ package, and registers the automatic update schedule.
   via `probe_runtime`.
 
 [Timeouts & Locks]
-- Runtime probe timeout: `15s`; `ensurepip` probe: `15s`; `create_venv`: `180s`;
-  `pip install`: `600s`.
+- Runtime probe timeout: `15s`; `create_venv`: `180s`;
+  `uv pip install`: `600s`.
 
 [Side-Effect Policy]
 - Creates `<root>/kimi/bootstrap-venv`, stages `<state_dir>/update/generations/bootstrap`,
@@ -253,45 +253,33 @@ def write_community(path, community, consent_config=None, python=None):
     return "enabled" if result["enabled"] else "off"
 
 
-def ensurepip_available(python=None) -> bool:
-    try:
-        probe = subprocess.run(
-            [str(python or sys.executable), "-m", "ensurepip", "--version"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15,
-        )
-        return probe.returncode == 0
-    except (OSError, subprocess.TimeoutExpired):
-        return False
+def installer_environment():
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", UV_NO_PROGRESS="1")
+    if "UV_SYSTEM_CERTS" not in env:
+        env.setdefault("UV_NATIVE_TLS", "true")
+    return env
 
 
 def create_venv(venv: Path, *, timeout) -> None:
-    if ensurepip_available():
-        run([sys.executable, "-m", "venv", str(venv)], "", timeout=timeout)
-        return
     uv = shutil.which("uv")
     if uv is None:
-        raise SystemExit(
-            "python venv support is missing (ensurepip is unavailable) and uv "
-            "was not found on PATH; install the python3-venv OS package "
-            "(e.g. apt install python3.12-venv) or uv, then rerun setup"
-        )
-    run([uv, "venv", "--seed", str(venv)], "", timeout=timeout)
+        raise RuntimeError("uv is required to prepare the MindIE runtime")
+    run([uv, "venv", "--python", sys.executable, str(venv)], "",
+        timeout=timeout, env=installer_environment())
 
 
 def build_bootstrap_runtime(domain_root: Path) -> str:
     venv = domain_root / "bootstrap-venv"
     python = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-    if python.exists():
-        return str(python)
-    env = dict(
-        os.environ,
-        PIP_RETRIES="0", PIP_NO_INPUT="1",
-        PIP_DISABLE_PIP_VERSION_CHECK="1", GIT_TERMINAL_PROMPT="0",
-    )
-    create_venv(venv, timeout=180)
+    uv = shutil.which("uv")
+    if uv is None:
+        raise RuntimeError("uv is required to prepare the MindIE runtime")
+    if not python.is_file():
+        create_venv(venv, timeout=180)
     run(
-        [str(python), "-m", "pip", "install", "-r", str(PLUGIN_ROOT / "runtime-requirements.txt")],
-        "", timeout=600, max_output=512 * 1024, env=env,
+        [uv, "pip", "install", "--python", str(python),
+         "-r", str(PLUGIN_ROOT / "runtime-requirements.txt")],
+        "", timeout=600, max_output=512 * 1024, env=installer_environment(),
     )
     return str(python)
 

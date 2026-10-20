@@ -373,10 +373,7 @@ class UpdaterTests(unittest.TestCase):
 
         # Session-0-style environment: no git and no uv on PATH. The pinned
         # binary resolves the remote anyway; the build keeps its own fakes.
-        with patch.dict(updater.GIT_ENV, {"PATH": "/nonexistent-mindie"}), \
-             patch.dict(updater.UV_ENV, {"PATH": "/nonexistent-mindie"}), \
-             patch.dict(updater.PIP_ENV, {"PATH": "/nonexistent-mindie"}), \
-             patch.dict(os.environ, {"PATH": "/nonexistent-mindie"}):
+        with patch.dict(os.environ, {"PATH": "/nonexistent-mindie"}):
             self.assertEqual(self.run_check(), 0)
         status = genstate.read_status(self.adapter)
         self.assertEqual(status["result"], "switched")
@@ -390,12 +387,8 @@ class UpdaterTests(unittest.TestCase):
 
         git = shutil_mod.which("git")
         self.assertIsNotNone(git, "test requires git on PATH")
-        standard = self.tmp / "std-git" / ("git.exe" if os.name == "nt" else "git")
-        standard.parent.mkdir()
-        try:
-            os.symlink(git, standard)
-        except (OSError, NotImplementedError):
-            shutil_mod.copy2(git, standard)
+        # Git for Windows resolves helpers relative to its installed executable.
+        standard = Path(git).resolve()
         self.assertNotIn("git_bin", self.adapter)
         # Simulate the nt standard-dir branch with real paths: replace
         # paths.os (the module uses only environ/path/name) instead of
@@ -410,8 +403,7 @@ class UpdaterTests(unittest.TestCase):
 
         with patch("paths.shutil.which", return_value=None), \
              patch("paths.GIT_WINDOWS_LOCATIONS", (str(standard),)), \
-             patch.object(paths, "os", fake_os), \
-             patch.dict(updater.GIT_ENV, {"PATH": "/nonexistent-mindie"}):
+             patch.object(paths, "os", fake_os):
             self.assertEqual(updater._git_bin(), str(standard))
             self.assertEqual(self.run_check(), 0)
         status = genstate.read_status(self.adapter)
@@ -925,26 +917,10 @@ class BuildRuntimeAndFailureClassTests(unittest.TestCase):
             install = next(argv for argv, _kw in calls if "install" in argv)
             self.assertEqual(install[0], found_uv)
             self.assertEqual(install[1:3], ["pip", "install"])
+            for argv, options in calls:
+                self.assertEqual(options["env"]["UV_NATIVE_TLS"], "true")
             self.assertIn("--python", install)
-            self.assertEqual(calls[0][0][1:3], ["-m", "venv"])
-
-    def test_build_runtime_falls_back_to_pip_without_uv(self):
-        with tempfile.TemporaryDirectory() as raw:
-            generation = self._generation(Path(raw))
-            which, run, calls = self._build_calls(lambda _name: None)
-            with which, run:
-                updater.build_runtime(generation, time.monotonic() + 240)
-            install = next(argv for argv, _kw in calls if "install" in argv)
-            self.assertEqual(Path(install[0]).name.split(".")[0], "python")
-            self.assertEqual(install[1:4], ["-m", "pip", "install"])
-
-    def test_missing_uv_is_not_an_error(self):
-        with tempfile.TemporaryDirectory() as raw:
-            generation = self._generation(Path(raw))
-            which, run, _calls = self._build_calls(lambda _name: None)
-            with which, run:
-                python = updater.build_runtime(generation, time.monotonic() + 240)
-            self.assertEqual(python, updater._venv_python(generation / ".venv"))
+            self.assertEqual(calls[0][0][1:3], ["venv", "--python"])
 
     def test_staging_deadline_is_not_reported_as_network_failure(self):
         # bounded attaches temporary_network to a transport timeout as a
@@ -976,7 +952,7 @@ class BuildRuntimeAndFailureClassTests(unittest.TestCase):
                                       category="certificate")
         self.assertEqual(updater._failure_category(err), "certificate")
 
-    def test_build_runtime_falls_back_to_uv_venv_without_ensurepip(self):
+    def test_build_runtime_without_uv_fails_visibly(self):
         import setup as setup_mod
         from unittest.mock import patch
 
@@ -984,31 +960,11 @@ class BuildRuntimeAndFailureClassTests(unittest.TestCase):
             generation = self._generation(Path(raw))
             calls = []
             run = lambda argv, stdin, **kw: calls.append((list(argv), kw)) or ""
-            with patch.object(setup_mod, "ensurepip_available", return_value=False), \
-                 patch.object(updater.shutil, "which",
-                              side_effect=lambda name: "/usr/local/bin/uv" if name == "uv" else None), \
-                 patch.object(updater, "bounded_run", side_effect=run):
-                updater.build_runtime(generation, time.monotonic() + 240)
-            self.assertEqual(calls[0][0][:3], ["/usr/local/bin/uv", "venv", "--seed"])
-            install = next(argv for argv, _kw in calls if "install" in argv)
-            self.assertEqual(install[0], "/usr/local/bin/uv")
-            self.assertEqual(install[1:3], ["pip", "install"])
-
-    def test_build_runtime_without_ensurepip_or_uv_fails_visibly(self):
-        import setup as setup_mod
-        from unittest.mock import patch
-
-        with tempfile.TemporaryDirectory() as raw:
-            generation = self._generation(Path(raw))
-            calls = []
-            run = lambda argv, stdin, **kw: calls.append((list(argv), kw)) or ""
-            with patch.object(setup_mod, "ensurepip_available", return_value=False), \
-                 patch.object(updater.shutil, "which", return_value=None), \
+            with patch.object(updater.shutil, "which", return_value=None), \
                  patch.object(updater, "bounded_run", side_effect=run):
                 with self.assertRaises(updater.CheckFailed) as caught:
                     updater.build_runtime(generation, time.monotonic() + 240)
             message = str(caught.exception)
-            self.assertIn("python3-venv", message)
             self.assertIn("uv", message)
             self.assertEqual(calls, [])
 

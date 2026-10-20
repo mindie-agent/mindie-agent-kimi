@@ -234,55 +234,43 @@ class SetupInstallTests(unittest.TestCase):
                 Path(sys.executable).resolve(),
             )
 
-    def test_bootstrap_runtime_uses_stdlib_venv_when_ensurepip_present(self):
+    def test_bootstrap_uses_system_trust_and_repairs_an_interrupted_install(self):
         sys.path.insert(0, str(SCRIPTS))
         import setup
+        from unittest.mock import patch
 
         with tempfile.TemporaryDirectory() as raw:
-            tmp = Path(raw)
+            root = Path(raw)
+            python = root / "bootstrap-venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
             calls = []
-            from unittest.mock import patch
+            def run(argv, stdin, **options):
+                calls.append((argv, options))
+                if argv[1] == "venv":
+                    python.parent.mkdir(parents=True)
+                    python.touch()
+                elif len(calls) == 2:
+                    raise RuntimeError("download interrupted")
+                return ""
+            with patch.object(setup.shutil, "which", return_value="uv"), \
+                    patch.object(setup, "run", side_effect=run), \
+                    patch.dict(os.environ, {"UV_NATIVE_TLS": "true", "SSL_CERT_FILE": "company.pem"}):
+                with self.assertRaisesRegex(RuntimeError, "download interrupted"):
+                    setup.build_bootstrap_runtime(root)
+                self.assertEqual(setup.build_bootstrap_runtime(root), str(python))
+            self.assertEqual([argv[1] for argv, _ in calls], ["venv", "pip", "pip"])
+            for argv, options in calls:
+                self.assertEqual(options["env"]["UV_NATIVE_TLS"], "true")
+                self.assertEqual(options["env"]["SSL_CERT_FILE"], "company.pem")
 
-            with patch.object(setup, "ensurepip_available", return_value=True), \
-                 patch.object(setup.shutil, "which", return_value=None), \
-                 patch.object(setup, "run", side_effect=lambda argv, stdin, **kw: calls.append(list(argv)) or ""):
-                setup.build_bootstrap_runtime(tmp)
-            self.assertEqual(calls[0][:3], [sys.executable, "-m", "venv"])
-            self.assertEqual(calls[1][1:4], ["-m", "pip", "install"])
-
-    def test_bootstrap_runtime_falls_back_to_uv_venv_without_ensurepip(self):
+    def test_bootstrap_without_uv_fails_before_creating_runtime(self):
         sys.path.insert(0, str(SCRIPTS))
         import setup
-
+        from unittest.mock import patch
         with tempfile.TemporaryDirectory() as raw:
-            tmp = Path(raw)
-            calls = []
-            from unittest.mock import patch
-
-            with patch.object(setup, "ensurepip_available", return_value=False), \
-                 patch.object(setup.shutil, "which", return_value="/usr/local/bin/uv"), \
-                 patch.object(setup, "run", side_effect=lambda argv, stdin, **kw: calls.append(list(argv)) or ""):
-                setup.build_bootstrap_runtime(tmp)
-            self.assertEqual(
-                calls[0][:3], ["/usr/local/bin/uv", "venv", "--seed"]
-            )
-            self.assertEqual(calls[1][1:4], ["-m", "pip", "install"])
-
-    def test_bootstrap_runtime_without_ensurepip_or_uv_names_both_remedies(self):
-        sys.path.insert(0, str(SCRIPTS))
-        import setup
-
-        with tempfile.TemporaryDirectory() as raw:
-            tmp = Path(raw)
-            from unittest.mock import patch
-
-            with patch.object(setup, "ensurepip_available", return_value=False), \
-                 patch.object(setup.shutil, "which", return_value=None):
-                with self.assertRaises(SystemExit) as caught:
-                    setup.build_bootstrap_runtime(tmp)
-            message = str(caught.exception)
-            self.assertIn("python3-venv", message)
-            self.assertIn("uv", message)
+            with patch.object(setup.shutil, "which", return_value=None):
+                with self.assertRaisesRegex(RuntimeError, "uv is required"):
+                    setup.build_bootstrap_runtime(Path(raw))
+            self.assertFalse((Path(raw) / "bootstrap-venv").exists())
 
     def test_requirements_are_pinned_commits(self):
         expected = {

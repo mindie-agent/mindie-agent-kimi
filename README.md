@@ -140,7 +140,7 @@ python3 scripts/install_kimi_plugin.py --kimi-home "${KIMI_CODE_HOME:-$HOME/.kim
 ```
 
 #### 环境与目录说明
-- **基础依赖与硬性指标**：已安装 `git`、已登录认证的 **`gh`（GitHub CLI）**，以及 Kimi Code CLI。
+- **基础依赖与硬性指标**：已安装 `git`、`uv`、已登录认证的 **`gh`（GitHub CLI）**，以及 Kimi Code CLI。
 - **SQLite 要求**：知识引擎使用的 Python 解释器需链接 **SQLite `>= 3.43.0`**（编译启用 FTS5 与 `contentless_delete`），可通过 `--knowledge-python /path/to/python` 指定解释器。
 - **持久化路径**：默认配置文件位于 `~/.config/mindie-agent/kimi.json`，持久化运行时与启动器位于 `~/.local/share/mindie-agent/kimi`。安装完成后，最初克隆的源码目录可以安全移动或删除。
 
