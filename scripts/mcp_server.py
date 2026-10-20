@@ -124,7 +124,8 @@ KNOWLEDGE_TOOLS = [
             "For related task blocks, pass related_next as continuation without query. "
             "A changed corpus rejects the continuation. Archived or superseded units stay hidden unless "
             "include_archived is true. Pass domain only when the install configures that domain; an unknown "
-            "domain fails instead of using the default. References are advisory."
+            "domain fails instead of using the default. Set navigation_only for cards without inline bodies, "
+            "and pass run_id to record managed-run delivery. References are advisory."
         ),
         inputSchema=dict(
             type="object",
@@ -141,6 +142,14 @@ KNOWLEDGE_TOOLS = [
                 token_budget={"type": "integer", "minimum": 1, "maximum": 16000},
                 include_unknown={"type": "boolean"},
                 include_archived={"type": "boolean"},
+                navigation_only={
+                    "type": "boolean",
+                    "description": "Return navigation cards only; omit inline result bodies.",
+                },
+                run_id={
+                    "type": "string",
+                    "description": "Managed run id used to record deduplicated discovered/loaded delivery events.",
+                },
                 request_nonce=NONCE_PROP,
             ),
             required=["request_nonce"],
@@ -224,7 +233,8 @@ KNOWLEDGE_TOOLS = [
             "optional token_budget. Shared prerequisites expand once in requires; primary units "
             "return complete units. A single ref keeps the exact current revision and legacy "
             "task/block navigation; a block ref returns that immutable block with "
-            "previous_block_ref/next_block_ref for walking the task. The content is a reference "
+            "previous_block_ref/next_block_ref for walking the task. Pass run_id to record delivery "
+            "for a managed run. The content is a reference "
             "slice, not the full case or a verified report."
         ),
         inputSchema=dict(
@@ -235,6 +245,10 @@ KNOWLEDGE_TOOLS = [
                 conditions={"type": "object"},
                 known_refs={"type": "array", "items": {"type": "string"}},
                 token_budget={"type": "integer", "minimum": 1, "maximum": 16000},
+                run_id={
+                    "type": "string",
+                    "description": "Managed run id used to record explain delivery for this read.",
+                },
                 request_nonce=NONCE_PROP,
             ),
             required=["request_nonce"],
@@ -248,7 +262,7 @@ KNOWLEDGE_TOOLS = [
             "Keep rating=up|down as the legacy vote; rating is optional when event_type is supplied. "
             "event_type tracks discovered -> loaded -> applied -> evaluated; evaluated requires a "
             "run_id and outcome=supported|refuted|inconclusive. step_id binds the stage to a step. "
-            "Never required."
+            "evidence_source records the caller-declared strength of evaluated evidence. Never required."
         ),
         inputSchema=dict(
             type="object",
@@ -265,6 +279,15 @@ KNOWLEDGE_TOOLS = [
                 outcome={
                     "type": "string",
                     "enum": ["supported", "refuted", "inconclusive"],
+                },
+                evidence_source={
+                    "type": "string",
+                    "enum": [
+                        "agent_declared",
+                        "run_manifest_verified",
+                        "ablation_verified",
+                    ],
+                    "description": "Caller-declared evidence source for this event; defaults to agent_declared.",
                 },
                 request_nonce=NONCE_PROP,
             ),
