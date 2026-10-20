@@ -8,6 +8,7 @@ import tempfile
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -56,7 +57,7 @@ class BindReceiptTests(unittest.TestCase):
         }
 
     def status(self, key):
-        with sqlite3.connect(identity.bind_db_path()) as db:
+        with closing(sqlite3.connect(identity.bind_db_path())) as db:
             mode = db.execute("PRAGMA journal_mode;").fetchone()[0]
             self.assertEqual(mode.lower(), "wal")
             return db.execute(
@@ -181,7 +182,7 @@ class BindReceiptTests(unittest.TestCase):
         import diagnostic_support
 
         request = self.bind("nonce-log-unavailable")
-        with sqlite3.connect(identity.bind_db_path()) as db:
+        with closing(sqlite3.connect(identity.bind_db_path())) as db, db:
             db.execute("""
                 CREATE TRIGGER fail_receipt BEFORE UPDATE OF status ON binds
                 WHEN NEW.status = 'succeeded'
