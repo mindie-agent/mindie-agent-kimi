@@ -27,6 +27,8 @@ python3 scripts/updater.py install-schedule    # Register the OS scheduled task
 python3 scripts/updater.py uninstall-schedule  # Remove the OS scheduled task before uninstalling
 ```
 
+On Windows, the task uses `pythonw.exe` from the same Python installation to launch a UTF-8 wrapper, keeping the updater and its console children hidden. Run `install-schedule` again to replace an existing `.cmd` task. Registration fails explicitly without changing the existing task if `pythonw.exe` is missing.
+
 ---
 
 ## 3. Failure Handling & Host Reload Boundary
