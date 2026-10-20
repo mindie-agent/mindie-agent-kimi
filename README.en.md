@@ -140,7 +140,7 @@ python3 scripts/install_kimi_plugin.py --kimi-home "${KIMI_CODE_HOME:-$HOME/.kim
 ```
 
 #### Environment & Storage Notes
-- **Prerequisites (Hard Requirements)**: `git`, an authenticated **`gh` (GitHub CLI)**, and Kimi Code CLI.
+- **Prerequisites (Hard Requirements)**: `git`, `uv`, an authenticated **`gh` (GitHub CLI)**, and Kimi Code CLI.
 - **SQLite Requirement**: The Python interpreter used for the knowledge engine must link **SQLite `>= 3.43.0`** with FTS5 and `contentless_delete` support (pass `--knowledge-python /path/to/python` to `setup.py` to specify an explicit interpreter).
 - **Persistent Paths**: Configuration is stored in `~/.config/mindie-agent/kimi.json`, and the persistent runtime and launchers live under `~/.local/share/mindie-agent/kimi`. Once installed, the cloned source directory can be safely moved or removed.
 
