@@ -1,0 +1,24 @@
+scripts/mcp_server.py
+  s_d737ad21458d6c::t_9ff28b23aeb8fb 17,34,327,357-358,368-369,374-383
+  s_d737ad21458d6c::t_efe2182267fddf 16
+scripts/identity.py
+  s_d737ad21458d6c::t_fe843a3330921d 533
+tests/test_bind_receipts.py
+  s_d737ad21458d6c::t_3b9e7eddd0d4eb 106-217
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d8b863d6c144bc8aafe022dc939beb7ed7172c43",
+  "prompts": {},
+  "sessions": {
+    "s_d737ad21458d6c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a15708-c6bc-7b41-a0c4-4c573d98441e",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "fan2956 <zhoufan53@huawei.com>"
+    }
+  }
+}
