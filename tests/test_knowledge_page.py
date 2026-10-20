@@ -420,6 +420,11 @@ class KnowledgePageTests(unittest.TestCase):
         pack = shaped["exploration_context"]["subagent_fact_pack"]
         self.assertEqual(pack["schema_version"], "mindie-rsi-subagent-pack/1")
         self.assertEqual(pack["isolation_mode"], "native_subcontext")
+        from unittest.mock import patch
+
+        with patch.object(rsi_explore, "_load_builder", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "exploration builder"):
+                rsi_explore.attach({"cards": [{"id": "u-l1", "tier": "L1"}]}, args)
 
 
 if __name__ == "__main__":

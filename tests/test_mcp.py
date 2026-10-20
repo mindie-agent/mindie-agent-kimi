@@ -342,7 +342,16 @@ class McpTests(unittest.TestCase):
             self.assertIs(captured["payload"]["include_archived"], True)
             self.assertEqual(captured["payload"]["_session_id"], "ses_query")
             self.assertIs(captured["payload"]["_session_verified"], True)
-            self.assertIsNone(captured["timeout"])
+            self.assertEqual(captured["timeout"], mcp_server.KNOWLEDGE_RPC_TIMEOUT)
+            from urllib.error import URLError
+
+            for timeout_exc in (TimeoutError("status probe timed out"), URLError(TimeoutError("status probe timed out"))):
+                with self.subTest(timeout_exc=type(timeout_exc).__name__), \
+                        patch("knowledge_service.existing_service", side_effect=timeout_exc), \
+                        patch("knowledge_service.ensure_service") as ensure:
+                    with self.assertRaises((TimeoutError, URLError)):
+                        mcp_server.knowledge_call("knowledge_query", {"query": "fixture"}, "ses_query")
+                    ensure.assert_not_called()
 
     def test_knowledge_explain_batch_forwards_closure_arguments(self):
         with tempfile.TemporaryDirectory() as raw:

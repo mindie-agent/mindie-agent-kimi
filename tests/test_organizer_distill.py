@@ -291,7 +291,7 @@ class DistillOrganizerTests(unittest.TestCase):
 
     def test_in_flight_request_returns_standard_noop_without_a_model_call(self):
         with self._env():
-            request = self._bound(self._base_request(task_state="in_flight"))
+            request = self._bound(self._base_request(task_state="in_flight", outcome="observed"))
             with patch.object(organizer, "_invoke_native", side_effect=AssertionError("paid call")):
                 outcome = organizer.run(request)
         self.assertEqual(outcome["status"], "returned")
@@ -483,7 +483,7 @@ class SharedWorkerIntegrationTests(unittest.TestCase):
 
         inputs = [{
             "kind": "authorized_transcript",
-            "outcome": "verified",
+            "outcome": "in_flight",
             "source_locator": LOCATOR,
             "content": CONTENT,
             "evidence_refs": [EVIDENCE_REF],

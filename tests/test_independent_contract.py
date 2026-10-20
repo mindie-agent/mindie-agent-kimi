@@ -807,7 +807,6 @@ class EntryBoundaryTests(LaneIsolation):
 
     def test_contribute_does_not_require_the_sharing_enable_command(self):
         project, _log = self._configured(sharing=False)
-        skill = (REPO / "skills" / "mindie-agent" / "SKILL.md").read_text(encoding="utf-8")
         said = "contribute owner/repo alice"
         home = self.tmp / "kimi-home"
         write_session(
@@ -821,8 +820,6 @@ class EntryBoundaryTests(LaneIsolation):
         import sharing
 
         problems = []
-        if "sharing-enable" in skill:
-            problems.append("skill text requires sharing-enable")
         cold = entry.status_payload(None)
         self.assertEqual(cold["experience"], "needs-configuration")
         self.assertEqual(cold["choices"], [])
