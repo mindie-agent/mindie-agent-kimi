@@ -52,6 +52,7 @@ from paths import (
     load_engine_config_at,
     state_dir,
 )
+import rsi_explore
 
 MAX_YIELD_TIME_MS = 30000
 REMOTE_ERROR_CATEGORIES = frozenset({
@@ -150,6 +151,7 @@ KNOWLEDGE_TOOLS = [
                     "type": "string",
                     "description": "Managed run id used to record deduplicated discovered/loaded delivery events.",
                 },
+                **rsi_explore.schema_properties(),
                 request_nonce=NONCE_PROP,
             ),
             required=["request_nonce"],
@@ -249,6 +251,7 @@ KNOWLEDGE_TOOLS = [
                     "type": "string",
                     "description": "Managed run id used to record explain delivery for this read.",
                 },
+                **rsi_explore.schema_properties(),
                 request_nonce=NONCE_PROP,
             ),
             required=["request_nonce"],
@@ -488,7 +491,7 @@ def knowledge_call(name, args, session):
     from mindie_knowledge.loop.cli import rpc
     from paths import admission_path
 
-    body = dict(args)
+    body = rsi_explore.forwarded(args) if name in {"knowledge_query", "knowledge_explain"} else dict(args)
     if name == "knowledge_query":
         from mindie_knowledge.materials.provenance import query_request
 
@@ -532,7 +535,8 @@ def knowledge_call(name, args, session):
     payload = dict(body, _session_id=session, _session_verified=True)
     if routed:
         payload["domain"] = engine["domain"]
-    return rpc(connection, method, payload, timeout=None)
+    result = rpc(connection, method, payload, timeout=None)
+    return rsi_explore.attach(result, body) if name in {"knowledge_query", "knowledge_explain"} else result
 
 
 def remote_tools():

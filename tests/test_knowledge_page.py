@@ -108,7 +108,11 @@ class KnowledgePageTests(unittest.TestCase):
         feedback = next(item for item in mcp_server.KNOWLEDGE_TOOLS if item["name"] == "knowledge_feedback")
         self.assertEqual(
             set(explain["inputSchema"]["properties"]),
-            {"ref", "refs", "conditions", "known_refs", "token_budget", "run_id", "request_nonce"},
+            {
+                "ref", "refs", "conditions", "known_refs", "token_budget",
+                "run_id", "mode", "ledger_entries", "bottleneck_summary",
+                "native_subcontext", "goal", "request_nonce",
+            },
         )
         self.assertEqual(explain["inputSchema"]["required"], ["request_nonce"])
         self.assertIn("next_block_ref", explain["description"])
@@ -120,7 +124,8 @@ class KnowledgePageTests(unittest.TestCase):
             {
                 "query", "limit", "conditions", "continuation", "domain",
                 "domain_path", "token_budget", "include_unknown", "include_archived",
-                "navigation_only", "run_id", "request_nonce",
+                "navigation_only", "run_id", "mode", "ledger_entries",
+                "bottleneck_summary", "native_subcontext", "goal", "request_nonce",
             },
         )
         self.assertEqual(
@@ -389,6 +394,32 @@ class KnowledgePageTests(unittest.TestCase):
                 timeout=10,
                 max_output=512 * 1024,
             )
+
+    def test_rsi_explore_mode_strips_l3_and_builds_subagent_pack(self):
+        import rsi_explore
+
+        with self.assertRaises(ValueError):
+            rsi_explore.forwarded({"query": "rmsnorm", "mode": "invalid"})
+        args = rsi_explore.forwarded({
+            "query": "rmsnorm", "mode": "explore", "native_subcontext": True,
+            "goal": "Fuse RMSNorm epilogue",
+            "ledger_entries": [{"run_id": "r1", "verdict": "refuted", "hypothesis": "tile=64"}],
+        })
+        shaped = rsi_explore.attach(
+            {
+                "cards": [
+                    {"id": "u-l1", "tier": "L1", "title": "32B UB alignment"},
+                    {"id": "u-l3", "tier": "L3", "title": "old workflow"},
+                ],
+            },
+            args,
+        )
+        self.assertEqual(shaped["mode"], "explore")
+        self.assertEqual(shaped["stripped_l3_ids"], ["u-l3"])
+        self.assertEqual([c["id"] for c in shaped["cards"]], ["u-l1"])
+        pack = shaped["exploration_context"]["subagent_fact_pack"]
+        self.assertEqual(pack["schema_version"], "mindie-rsi-subagent-pack/1")
+        self.assertEqual(pack["isolation_mode"], "native_subcontext")
 
 
 if __name__ == "__main__":
