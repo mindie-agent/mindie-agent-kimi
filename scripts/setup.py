@@ -362,13 +362,12 @@ def main():
             **__import__("capture_config").prepare(python, bootstrap_root / "scripts"),
             community_config=str(community_config),
         )
-        if args.domain == "vllm-ascend" and not args.no_public_feed:
-            value["feeds"] = [
-                dict(
-                    repository="mindie-agent/knowledge-vllm-ascend",
-                    ref="main", domain="vllm-ascend", interval_seconds=300,
-                )
-            ]
+        if not args.no_public_feed:
+            from capture_config import PUBLIC_FEEDS
+
+            feed = next((dict(row) for row in PUBLIC_FEEDS if row["domain"] == args.domain), None)
+            if feed is not None:
+                value["feeds"] = [feed]
         write_private(engine_config, value)
         kimi_home = (
             args.kimi_home.expanduser().absolute()

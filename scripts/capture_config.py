@@ -8,6 +8,13 @@ from pathlib import Path
 import json
 import subprocess
 
+PUBLIC_FEEDS = [
+    {"repository": "mindie-agent/knowledge-vllm-ascend", "ref": "main",
+     "domain": "vllm-ascend", "interval_seconds": 300},
+    {"repository": "mindie-agent/knowledge-operators", "ref": "main",
+     "domain": "operators", "interval_seconds": 300},
+]
+
 
 def prepare(python, scripts):
     result = subprocess.run(
@@ -31,6 +38,7 @@ def prepare(python, scripts):
 def prepare_domains(python, adapter, engine, **options):
     """Use the selected core's one catalog and policy-preserving preparation."""
     from bounded import run
+    options.setdefault('domains', PUBLIC_FEEDS)
     output = run([str(python), '-m', 'mindie_knowledge.loop.domain_catalog'],
                  json.dumps(dict(adapter=adapter, engine=engine, **options)),
                  timeout=90, max_output=65536)

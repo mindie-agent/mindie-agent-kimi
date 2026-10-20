@@ -209,12 +209,12 @@ class DomainRoutingEntryTests(unittest.TestCase):
 
         self.assertEqual(
             default_hit["feedback_ref"],
-            f"mindie://{DEFAULT_DOMAIN}/units/{UNIT_ID}@{self.default_unit.content_sha256}",
+            f"mindie://{DEFAULT_DOMAIN}/units/{UNIT_ID}@{self.default_unit.revision}",
         )
         self.assertEqual(default_hit["revision"], 1)
         self.assertEqual(
             target_hit["feedback_ref"],
-            f"mindie://{TARGET_DOMAIN}/units/{UNIT_ID}@{self.target_unit.content_sha256}",
+            f"mindie://{TARGET_DOMAIN}/units/{UNIT_ID}@{self.target_unit.revision}",
         )
         self.assertEqual(target_hit["revision"], 7)
         self.assertEqual(explicit_default["feedback_ref"], default_hit["feedback_ref"])
@@ -255,7 +255,7 @@ class DomainRoutingEntryTests(unittest.TestCase):
         target_rows = self._votes(self.target_store)
         self.assertEqual(len(target_rows), 1)
         self.assertEqual(target_rows[0]["entry_id"], UNIT_ID)
-        self.assertEqual(target_rows[0]["revision"], self.target_unit.content_sha256)
+        self.assertEqual(target_rows[0]["revision"], str(self.target_unit.revision))
         self.assertEqual(self._votes(self.default_store), [])
 
     def test_unknown_domain_and_declared_domain_mismatch_are_visible(self):
@@ -285,7 +285,7 @@ class DomainRoutingEntryTests(unittest.TestCase):
         self.assertEqual(self.connection_mock.call_count, before)
 
     def test_explicit_domain_and_reference_conflict_is_visible(self):
-        conflict_ref = f"mindie://{TARGET_DOMAIN}/units/{UNIT_ID}@{self.target_unit.content_sha256}"
+        conflict_ref = f"mindie://{TARGET_DOMAIN}/units/{UNIT_ID}@{self.target_unit.revision}"
         with self.assertRaisesRegex(ValueError, "conflicts"):
             mcp_server._select_engine_path(domain=DEFAULT_DOMAIN, ref=conflict_ref)
 

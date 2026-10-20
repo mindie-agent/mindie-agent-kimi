@@ -95,6 +95,74 @@ class SetupInstallTests(unittest.TestCase):
             community = json.loads(config.with_name("mindie-community.json").read_text())
             self.assertFalse(community["enabled"])
             self.assertIsNone(community["repository"])
+            adapter = json.loads(config.read_text())
+            self.assertEqual(set(adapter["domain_configs"]), {"vllm-ascend", "operators"})
+            self.assertEqual(adapter["domain_configs"]["vllm-ascend"], adapter["engine_config"])
+            self.assertEqual(engine["feeds"][0]["repository"],
+                             "mindie-agent/knowledge-vllm-ascend")
+            self.assertEqual(engine["feeds"][0]["ref"], "main")
+            route = json.loads(Path(adapter["domain_configs"]["operators"]).read_text())
+            self.assertEqual(route["feeds"][0]["repository"],
+                             "mindie-agent/knowledge-operators")
+            self.assertEqual(route["feeds"][0]["ref"], "main")
+            settings = json.loads(Path(route["community_config"]).read_text())
+            self.assertEqual(settings["repository"], "mindie-agent/knowledge-operators")
+            self.assertEqual(settings["branch"], "main")
+            self.assertFalse(settings["enabled"])
+            self.assertEqual(settings["consent_config"],
+                             str(config.with_name("mindie-consent.json")))
+
+    def test_setup_operators_root_uses_operators_main_feed_and_vllm_secondary(self):
+        import contextlib
+        import io
+        from unittest.mock import patch
+
+        if str(SCRIPTS) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS))
+        import capture_config
+        import setup
+
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            config = tmp / "cfg" / "kimi.json"
+            capture = {
+                "capture_mode": "public-transcript",
+                "redactor_executable": sys.executable,
+                "summary_command": [sys.executable, str(SCRIPTS / "organizer.py")],
+                "service_launch_context": {"paths": {}, "environment": []},
+            }
+            with patch.object(capture_config, "prepare", return_value=capture), \
+                    patch.object(sys, "argv", [
+                        "setup.py",
+                        "--knowledge-python", sys.executable,
+                        "--config", str(config),
+                        "--root", str(tmp / "data"),
+                        "--domain", "operators",
+                        "--no-schedule",
+                        "--kimi-home", str(tmp / "kimi-home"),
+                    ]), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                setup.main()
+            adapter = json.loads(config.read_text())
+            engine = json.loads(Path(adapter["engine_config"]).read_text())
+            self.assertEqual(engine["domain"], "operators")
+            self.assertEqual(engine["feeds"], [{
+                "repository": "mindie-agent/knowledge-operators",
+                "ref": "main", "domain": "operators", "interval_seconds": 300,
+            }])
+            routes = adapter["domain_configs"]
+            self.assertEqual(set(routes), {"operators", "vllm-ascend"})
+            self.assertEqual(routes["operators"], adapter["engine_config"])
+            secondary = json.loads(Path(routes["vllm-ascend"]).read_text())
+            self.assertEqual(secondary["feeds"], [{
+                "repository": "mindie-agent/knowledge-vllm-ascend",
+                "ref": "main", "domain": "vllm-ascend", "interval_seconds": 300,
+            }])
+            consent = str(config.with_name("mindie-consent.json"))
+            for route in (engine, secondary):
+                settings = json.loads(Path(route["community_config"]).read_text())
+                self.assertFalse(settings["enabled"])
+                self.assertEqual(settings["consent_config"], consent)
 
     def test_setup_configures_sharing_after_install(self):
         with tempfile.TemporaryDirectory() as raw:

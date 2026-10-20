@@ -207,6 +207,73 @@ class UpdaterTests(unittest.TestCase):
         self.assertTrue((rebuilt / "host-package" / "kimi.plugin.json").is_file())
         self.assertEqual(json.loads(config.read_text())["domain_source_configs"], active["domain_configs"])
 
+    def test_generation_refresh_prepares_only_the_two_main_public_feeds(self):
+        active = json.loads(self.config_path.read_text())
+        active["profile_config"] = str(self.config_path)
+        engine_path = Path(active["engine_config"])
+        engine = json.loads(engine_path.read_text())
+        engine["feeds"] = [dict(repository="mindie-agent/knowledge-vllm-ascend",
+                                ref="main", domain="vllm-ascend", interval_seconds=300)]
+        write_json(engine_path, engine)
+        community_path = Path(active["community_config"])
+        consent_path = Path(json.loads(community_path.read_text())["consent_config"])
+        consent_before = consent_path.read_bytes()
+        write_json(self.config_path, active)
+        generated = updater.write_generation_configs(
+            self.tmp / "generation-main", Path(sys.executable), active)
+        generated_adapter = json.loads(generated.read_text())
+        generated_engine = json.loads(Path(generated_adapter["engine_config"]).read_text())
+        self.assertEqual(generated_engine["feeds"][0]["repository"],
+                         "mindie-agent/knowledge-vllm-ascend")
+        self.assertEqual(generated_engine["feeds"][0]["ref"], "main")
+        routes = generated_adapter["domain_configs"]
+        self.assertEqual(set(routes), {"vllm-ascend", "operators"})
+        self.assertEqual(routes["vllm-ascend"], generated_adapter["engine_config"])
+        route = json.loads(Path(routes["operators"]).read_text())
+        self.assertEqual(route["feeds"][0]["repository"],
+                         "mindie-agent/knowledge-operators")
+        self.assertEqual(route["feeds"][0]["ref"], "main")
+        settings = json.loads(Path(route["community_config"]).read_text())
+        self.assertEqual(settings["repository"], "mindie-agent/knowledge-operators")
+        self.assertEqual(settings["branch"], "main")
+        self.assertFalse(settings["enabled"])
+        self.assertEqual(Path(settings["consent_config"]).resolve(), consent_path.resolve())
+        self.assertEqual(consent_path.read_bytes(), consent_before)
+
+    def test_generation_refresh_preserves_custom_feed_route_and_consent(self):
+        active = json.loads(self.config_path.read_text())
+        active["profile_config"] = str(self.config_path)
+        engine_path = Path(active["engine_config"])
+        engine = json.loads(engine_path.read_text())
+        engine["feeds"] = [dict(repository="example/custom-vllm", ref="release-x",
+                                domain="vllm-ascend", interval_seconds=120)]
+        write_json(engine_path, engine)
+        community_path = Path(active["community_config"])
+        community = json.loads(community_path.read_text())
+        community.update(repository="example/custom-vllm", branch="release-x")
+        write_json(community_path, community)
+        consent_path = Path(community["consent_config"])
+        consent_before = consent_path.read_bytes()
+        custom_route = self.tmp / "custom-operators.engine.json"
+        write_json(custom_route, dict(
+            engine, domain="operators", root=str(self.tmp / "custom-operators-data"),
+            feeds=[dict(repository="example/custom-operators", ref="pinned",
+                        domain="operators")]))
+        custom_bytes = custom_route.read_bytes()
+        active["domain_configs"] = {"operators": str(custom_route)}
+        write_json(self.config_path, active)
+        generated = updater.write_generation_configs(
+            self.tmp / "generation-custom", Path(sys.executable), active)
+        generated_adapter = json.loads(generated.read_text())
+        generated_engine = json.loads(Path(generated_adapter["engine_config"]).read_text())
+        self.assertEqual(generated_engine["feeds"], engine["feeds"])
+        self.assertEqual(generated_adapter["domain_configs"]["operators"], str(custom_route))
+        self.assertEqual(custom_route.read_bytes(), custom_bytes)
+        self.assertEqual(json.loads(community_path.read_text())["repository"],
+                         "example/custom-vllm")
+        self.assertEqual(json.loads(community_path.read_text())["branch"], "release-x")
+        self.assertEqual(consent_path.read_bytes(), consent_before)
+
     def test_unpublished_main_commit_never_changes_installed_release(self):
         self.assertEqual(self.run_check(), 0)
         before = genstate.current_path(self.adapter).read_bytes()

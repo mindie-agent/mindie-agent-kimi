@@ -283,7 +283,7 @@ class DomainActivationEntryTests(unittest.TestCase):
         self.assertFalse(default_hit["isError"], default_hit)
         self.assertEqual(
             default_hit["structuredContent"]["results"][0]["feedback_ref"],
-            f"mindie://{DEFAULT_DOMAIN}/units/{UNIT_ID}@{self.default_unit.content_sha256}",
+            f"mindie://{DEFAULT_DOMAIN}/units/{UNIT_ID}@{self.default_unit.revision}",
         )
 
         target_hit = self._call(SESSION, "nonce-target-query", "knowledge_query", {
@@ -296,7 +296,7 @@ class DomainActivationEntryTests(unittest.TestCase):
         hit = target_hit["structuredContent"]["results"][0]
         self.assertEqual(
             hit["feedback_ref"],
-            f"mindie://{TARGET_DOMAIN}/units/{UNIT_ID}@{self.target_unit.content_sha256}",
+            f"mindie://{TARGET_DOMAIN}/units/{UNIT_ID}@{self.target_unit.revision}",
         )
         self.assertEqual(hit["revision"], 7)
 
@@ -311,7 +311,7 @@ class DomainActivationEntryTests(unittest.TestCase):
             "SELECT * FROM votes")]
         self.assertEqual(len(target_votes), 1)
         self.assertEqual(target_votes[0]["entry_id"], UNIT_ID)
-        self.assertEqual(target_votes[0]["revision"], self.target_unit.content_sha256)
+        self.assertEqual(target_votes[0]["revision"], str(self.target_unit.revision))
         self.assertEqual(
             [dict(row) for row in self.default_store.db.execute("SELECT * FROM votes")],
             [],
