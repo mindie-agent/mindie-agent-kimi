@@ -19,6 +19,7 @@ Serves JSON-RPC 2.0 MCP requests (`initialize`, `ping`, `tools/list`,
   engine's own admission store; default-domain authority is never forwarded.
 - Remote failures preserve `submission_state` (`not_sent`, `uncertain`,
   `acknowledged`) and job references so callers never blindly replay writes.
+- Only the successful nonce claimant finalizes its receipt.
 
 [Timeouts & Locks]
 - Clamps `remote-dev` `yield_time_ms` to `MAX_YIELD_TIME_MS = 30000` (30s).
@@ -600,6 +601,7 @@ def handle(surface, message):
     name = params.get("name")
     args = params.get("arguments") or {}
     nonce = None
+    claimed = False
     succeeded = False
     try:
         if not isinstance(args, dict):
@@ -607,6 +609,7 @@ def handle(surface, message):
         reject_native_identity_args(args, surface)
         nonce = require_nonce(args.get("request_nonce"))
         session = claim_nonce(nonce, name, args)
+        claimed = True
         _, body = strip_nonce(args, surface)
         if surface == "knowledge" and name == "mindie_entry":
             from entry import dispatch
@@ -649,7 +652,7 @@ def handle(surface, message):
     except (ValueError, OSError, RuntimeError, KeyError, TypeError, ImportError) as exc:
         return dict(jsonrpc="2.0", id=ident, result=failure(exc))
     finally:
-        if nonce is not None:
+        if claimed:
             try:
                 finish_nonce(nonce, succeeded)
             except Exception:
