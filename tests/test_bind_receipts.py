@@ -57,6 +57,8 @@ class BindReceiptTests(unittest.TestCase):
 
     def status(self, key):
         with sqlite3.connect(identity.bind_db_path()) as db:
+            mode = db.execute("PRAGMA journal_mode;").fetchone()[0]
+            self.assertEqual(mode.lower(), "wal")
             return db.execute(
                 "SELECT status FROM binds WHERE nonce=?", (key,)
             ).fetchone()[0]

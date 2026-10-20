@@ -58,6 +58,7 @@ from paths import (
 import rsi_explore
 
 MAX_YIELD_TIME_MS = 30000
+KNOWLEDGE_RPC_TIMEOUT = 30.0
 REMOTE_ERROR_CATEGORIES = frozenset({
     "internal", "caller", "validation", "permission", "remote_execution",
     "cancelled", "cancel_unconfirmed", "cleanup", "configuration",
@@ -529,16 +530,22 @@ def knowledge_call(name, args, session):
             from mindie_knowledge.loop.cli import distill_selected  # noqa: F401
         except ImportError as exc:
             raise ValueError("knowledge distill is unavailable in the installed runtime") from exc
+    from urllib.error import URLError
+
     try:
         connection = existing_service(engine_path)
-    except (OSError, ValueError, RuntimeError):
+    except (FileNotFoundError, ConnectionRefusedError):
+        connection = ensure_service(engine_path)
+    except URLError as exc:
+        if not isinstance(exc.reason, ConnectionRefusedError):
+            raise
         connection = ensure_service(engine_path)
     if method == "distill":
         return _knowledge_distill_call(engine_path, connection, body, session, token)
     payload = dict(body, _session_id=session, _session_verified=True)
     if routed:
         payload["domain"] = engine["domain"]
-    result = rpc(connection, method, payload, timeout=None)
+    result = rpc(connection, method, payload, timeout=KNOWLEDGE_RPC_TIMEOUT)
     return rsi_explore.attach(result, body) if name in {"knowledge_query", "knowledge_explain"} else result
 
 

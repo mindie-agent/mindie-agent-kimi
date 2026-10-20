@@ -425,6 +425,8 @@ def _connect(path: Path, *, create: bool):
     path.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(path, timeout=5.0)
     db.execute("PRAGMA busy_timeout=5000;")
+    if create:
+        db.execute("PRAGMA journal_mode=WAL;")
     return db
 
 

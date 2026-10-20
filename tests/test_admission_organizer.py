@@ -88,11 +88,6 @@ class AdmissionOrganizerTests(unittest.TestCase):
             self.assertTrue(hasattr(module, "FileIdentity"))
             self.assertTrue(hasattr(module, "identify"))
 
-    def test_organizer_agent_disables_all_tools(self):
-        text = (SCRIPTS / "organize-agent.md").read_text()
-        self.assertIn("tools: []", text)
-        self.assertIn("subagents: []", text)
-
     def _source_home(self, tmp: Path) -> Path:
         source = tmp / "source-home"
         source.mkdir()

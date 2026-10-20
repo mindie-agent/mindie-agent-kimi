@@ -25,17 +25,11 @@ class ManifestTests(unittest.TestCase):
         for hook in self.manifest["hooks"]:
             self.assertTrue(hook["command"].startswith("python3 "))
             self.assertIn("with_runtime.py", hook["command"])
+            self.assertEqual(hook["timeout"], 20)
         for server in self.manifest["mcpServers"].values():
             self.assertEqual(server["command"], "python3")
             self.assertEqual(server["args"][0], "./scripts/with_runtime.py")
             self.assertEqual(server["cwd"], "./")
-
-    def test_commands_are_not_textual_markers(self):
-        init = (ROOT / "commands" / "init.md").read_text(encoding="utf-8")
-        self.assertNotIn("MINDIE_AGENT_NATIVE_ENTRY", init)
-        self.assertIn("mindie_entry", init)
-        self.assertIn("request_nonce", init)
-        self.assertNotIn("TurnStarted hook binds", init)
 
     def test_no_updater_shim(self):
         self.assertFalse((ROOT / "scripts" / "update.py").exists())

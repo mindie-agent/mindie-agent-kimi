@@ -100,7 +100,7 @@ def read_current(config=None) -> dict:
         return data
     try:
         python = configured_python(config)
-    except Exception:
+    except FileNotFoundError:
         python = sys.executable
     return {
         "generation": str(plugin_root_from_env()),

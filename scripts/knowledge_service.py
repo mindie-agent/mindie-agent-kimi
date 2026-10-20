@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """[Role] Adapter helper for preparing service launch environment, loading transcript adapter, and starting knowledge service.
 [Invariants] Pins MINDIE_KIMI_BIN and MINDIE_GIT_BIN deterministically from stamped adapter config or environment without guessing paths.
-[Timeouts & Locks] existing_service status probe bounded at 0.4s; ensure_service delegates to shared core startup lock.
+[Timeouts & Locks] existing_service status probe bounded at 2.0s; ensure_service delegates to shared core startup lock.
 [Side-Effect Policy] Sets MINDIE_KIMI_BIN / MINDIE_GIT_BIN in os.environ and spawns local knowledge service when ensure_service() is called.
 """
 
@@ -58,7 +58,7 @@ def existing_service(engine_file=None):
     from mindie_knowledge.loop.cli import connect, rpc
 
     connection = connect(engine_config(engine_file))
-    rpc(connection, "status", timeout=0.4)
+    rpc(connection, "status", timeout=2.0)
     return connection
 
 
