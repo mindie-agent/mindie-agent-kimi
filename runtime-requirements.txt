@@ -1,3 +1,11 @@
-# Component revisions for the enterprise-network integration.
-mindie-knowledge @ git+https://github.com/mindie-agent/knowledge@1d78f1dbadeb770f7489d5a9378cfbfd4ca26c6a
-remote-dev @ git+https://github.com/mindie-agent/remote-dev@293045f87193fbe749dd161f3fa4bd6a8fbff37f
+# Component integration revisions used by the MindIE Agent Kimi Code adapter.
+#
+# Each pin is the exact component commit selected for this integration:
+#   mindie-agent/diagnostics v0.5.1 -> fba07e8607ddadde14cea315c9dbda23726c1c79
+#   mindie-agent/remote-dev  v0.10.4 -> 6bd1a15380195a95d450458e7c1856905d95bf73
+#   mindie-agent/knowledge   v0.13.0 -> 10ee85606aa43de7975e3c4542013be4c177730a
+#
+# The authoritative transitive lock is uv.lock; this file mirrors its two
+# direct dependencies for humans and for the release checklist.
+mindie-knowledge @ git+https://github.com/mindie-agent/knowledge@10ee85606aa43de7975e3c4542013be4c177730a
+remote-dev @ git+https://github.com/mindie-agent/remote-dev@6bd1a15380195a95d450458e7c1856905d95bf73
