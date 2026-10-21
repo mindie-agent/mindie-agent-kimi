@@ -20,7 +20,9 @@ PLUGIN_ID = "mindie-agent"
 MCP_QUALIFIED_PREFIX = "mcp__plugin-mindie-agent_"
 GIT_WINDOWS_LOCATIONS = (
     r"C:\Program Files\Git\cmd\git.exe",
+    r"C:\Program Files\Git\bin\git.exe",
     r"C:\Program Files (x86)\Git\cmd\git.exe",
+    r"C:\Program Files (x86)\Git\bin\git.exe",
 )
 
 
