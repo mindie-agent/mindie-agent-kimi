@@ -587,11 +587,11 @@ class UpdaterTests(unittest.TestCase):
     def test_shared_lock_blocks_exclusive_switch(self):
         holder = subprocess.Popen(
             [sys.executable, "-c",
-             "import sys, time; sys.path.insert(0, " + repr(str(SCRIPTS)) + ");"
+             "import sys; sys.path.insert(0, " + repr(str(SCRIPTS)) + ");"
              "import genstate;"
              "held = genstate.OperationLock().shared(timeout=5);"
-             "held.__enter__(); print('held', flush=True); time.sleep(4)"],
-            stdout=subprocess.PIPE, text=True,
+             "held.__enter__(); print('held', flush=True); sys.stdin.readline()"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
             env=dict(os.environ, MINDIE_KIMI_CONFIG=str(self.config_path)),
         )
         for stream in (holder.stdin, holder.stdout, holder.stderr):
@@ -605,17 +605,22 @@ class UpdaterTests(unittest.TestCase):
             self.assertEqual(genstate.read_status(self.adapter)["result"],
                              "deferred-busy")
         finally:
-            holder.terminate()
-            holder.wait(timeout=5)
+            if holder.stdin is not None:
+                holder.stdin.close()
+            try:
+                holder.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                holder.terminate()
+                holder.wait(timeout=30)
 
     def test_check_lock_serializes_checks(self):
         holder = subprocess.Popen(
             [sys.executable, "-c",
-             "import sys, time; sys.path.insert(0, " + repr(str(SCRIPTS)) + ");"
+             "import sys; sys.path.insert(0, " + repr(str(SCRIPTS)) + ");"
              "import genstate;"
              "held = genstate.check_lock();"
-             "held.__enter__(); print('held', flush=True); time.sleep(4)"],
-            stdout=subprocess.PIPE, text=True,
+             "held.__enter__(); print('held', flush=True); sys.stdin.readline()"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
             env=dict(os.environ, MINDIE_KIMI_CONFIG=str(self.config_path)),
         )
         for stream in (holder.stdin, holder.stdout, holder.stderr):
@@ -627,8 +632,13 @@ class UpdaterTests(unittest.TestCase):
             self.assertEqual(self.installs, [])
             self.assertIsNone(genstate.read_current(self.adapter)["sha"])
         finally:
-            holder.terminate()
-            holder.wait(timeout=5)
+            if holder.stdin is not None:
+                holder.stdin.close()
+            try:
+                holder.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                holder.terminate()
+                holder.wait(timeout=30)
 
     def test_interrupted_staging_suppresses_and_recovers(self):
         calls = []
