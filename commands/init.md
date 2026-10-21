@@ -12,6 +12,8 @@ events automatically; actual completion needs processing receipts.
 Do not offer read-only/later product modes. Preserve legacy saved declines
 until explicitly changed. `/mindie-agent disabled` explicitly stops capture.
 
+For setup or a GitHub authentication failure, follow [GitHub Sign-In](../skills/mindie-agent/references/github-authentication.md). Reuse existing authentication; offer browser login or enterprise-network token creation/input only when needed.
+
 During installation or first-use setup, present the [user notice](../skills/mindie-agent/references/user-notice.md),
 then follow [optional workspace setup](../skills/mindie-agent/references/workspace-setup.md).
 Reuse the user's creation and initialization decisions.

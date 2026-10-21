@@ -95,13 +95,12 @@ If you are an AI Agent asked by the user to install this plugin, execute the fol
    ```sh
    git --version
    gh --version
-   gh auth status
-   GH_USER=$(gh api user --jq .login) && echo "GitHub channel verified for account: $GH_USER"
-   gh auth setup-git
+   GH_USER=$(gh api --hostname github.com user --jq .login) && echo "GitHub channel verified for account: $GH_USER"
+   gh auth setup-git --hostname github.com
    kimi --version
    python3 -c "import sqlite3; assert sqlite3.sqlite_version_info >= (3, 43, 0), sqlite3.sqlite_version; print('SQLite OK:', sqlite3.sqlite_version)"
    ```
-   - **Hard Gate (Never skip or silently ignore)**: If `gh` is missing, assist the user in installing it first (macOS: `brew install gh`; Windows: `winget install --id GitHub.cli`; Ubuntu / WSL: `sudo apt update && sudo apt install -y gh`). If `gh auth status` is not logged in or `gh api user` fails, **do not proceed**—guide the user to complete `gh auth login` and run `gh auth setup-git` until `gh api user --jq .login` reliably returns their GitHub username.
+   - **Hard Gate (Never skip or silently ignore)**: If `gh` is missing, assist the user in installing it first (macOS: `brew install gh`; Windows: `winget install --id GitHub.cli`; Ubuntu / WSL: `sudo apt update && sudo apt install -y gh`). Reuse a working account. Otherwise follow [GitHub Sign-In](skills/mindie-agent/references/github-authentication.md): browser login on ordinary networks, or token login on enterprise networks / blocked browser authorization. Use an existing token in the hidden `gh` prompt (or a supplied private file), or guide token creation. Verify the account, Git and credential reuse before continuing; fix transport/certificate failures before retrying authentication.
    - Prefer Python 3.13. Windows requires Python >= 3.12 for nonblocking MCP pipes; POSIX requires Python >= 3.11. The linked SQLite library must be `>= 3.43.0` (compiled with FTS5 and `contentless_delete` support).
 
 2. **Clone the repository, build the pinned runtime, and register via Kimi's native plugin API**:
@@ -132,7 +131,7 @@ If you are an AI Agent asked by the user to install this plugin, execute the fol
 To install manually from your terminal:
 
 ```sh
-gh auth status && gh auth setup-git && \
+gh api --hostname github.com user --jq .login && gh auth setup-git --hostname github.com && \
 git clone https://github.com/mindie-agent/mindie-agent-kimi.git && \
 cd mindie-agent-kimi && \
 NATIVE_PKG=$(python3 scripts/setup.py | python3 -c "import json,sys; print(json.load(sys.stdin)['native_package'])") && \
