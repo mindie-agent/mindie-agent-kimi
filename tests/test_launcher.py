@@ -341,14 +341,15 @@ class LauncherTests(unittest.TestCase):
                 [
                     sys.executable,
                     "-c",
-                    "import fcntl, os, time, sys\n"
+                    "import fcntl, os, sys\n"
                     f"path = {str(lock_path)!r}\n"
                     "os.makedirs(os.path.dirname(path), exist_ok=True)\n"
                     "fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)\n"
                     "fcntl.flock(fd, fcntl.LOCK_EX)\n"
                     "print('held', flush=True)\n"
-                    "time.sleep(4)\n",
+                    "sys.stdin.readline()\n",
                 ],
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 text=True,
             )
@@ -367,8 +368,13 @@ class LauncherTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(json.loads(result.stdout), {})
             finally:
-                holder.terminate()
-                holder.wait(timeout=5)
+                if holder.stdin is not None:
+                    holder.stdin.close()
+                try:
+                    holder.wait(timeout=30)
+                except subprocess.TimeoutExpired:
+                    holder.terminate()
+                    holder.wait(timeout=30)
 
     @unittest.skipUnless(os.name == "posix", "fcntl flock")
     def test_tools_call_holds_lock_until_child_exits(self):
