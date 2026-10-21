@@ -30,11 +30,11 @@ Meanwhile, `remote-dev` MCP tools are always available on demand in normal conve
 ## Progressive Context Disclosure (Read Only on Demand)
 
 - **Installation, first-use GitHub authentication, enterprise-network token login or authentication repair**: read [GitHub Sign-In](references/github-authentication.md). Reuse a working login; otherwise guide browser login or token creation/input and verify credential reuse.
+- **Normal installation and first-use setup, including when contribution is disabled**: present the existing [user notice](references/user-notice.md), then complete [Workspace Setup](references/workspace-setup.md). Offer creation/initialization, reuse or the current directory; approved creation/reuse includes native workspace registration. Reuse prior choices, and do not repeat this flow during ordinary tasks.
 
 Do **not** load all reference files during ordinary troubleshooting. Read the specific reference file **only** when the current turn requires it:
 
 - **Knowledge & Remote MCP tool usage (`knowledge_query`, `knowledge_explain`, `knowledge_feedback`, `knowledge_distill`, `remote_*`), condition-matched knowledge and diagnostic decision guidance, graded response shapes, long-horizon ledgers, and physical NPU timing / profiler discipline**: read [Domain Tooling](references/domain-skills.md).
-- **First-time onboarding or setting up a local `vllm` + `vllm-ascend` multi-worktree workspace**: present [用户须知](references/user-notice.md) and follow [Workspace Setup](references/workspace-setup.md) (offer during setup, not ordinary task execution).
 - **Preference changes, disabled/declined profile rules, background worker recovery, or hook lifecycle details**: read [Activation Lifecycle](references/activation-lifecycle.md).
 - **Sharing scope, local redaction boundaries, or public Git history questions**: read [用户须知](references/user-notice.md).
 
