@@ -115,7 +115,7 @@ MindIE Agent 采用**「领域知识与 Skill 手动按需触发 + 远端开发�
      --plugin-root "$NATIVE_PKG"
    ```
 
-3. **校验原生安装回读结果并向用户汇报**：
+3. **核对插件安装状态**：
    ```sh
    python3 scripts/install_kimi_plugin.py \
      --kimi-home "${KIMI_CODE_HOME:-$HOME/.kimi-code}" \
@@ -123,6 +123,13 @@ MindIE Agent 采用**「领域知识与 Skill 手动按需触发 + 远端开发�
      --readback
    ```
    - 确认返回的插件列表中 `mindie-agent` 处于 `enabled: true`、`state: "ok"`，且两个 MCP 服务（`knowledge` 与 `remote`）均已启用。随后向用户汇报已验证的 GitHub 交互通道账号（`$GH_USER`）与安装完成情况（临时克隆目录 `/tmp/mindie-agent-kimi` 可随时清理，持久化运行时保存在 `~/.local/share/mindie-agent/kimi`）。
+
+   验证成功后继续第 4 步，完成首次配置后一起汇报安装结果。
+
+4. **完成首次配置与开发工作区引导**：
+   - 在本次安装中介绍已有 [用户须知](skills/mindie-agent/references/user-notice.md)，随后执行 [工作区配置指南](skills/mindie-agent/references/workspace-setup.md)。即使未开启贡献，也要提供创建并初始化 `vllm-ascend-workspace`、复用已有目录或继续当前目录的选择；复用已经确认的选择。
+   - 用户同意创建或复用后，自动通过当前宿主的原生项目/工作区入口登记所选路径，核对实际结果。源码初始化使用工作区检出的 `repo_init.py`，复用本次已验证的 GitHub 认证和已有 Fork 配置。
+   - 安装结果同时报告插件、工作区路径、宿主登记与源码初始化状态；需要原生界面操作时明确剩余步骤。
 
 </details>
 
@@ -137,6 +144,8 @@ cd mindie-agent-kimi && \
 NATIVE_PKG=$(python3 scripts/setup.py | python3 -c "import json,sys; print(json.load(sys.stdin)['native_package'])") && \
 python3 scripts/install_kimi_plugin.py --kimi-home "${KIMI_CODE_HOME:-$HOME/.kimi-code}" --plugin-root "$NATIVE_PKG"
 ```
+
+安装命令完成后，在新会话输入 **`/mindie-agent 帮我完成首次配置`**，按 [工作区配置指南](skills/mindie-agent/references/workspace-setup.md) 完成本次安装引导。Agent 会复用 GitHub 登录，提供工作区创建/复用选择，并在同意后登记到当前客户端；选择当前目录也可完成引导。
 
 #### 环境与目录说明
 - **基础依赖与硬性指标**：已安装 `git`、`uv`、已登录认证的 **`gh`（GitHub CLI）**，以及 Kimi Code CLI。

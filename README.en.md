@@ -115,7 +115,7 @@ If you are an AI Agent asked by the user to install this plugin, execute the fol
      --plugin-root "$NATIVE_PKG"
    ```
 
-3. **Verify native registry readback and report back**:
+3. **Verify plugin installation**:
    ```sh
    python3 scripts/install_kimi_plugin.py \
      --kimi-home "${KIMI_CODE_HOME:-$HOME/.kimi-code}" \
@@ -123,6 +123,13 @@ If you are an AI Agent asked by the user to install this plugin, execute the fol
      --readback
    ```
    - Confirm `mindie-agent` shows `enabled: true`, `state: "ok"`, and both MCP servers (`knowledge` and `remote`) enabled. Report the verified GitHub account (`$GH_USER`) and installation completion to the user (the temporary clone `/tmp/mindie-agent-kimi` can be removed; the persistent runtime lives under `~/.local/share/mindie-agent/kimi`).
+
+   Continue with step 4 after verification, then report the complete setup result.
+
+4. **Finish first-time setup and development workspace onboarding**:
+   - In this installation, present the existing [user notice](skills/mindie-agent/references/user-notice.md), then follow [Workspace Setup](skills/mindie-agent/references/workspace-setup.md). Offer creating and initializing `vllm-ascend-workspace`, reusing a directory, or keeping the current one even when contribution is disabled. Reuse choices already made.
+   - Approval to create or reuse includes automatically adding the selected path through the current harness's native project/workspace entry and checking the result. Initialize sources through the checkout's `repo_init.py`, reusing the verified GitHub authentication and saved fork configuration.
+   - Report plugin status, workspace path, native registration and source initialization together, including any remaining native UI action.
 
 </details>
 
@@ -137,6 +144,8 @@ cd mindie-agent-kimi && \
 NATIVE_PKG=$(python3 scripts/setup.py | python3 -c "import json,sys; print(json.load(sys.stdin)['native_package'])") && \
 python3 scripts/install_kimi_plugin.py --kimi-home "${KIMI_CODE_HOME:-$HOME/.kimi-code}" --plugin-root "$NATIVE_PKG"
 ```
+
+After the commands, enter **`/mindie-agent help me finish first-time setup`** in a new session and complete [Workspace Setup](skills/mindie-agent/references/workspace-setup.md) as part of installation. The agent reuses GitHub authentication, offers workspace creation/reuse and adds the approved path to the current client. Keeping the current directory also completes the offer.
 
 #### Environment & Storage Notes
 - **Prerequisites (Hard Requirements)**: `git`, `uv`, an authenticated **`gh` (GitHub CLI)**, and Kimi Code CLI.
