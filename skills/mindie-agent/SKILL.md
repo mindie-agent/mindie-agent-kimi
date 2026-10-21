@@ -29,6 +29,8 @@ Meanwhile, `remote-dev` MCP tools are always available on demand in normal conve
 
 ## Progressive Context Disclosure (Read Only on Demand)
 
+- **Installation, first-use GitHub authentication, enterprise-network token login or authentication repair**: read [GitHub Sign-In](references/github-authentication.md). Reuse a working login; otherwise guide browser login or token creation/input and verify credential reuse.
+
 Do **not** load all reference files during ordinary troubleshooting. Read the specific reference file **only** when the current turn requires it:
 
 - **Knowledge & Remote MCP tool usage (`knowledge_query`, `knowledge_explain`, `knowledge_feedback`, `knowledge_distill`, `remote_*`), condition-matched knowledge and diagnostic decision guidance, graded response shapes, long-horizon ledgers, and physical NPU timing / profiler discipline**: read [Domain Tooling](references/domain-skills.md).

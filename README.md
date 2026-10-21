@@ -95,13 +95,12 @@ MindIE Agent 采用**「领域知识与 Skill 手动按需触发 + 远端开发�
    ```sh
    git --version
    gh --version
-   gh auth status
-   GH_USER=$(gh api user --jq .login) && echo "GitHub channel verified for account: $GH_USER"
-   gh auth setup-git
+   GH_USER=$(gh api --hostname github.com user --jq .login) && echo "GitHub channel verified for account: $GH_USER"
+   gh auth setup-git --hostname github.com
    kimi --version
    python3 -c "import sqlite3; assert sqlite3.sqlite_version_info >= (3, 43, 0), sqlite3.sqlite_version; print('SQLite OK:', sqlite3.sqlite_version)"
    ```
-   - **硬性门禁（严禁跳过或静默忽略）**：若未安装 `gh`，请先协助安装（macOS：`brew install gh`；Windows：`winget install --id GitHub.cli`；Ubuntu / WSL：`sudo apt update && sudo apt install -y gh`）；若 `gh auth status` 未登录或 `gh api user` 失败，**请勿继续执行后续步骤**，立即引导用户完成 `gh auth login` 并运行 `gh auth setup-git`，直至 `gh api user --jq .login` 稳定返回当前 GitHub 账号名。
+   - **硬性门禁（严禁跳过或静默忽略）**：若未安装 `gh`，请先协助安装（macOS：`brew install gh`；Windows：`winget install --id GitHub.cli`；Ubuntu / WSL：`sudo apt update && sudo apt install -y gh`）。账号读取成功时复用已有认证；需要登录时按 [GitHub 登录引导](skills/mindie-agent/references/github-authentication.md) 选择方式：普通网络使用浏览器，企业网络或浏览器授权受阻时优先 Token。已有 Token 就在 `gh` 隐藏输入提示中粘贴（或使用已提供的私有文件），没有则引导创建。验证账号、Git 和后续进程可复用凭据后继续；网络/证书错误先修复传输，不反复要求登录。
    - 优先使用 Python 3.13；Windows 要求 Python >= 3.12（用于非阻塞 MCP 管道），POSIX 要求 Python >= 3.11。链接的底层 SQLite 版本须 `>= 3.43.0`（支持 FTS5 与 `contentless_delete`）。
 
 2. **克隆仓库、构建持久化锁定运行时并通过 Kimi 原生插件接口注册**：
@@ -132,7 +131,7 @@ MindIE Agent 采用**「领域知识与 Skill 手动按需触发 + 远端开发�
 如果你习惯在终端手动执行，可直接运行以下命令完成 GitHub 通道校验、运行时构建与原生插件注册：
 
 ```sh
-gh auth status && gh auth setup-git && \
+gh api --hostname github.com user --jq .login && gh auth setup-git --hostname github.com && \
 git clone https://github.com/mindie-agent/mindie-agent-kimi.git && \
 cd mindie-agent-kimi && \
 NATIVE_PKG=$(python3 scripts/setup.py | python3 -c "import json,sys; print(json.load(sys.stdin)['native_package'])") && \
