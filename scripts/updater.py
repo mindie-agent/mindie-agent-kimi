@@ -204,10 +204,13 @@ def _installed_version(current: dict) -> str:
 def _release_catalog(adapter: dict, current: dict, deadline: float) -> dict:
     from paths import resolve_kimi_bin
 
+    kimi = resolve_kimi_bin(adapter)
+    if not (isinstance(kimi, str) and kimi):
+        raise CheckFailed("adapter configuration lacks kimi_bin for release selection")
     # Bound all pagination, asset and source reads together, including cleanup.
     output = bounded_run(
         [sys.executable, str(HERE / "release_metadata.py"), "select",
-         "--kimi-bin", resolve_kimi_bin(adapter),
+         "--kimi-bin", kimi,
          "--installed-version", _installed_version(current)],
         "", timeout=min(60, _remaining(deadline, RESERVE + 2)), transport=True,
     )
@@ -576,13 +579,25 @@ def _clear_switch_ghosts(adapter):
         write_status(status, adapter)
 
 
+def _kimi_env(adapter: dict) -> dict | None:
+    from paths import resolve_kimi_bin
+
+    try:
+        kimi = resolve_kimi_bin(adapter)
+    except (OSError, ValueError, FileNotFoundError):
+        kimi = None
+    if isinstance(kimi, str) and kimi:
+        return dict(os.environ, MINDIE_KIMI_BIN=kimi)
+    return None
+
+
 def _readback(adapter: dict, deadline: float, reserve: float = RESERVE) -> dict:
     home = adapter.get("kimi_home") or os.environ.get("KIMI_CODE_HOME")
     if not isinstance(home, str) or not home:
         raise CheckFailed("adapter configuration lacks kimi_home for native readback")
     output = bounded_run(
         [sys.executable, str(HERE / "install_kimi_plugin.py"), "--kimi-home", home, "--readback"],
-        "", timeout=_op_timeout(deadline, reserve, 60),
+        "", timeout=_op_timeout(deadline, reserve, 60), env=_kimi_env(adapter),
     )
     return json.loads(output)
 
@@ -613,7 +628,7 @@ def native_install(adapter: dict, package: Path, deadline: float, reserve: float
     try:
         output = bounded_run(
             [sys.executable, str(HERE / "install_kimi_plugin.py"), "--kimi-home", home, "--plugin-root", str(package)],
-            "", timeout=_op_timeout(deadline, reserve, 120),
+            "", timeout=_op_timeout(deadline, reserve, 120), env=_kimi_env(adapter),
         )
         report = json.loads(output)
     except CheckFailed:
@@ -1246,6 +1261,10 @@ def install_schedule(config_file=None) -> int:
                 {
                     "Label": "agent.mindie.kimi-update",
                     "ProgramArguments": command,
+                    "EnvironmentVariables": {
+                        "PATH": os.environ.get("PATH")
+                        or "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+                    },
                     "StartInterval": INTERVAL_SECONDS,
                     "StandardOutPath": os.devnull,
                     "StandardErrorPath": os.devnull,

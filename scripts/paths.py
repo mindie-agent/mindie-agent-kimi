@@ -172,6 +172,9 @@ def resolve_kimi_bin(config=None):
     if explicit := os.environ.get("MINDIE_KIMI_BIN"):
         return explicit
     config = config if config is not None else load_adapter_config()
+    stamped = config.get("kimi_bin")
+    if isinstance(stamped, str) and stamped:
+        return stamped
     home = config.get("kimi_home") or os.environ.get("KIMI_CODE_HOME")
     if isinstance(home, str) and home:
         candidate = Path(home) / "bin" / ("kimi.exe" if os.name == "nt" else "kimi")

@@ -81,6 +81,7 @@ class SchedulerLauncherTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(payload["ProgramArguments"][1], str(current))
         self.assertIn("--config", payload["ProgramArguments"])
+        self.assertIn("PATH", payload.get("EnvironmentVariables", {}))
         self.assertTrue(any("launchctl" in cmd[0] for cmd in captured))
         self.assertEqual(bootstrap.read_text(), STALE)
 

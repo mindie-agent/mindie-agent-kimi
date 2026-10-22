@@ -362,6 +362,25 @@ class UpdaterTests(unittest.TestCase):
                              deadline=time.monotonic() + 240)
         self.assertEqual(calls[1][0], "/env/git")
 
+    def test_kimi_bin_propagates_from_stamped_adapter_to_catalog_and_native_install(self):
+        from unittest.mock import patch
+
+        adapter = dict(self.adapter, kimi_bin="/pinned/kimi", kimi_home=str(self.tmp / "kimi-home"))
+        calls = []
+
+        def fake_run(argv, stdin, **kw):
+            calls.append((list(argv), kw.get("env")))
+            return "{}"
+
+        self._catalog.stop()
+        with patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}, clear=False), \
+                patch.object(updater, "bounded_run", side_effect=fake_run):
+            os.environ.pop("MINDIE_KIMI_BIN", None)
+            updater._release_catalog(adapter, {}, time.monotonic() + 240)
+            updater._readback(adapter, time.monotonic() + 240)
+        self.assertIn("/pinned/kimi", calls[0][0])
+        self.assertEqual(calls[1][1]["MINDIE_KIMI_BIN"], "/pinned/kimi")
+
     def test_scheduled_check_resolves_with_pinned_git_under_stripped_path(self):
         import shutil as shutil_mod
 
