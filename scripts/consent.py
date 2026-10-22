@@ -71,6 +71,8 @@ def _stranded_candidates(filename: str) -> list[Path]:
     seen = []
     try:
         root = state_dir() / "update" / "generations"
+    except TimeoutError:
+        raise
     except (OSError, ValueError, FileNotFoundError):
         root = None
     if root is not None and root.is_dir():
@@ -88,6 +90,8 @@ def _read_json(path: Path):
         raw = consent_store._read_bytes(path)
     except FileNotFoundError:
         return "missing", None
+    except TimeoutError:
+        raise
     except OSError:
         return "unreadable", None
     try:
@@ -107,6 +111,8 @@ def _atomic_write_bytes(path: Path, raw: bytes) -> None:
     except BaseException:
         try:
             os.unlink(tmp)
+        except TimeoutError:
+            raise
         except OSError:
             pass
         raise
@@ -123,6 +129,8 @@ def _shared_file_lock(path: Path):
 def _marker_path():
     try:
         return first_use_path()
+    except TimeoutError:
+        raise
     except (OSError, ValueError, FileNotFoundError):
         return None
 
@@ -162,6 +170,8 @@ def install_traces() -> bool:
         return True
     try:
         legacy = community_config_path()
+    except TimeoutError:
+        raise
     except (OSError, ValueError, FileNotFoundError):
         return False
     return bool(legacy is not None and legacy.exists())
@@ -171,6 +181,8 @@ def _consent_rank(path: Path, view: dict) -> tuple[float, float]:
     ts = max(float(view.get("choice_at") or 0.0), float(view.get("reporting_at") or 0.0))
     try:
         mtime = path.stat().st_mtime
+    except TimeoutError:
+        raise
     except OSError:
         mtime = 0.0
     return (ts, mtime)
@@ -196,6 +208,8 @@ def adopt_stranded_consent() -> dict:
         path, view = max(valid, key=lambda item: _consent_rank(item[0], item[1]))
         try:
             _atomic_write_bytes(profile, consent_store._read_bytes(path))
+        except TimeoutError:
+            raise
         except OSError as exc:
             result.update(action="error")
             result["notes"].append(f"stranded consent adoption failed: {type(exc).__name__}")
@@ -246,6 +260,8 @@ def _repoint_config_paths(shared: Path, adapter_path: Path, adapter: dict) -> No
         if state == "ok" and engine.get("community_config") != str(shared):
             engine["community_config"] = str(shared)
             _store(engine_path, engine)
+    except TimeoutError:
+        raise
     except (OSError, ValueError, FileNotFoundError):
         pass
 
@@ -275,6 +291,8 @@ def adopt_community_settings() -> dict:
         try:
             adapter_path = config_path()
             adapter = load_adapter_config()
+        except TimeoutError:
+            raise
         except (OSError, ValueError, FileNotFoundError) as exc:
             result.update(action="error")
             result["notes"].append(f"adapter config unavailable: {type(exc).__name__}")
@@ -297,6 +315,8 @@ def adopt_community_settings() -> dict:
             if not shared.exists():
                 try:
                     _atomic_write_bytes(shared, consent_store._read_bytes(legacy))
+                except TimeoutError:
+                    raise
                 except OSError as exc:
                     result.update(action="error")
                     result["notes"].append(f"legacy adoption failed: {type(exc).__name__}")

@@ -20,6 +20,8 @@ def _alive(pid: int) -> bool:
         return windows_process_alive(pid)
     try:
         os.kill(pid, 0)
+    except TimeoutError:
+        raise
     except OSError:
         return False
     result = subprocess.run(
@@ -620,6 +622,8 @@ def _diag_events(root: Path):
     for path in Path(root).rglob("*.jsonl"):
         try:
             events.extend(path.read_text().splitlines())
+        except TimeoutError:
+            raise
         except OSError:
             pass
     return events

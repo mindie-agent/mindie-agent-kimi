@@ -21,11 +21,15 @@ def prepare_service_env(config=None):
         if config is None:
             try:
                 config = load_adapter_config()
+            except TimeoutError:
+                raise
             except Exception:
                 config = {}
         value = config.get("kimi_bin")
         if not (isinstance(value, str) and value):
             value = resolve_kimi_bin(config)
+    except TimeoutError:
+        raise
     except Exception:
         value = None
     if value:
@@ -36,6 +40,8 @@ def prepare_service_env(config=None):
             git = config.get("git_bin") if isinstance(config, dict) else None
             if not (isinstance(git, str) and git):
                 git = resolve_git_bin()
+    except TimeoutError:
+        raise
     except Exception:
         git = None
     if isinstance(git, str) and git:

@@ -46,81 +46,14 @@ if str(HERE) not in sys.path:
 from bounded import run
 from paths import PLUGIN_ROOT, config_path as default_config_path
 
-PROBE_MODULES = (
-    "mindie_knowledge.loop.cli",
-    "mindie_knowledge.loop.activation",
-    "mindie_knowledge.loop.engine",
-    "remote_dev.mcp.tools",
+from runtime_probe import (  # noqa: F401
+    PROBE_MODULES,
+    PROBE_SCRIPT,
+    _FTS_PROBE,
+    _PROBE_TAIL,
+    _PROBE_TEMPLATE,
+    probe_script,
 )
-_PROBE_TEMPLATE = """
-import importlib
-import os
-import sys
-missing = []
-if sys.version_info < ((3, 12) if os.name == "nt" else (3, 11)):
-    missing.append("Python 3.12+ on Windows or 3.11+ on POSIX is required; prefer Python 3.13")
-for name in {modules!r}:
-    try:
-        importlib.import_module(name)
-    except Exception as exc:
-        missing.append(f"{{name}} ({{type(exc).__name__}}: {{exc}})")
-if not missing:
-    from mindie_knowledge.loop.engine import Engine
-    from mindie_knowledge.loop.activation import Admission
-    from mindie_knowledge.loop import cli
-    from mindie_knowledge.loop import locks
-    from mindie_knowledge.loop import settings as _settings
-    if not callable(getattr(Engine, "stop_if_idle", None)):
-        missing.append("core engine lacks the stop_if_idle API")
-    if not callable(getattr(cli, "load_transcript_adapter", None)):
-        missing.append("core cli lacks load_transcript_adapter")
-    if not callable(getattr(locks, "lock_held", None)):
-        missing.append("core locks lacks lock_held")
-    if not callable(getattr(_settings, "CommunityWriteContext", None)):
-        missing.append("core settings lack the CommunityWriteContext API")
-    for method in ("activate", "deactivate", "active_lease", "claim", "inspect", "check"):
-        if not callable(getattr(Admission, method, None)):
-            missing.append("core Admission lacks " + method)
-if not missing:
-    try:
-        module = cli.load_transcript_adapter({{"transcript_adapter": {parser!r}}})
-        if module is None:
-            missing.append("transcript adapter did not load")
-    except Exception as exc:
-        missing.append(f"transcript adapter load failed ({{type(exc).__name__}}: {{exc}})")
-"""
-
-_FTS_PROBE = r"""
-import sqlite3
-_fts = None
-try:
-    _fts = sqlite3.connect(":memory:")
-    _fts.execute("CREATE VIRTUAL TABLE probe USING fts5(body, content='', contentless_delete=1)")
-    _fts.execute("INSERT INTO probe(rowid, body) VALUES (1, 'alpha')")
-    if _fts.execute("SELECT rowid FROM probe WHERE probe MATCH 'alpha'").fetchall() != [(1,)]:
-        raise RuntimeError("insert MATCH failed")
-    _fts.execute("UPDATE probe SET body='beta' WHERE rowid=1")
-    if _fts.execute("SELECT rowid FROM probe WHERE probe MATCH 'beta'").fetchall() != [(1,)]:
-        raise RuntimeError("update MATCH failed")
-    if _fts.execute("SELECT rowid FROM probe WHERE probe MATCH 'alpha'").fetchall():
-        raise RuntimeError("stale MATCH survived update")
-    _fts.execute("DELETE FROM probe WHERE rowid=1")
-    if _fts.execute("SELECT rowid FROM probe WHERE probe MATCH 'beta'").fetchall():
-        raise RuntimeError("delete MATCH failed")
-except Exception as exc:
-    missing.insert(0, (
-        "sqlite " + sqlite3.sqlite_version
-        + " lacks FTS5 contentless_delete=1 (SQLite >=3.43.0): "
-        + type(exc).__name__ + ": " + str(exc)[:160]
-    ))
-finally:
-    if _fts is not None:
-        _fts.close()
-"""
-
-_PROBE_TAIL = """
-print("MISSING: " + "; ".join(missing) if missing else "OK")
-"""
 
 BOOTSTRAP_ITEMS = (
     "scripts",
@@ -130,13 +63,6 @@ BOOTSTRAP_ITEMS = (
     "runtime-requirements.txt",
 )
 BOOTSTRAP_COMPLETE = ".bootstrap-complete"
-
-
-def probe_script(parser: str) -> str:
-    return _PROBE_TEMPLATE.format(modules=list(PROBE_MODULES), parser=parser) + _FTS_PROBE + _PROBE_TAIL
-
-
-PROBE_SCRIPT = probe_script(str((PLUGIN_ROOT / "scripts" / "transcript.py").resolve()))
 
 
 def probe_runtime(python):
@@ -376,12 +302,16 @@ def main():
 
         try:
             kimi_bin = resolve_kimi_bin(adapter_value)
+        except TimeoutError:
+            raise
         except (OSError, ValueError):
             kimi_bin = None
         if kimi_bin is not None:
             adapter_value["kimi_bin"] = kimi_bin
         try:
             git_bin = resolve_git_bin()
+        except TimeoutError:
+            raise
         except (OSError, ValueError):
             git_bin = None
         if git_bin is not None:
@@ -420,6 +350,8 @@ def main():
                 with contextlib.redirect_stdout(io.StringIO()):
                     code = updater.install_schedule(config)
                 scheduled = "registered" if code == 0 else "manual"
+            except TimeoutError:
+                raise
             except Exception as exc:
                 scheduled = f"manual ({type(exc).__name__}: {str(exc)[:120]})"
         result = dict(
@@ -470,6 +402,8 @@ def main():
                            "--config", str(config), "--record-setup-failure", type(exc).__name__],
                           "", timeout=5)
             print("MindIE setup diagnostic: " + receipt.strip(), file=sys.stderr)
+        except TimeoutError:
+            raise
         except Exception as logging_error:
             print("MindIE diagnostic storage unavailable: " + type(logging_error).__name__, file=sys.stderr)
         raise

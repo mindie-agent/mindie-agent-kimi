@@ -370,6 +370,8 @@ class HookTests(unittest.TestCase):
         for path in Path(root).rglob("*.jsonl"):
             try:
                 events.extend(path.read_text().splitlines())
+            except TimeoutError:
+                raise
             except OSError:
                 pass
         return events

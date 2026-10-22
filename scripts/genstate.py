@@ -70,6 +70,8 @@ def read_json(path: Path):
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else None
+    except TimeoutError:
+        raise
     except (OSError, ValueError):
         return None
 
@@ -136,6 +138,8 @@ def _lock_once(descriptor, exclusive: bool) -> bool:
         else:
             fcntl.flock(descriptor, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB)
         return True
+    except TimeoutError:
+        raise
     except OSError:
         return False
 
@@ -147,6 +151,8 @@ def _unlock(descriptor) -> None:
             msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
         else:
             fcntl.flock(descriptor, fcntl.LOCK_UN)
+    except TimeoutError:
+        raise
     except OSError:
         pass
     os.close(descriptor)

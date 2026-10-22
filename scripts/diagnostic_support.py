@@ -52,6 +52,8 @@ def _read_small(path, limit=2048):
             return None
         raw = p.read_bytes()
         return raw if len(raw) <= limit else None
+    except TimeoutError:
+        raise
     except OSError:
         return None
 
@@ -136,6 +138,8 @@ def _warn():
         descriptor = sys.stderr.fileno()
         if not os.get_blocking(descriptor):
             os.write(descriptor, (_STORAGE + "\n").encode("ascii"))
+    except TimeoutError:
+        raise
     except Exception:
         pass
 
@@ -169,6 +173,8 @@ def failure(operation, stage, category, *, exception=None, revision=None,
         if incident := _hex(raw.get("incident_id"), 32):
             result["incident_id"] = incident
         return result
+    except TimeoutError:
+        raise
     except Exception:
         _warn()
         return {"logging_failed": True}
@@ -232,14 +238,29 @@ def _unavailable(stage, error_type):
     }
 
 
+def effective_reporting(view, saved):
+    """The authority gates status too; a legacy choice cannot widen consent."""
+    if saved.get("state") in {"corrupt", "unreadable"}:
+        return dict(view, enabled=False, status="unavailable", consent=saved)
+    if not saved.get("choice_revision"):
+        return dict(view, enabled=False, status="needs_choice", consent=saved,
+                    detail="Choose contribution again to authorize knowledge sharing and sanitized fault Issues together.")
+    if saved.get("choice") != "contribute":
+        return dict(view, enabled=False, status="disabled", consent=saved)
+    return dict(view, consent=saved)
+
+
 def reporting_status():
     try:
+        import consent
         from mindie_diagnostics.integration import reporting_status as upstream
 
         result = upstream(config=reporting_config_path())
         if not isinstance(result, dict):
             raise TypeError("invalid reporting status")
-        return result
+        return effective_reporting(result, consent.load())
+    except TimeoutError:
+        raise
     except Exception as exc:
         return _unavailable("reporting_status", type(exc).__name__)
 
@@ -251,6 +272,8 @@ def activate_reporting(*, ensure=True):
 
         bind_environment()
         return upstream(consent_path(), config=reporting_config_path(), ensure=ensure)
+    except TimeoutError:
+        raise
     except Exception as exc:
         return _unavailable("reporting_activation", type(exc).__name__)
 

@@ -21,6 +21,8 @@ def _alive(pid: int) -> bool:
         return windows_process_alive(pid)
     try:
         os.kill(pid, 0)
+    except TimeoutError:
+        raise
     except OSError:
         return False
     result = subprocess.run(

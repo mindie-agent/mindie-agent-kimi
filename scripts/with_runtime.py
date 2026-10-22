@@ -34,6 +34,8 @@ def main(argv=None):
             configured = json.loads(path.read_text(encoding="utf-8")).get("python")
             if isinstance(configured, str) and configured:
                 python = configured
+        except TimeoutError:
+            raise
         except (OSError, ValueError, TypeError):
             pass
     os.environ.pop("PYTHONPATH", None)

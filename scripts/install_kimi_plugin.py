@@ -138,7 +138,7 @@ def verify_install_report(report: dict, package: Path, manifest: dict) -> None:
         )
 
 
-def call(port, token, method, path, data=None):
+def call(port, token, method, path, data=None, *, timeout: float = 15.0):
     req = urllib.request.Request(
         f"http://127.0.0.1:{port}{path}",
         data=None if data is None else json.dumps(data).encode(),
@@ -147,10 +147,29 @@ def call(port, token, method, path, data=None):
     )
     try:
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        with opener.open(req, timeout=15) as res:
+        with opener.open(req, timeout=timeout) as res:
             return {"http": res.status, "body": json.load(res)}
     except urllib.error.HTTPError as exc:
         return {"http": exc.code, "body": json.loads(exc.read())}
+
+
+def wait_ready(port, token_path, process, deadline):
+    while time.monotonic() < deadline and process.poll() is None:
+        if token_path.exists():
+            try:
+                token = token_path.read_text(encoding="utf-8").strip()
+                remaining = deadline - time.monotonic()
+                report = call(
+                    port, token, "GET", "/api/v1/plugins",
+                    timeout=min(2.0, max(0.2, remaining)),
+                )
+                return token, report
+            except TimeoutError:
+                raise
+            except (OSError, ValueError):
+                pass
+        time.sleep(0.4)
+    return None, None
 
 
 def main():
@@ -182,18 +201,8 @@ def main():
         )
         token_path = home / "server.token"
         deadline = time.monotonic() + 20
-        ready = False
-        while time.monotonic() < deadline and process.poll() is None:
-            if token_path.exists():
-                try:
-                    token = token_path.read_text(encoding="utf-8").strip()
-                    report["before"] = call(port, token, "GET", "/api/v1/plugins")
-                    ready = True
-                    break
-                except (OSError, ValueError):
-                    pass
-            time.sleep(0.4)
-        if not ready:
+        token, before = wait_ready(port, token_path, process, deadline)
+        if token is None:
             from diagnostic_support import failure
 
             failure(
@@ -202,6 +211,7 @@ def main():
                 exit_code=process.poll(), reportable=False,
             )
             raise SystemExit("native Kimi plugin API did not become ready")
+        report["before"] = before
         token = token_path.read_text(encoding="utf-8").strip()
         if not args.readback:
             report["install"] = call(port, token, "POST", "/api/v1/plugins", {"source": source})
@@ -220,6 +230,8 @@ def main():
         if process is not None:
             try:
                 process.terminate()
+            except TimeoutError:
+                raise
             except OSError:
                 pass
             try:
@@ -227,6 +239,8 @@ def main():
             except subprocess.TimeoutExpired:
                 try:
                     process.kill()
+                except TimeoutError:
+                    raise
                 except OSError:
                     pass
                 process.wait(timeout=3)

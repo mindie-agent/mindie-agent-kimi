@@ -66,6 +66,8 @@ if __name__ == "__main__":
     try:
         action, engine = sys.argv[1:]
         print(json.dumps({"stop": stop, "restore": restore}[action](engine)))
+    except TimeoutError:
+        raise
     except Exception as exc:
         print(json.dumps({"status": "failed", "error": type(exc).__name__}))
-        sys.exit(1)
+        raise SystemExit(1)

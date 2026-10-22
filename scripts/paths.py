@@ -40,6 +40,8 @@ def _read_config_quiet(path: Path):
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else None
+    except TimeoutError:
+        raise
     except (OSError, ValueError):
         return None
 
@@ -55,6 +57,8 @@ def profile_config_path() -> Path:
             generations = state_dir(data) / "update" / "generations"
             path.relative_to(generations)
             return _default_config_path()
+        except TimeoutError:
+            raise
         except (OSError, ValueError, KeyError, FileNotFoundError):
             pass
     return path

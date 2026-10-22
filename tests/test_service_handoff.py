@@ -40,6 +40,8 @@ class ServiceHandoffTests(unittest.TestCase):
                                 status = rpc(connection, "status", timeout=.3)
                                 if status.get("admission_frozen") is False:
                                     break
+                            except TimeoutError:
+                                raise
                             except (OSError, ValueError):
                                 pass
                         time.sleep(.05)

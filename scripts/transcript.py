@@ -92,6 +92,8 @@ def identify(path) -> FileIdentity | None:
         with open(path, "rb") as stream:
             st = os.fstat(stream.fileno())
             anchor = stream.read(ANCHOR_BYTES)
+    except TimeoutError:
+        raise
     except (OSError, ValueError):
         return None
     return FileIdentity(
@@ -313,6 +315,8 @@ def read_material(
                 consumed.update(raw)
                 result["end"] = stream.tell()
             result["more"] = result["end"] < st.st_size
+    except TimeoutError:
+        raise
     except OSError:
         result.update(status="missing", coverage_note="transcript unreadable")
         return result

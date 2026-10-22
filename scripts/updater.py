@@ -33,18 +33,14 @@ readback, and runs independent knowledge feed sync.
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timedelta
 import json
 import os
 import random
 import re
-import shlex
 import shutil
-import stat
 import subprocess
 import sys
 import time
-import xml.etree.ElementTree as ET
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -94,57 +90,6 @@ COMPLETE = ".mindie-generation-complete"
 LAUNCHER = "mindie_launch.py"
 MIN_PYTHON = (3, 12) if os.name == "nt" else (3, 11)
 
-_FEED_OK = frozenset({"synced", "unchanged"})
-_FEED_PENDING = frozenset({"busy", "deferred"})
-_FEED_ERROR = frozenset({"unavailable", "invalid", "exhausted"})
-_FEED_KNOWN = _FEED_OK | _FEED_PENDING | _FEED_ERROR
-
-
-def _feed_error_summary(rows):
-    parts = [
-        f"{row['repository']}:{row['status']}:{str(row.get('detail') or row.get('cause') or '')[:80]}"
-        for row in rows if row["status"] not in _FEED_OK
-    ]
-    return "; ".join(parts)[:240]
-
-
-def fold_feed_results(output):
-    text = (output or "").strip()
-    if not text:
-        raise ValueError("knowledge sync returned empty output")
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise ValueError("knowledge sync returned non-JSON") from exc
-    if not isinstance(payload, list):
-        raise ValueError("knowledge sync result is not a list")
-    rows = []
-    for item in payload:
-        if not isinstance(item, dict):
-            raise ValueError("knowledge sync row is not an object")
-        status_val = item.get("status")
-        repo = item.get("repository")
-        if not isinstance(status_val, str) or not status_val:
-            raise ValueError("knowledge sync row missing status")
-        if not isinstance(repo, str) or not repo:
-            raise ValueError("knowledge sync row missing repository")
-        if status_val not in _FEED_KNOWN:
-            raise ValueError("knowledge sync unknown status: " + status_val)
-        rows.append(item)
-    good = sum(1 for row in rows if row["status"] in _FEED_OK)
-    pending = sum(1 for row in rows if row["status"] in _FEED_PENDING)
-    failed = sum(1 for row in rows if row["status"] in _FEED_ERROR)
-    if not rows or good == len(rows):
-        return "ok", rows, None
-    summary = _feed_error_summary(rows)
-    if good and (pending or failed):
-        return "degraded", rows, summary
-    if failed:
-        return "sync_failed", rows, summary
-    if pending:
-        return "deferred", rows, summary
-    return "sync_failed", rows, summary
-
 
 class CheckFailed(RuntimeError):
     """A failed check: suppress this exact revision until recover."""
@@ -175,6 +120,8 @@ def _git_bin():
         stamped = load_adapter_config().get("git_bin")
         if isinstance(stamped, str) and stamped:
             return stamped
+    except TimeoutError:
+        raise
     except (OSError, ValueError, FileNotFoundError):
         pass
     try:
@@ -183,6 +130,8 @@ def _git_bin():
         resolved = resolve_git_bin()
         if isinstance(resolved, str) and resolved:
             return resolved
+    except TimeoutError:
+        raise
     except (OSError, ValueError):
         pass
     return "git"
@@ -231,279 +180,54 @@ def resolve_release(remote: str, adapter: dict, current: dict, deadline: float) 
     return selected
 
 
-def _venv_python(venv: Path) -> Path:
-    return venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+import updater_check
+import updater_schedule
+import updater_staging
+from updater_check import (
+    _FEED_ERROR,
+    _FEED_KNOWN,
+    _FEED_OK,
+    _FEED_PENDING,
+    _check_once,
+    _feed_error_summary,
+    _feed_sync,
+    _logging_maintenance,
+    check,
+    fold_feed_results,
+)
+from updater_schedule import (
+    _launchd_state,
+    _native_run,
+    _register_windows_schedule,
+    _schedule_failed,
+    _schedule_wrapper,
+    _task_state,
+    _uninstall_launchd,
+    _uninstall_task,
+    _verify_scheduled_task,
+    _wrapper_body,
+    install_schedule,
+    uninstall_schedule,
+)
+from updater_staging import (
+    _profile_authority_sources,
+    _quote_front_command,
+    _remove_owned_tree,
+    _venv_python,
+    _verify_generation_release,
+    _write_front_wrapper,
+    build_host_package,
+    build_runtime,
+    host_valid_mcp_command,
+    probe_runtime,
+    schedule_command,
+    stage_generation,
+    write_generation_configs,
+)
 
-
-def build_runtime(generation: Path, deadline: float) -> Path:
-    if sys.version_info < MIN_PYTHON:
-        raise CheckFailed(f"Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]}+ is required")
-    requirements = generation / "runtime-requirements.txt"
-    if re.search(r"@main\b", requirements.read_text(encoding="utf-8")):
-        raise CheckFailed("runtime-requirements.txt must pin full commit SHAs, not @main")
-    venv = generation / ".venv"
-    python = _venv_python(venv)
-    uv = shutil.which("uv")
-    from setup import installer_environment
-
-    if uv is None:
-        raise CheckFailed("uv is required to prepare the MindIE runtime")
-    env = installer_environment()
-    bounded_run([uv, "venv", "--python", sys.executable, str(venv)], "",
-                timeout=min(180, _remaining(deadline, RESERVE)), env=env)
-    bounded_run(
-        [uv, "pip", "install", "--python", str(python), "-r", str(requirements)],
-        "", timeout=min(600, _remaining(deadline, RESERVE)),
-        max_output=512 * 1024, env=env, transport=True,
-    )
-    return python
-
-
-def probe_runtime(python: Path, deadline: float, generation: Path) -> None:
-    from setup import probe_script
-
-    parser = str(generation / "scripts" / "transcript.py")
-    output = bounded_run([str(python), "-c", probe_script(parser)], "", timeout=min(60, _remaining(deadline, RESERVE)))
-    if not output.strip().endswith("OK"):
-        raise CheckFailed(f"generation runtime probe failed: {output.strip()[:300]}")
-
-
-def _profile_authority_sources(adapter: dict):
-    from paths import engine_config_path as _engine_path, profile_config_path
-
-    profile = adapter.get("profile_config")
-    if not (isinstance(profile, str) and os.path.isabs(profile)):
-        profile = str(profile_config_path())
-    padapter = None
-    try:
-        candidate = json.loads(Path(profile).read_text(encoding="utf-8"))
-        if isinstance(candidate, dict):
-            padapter = candidate
-    except (OSError, ValueError):
-        pass
-    pengine = None
-    if padapter is not None:
-        try:
-            value = json.loads(Path(_engine_path(padapter)).read_text(encoding="utf-8"))
-            if isinstance(value, dict):
-                pengine = value
-        except (OSError, ValueError, FileNotFoundError):
-            pass
-    return padapter, pengine
-
-
-def write_generation_configs(generation: Path, python: Path, adapter: dict) -> Path:
-    current = read_current(adapter)
-    active = read_json(Path(current['adapter_config']))
-    if active is not None:
-        adapter = active
-    engine = load_engine_config(adapter)
-    engine.pop("agent_command", None)
-    padapter, pengine = _profile_authority_sources(adapter)
-    if pengine is not None:
-        for key in ("community_config", "admission_path"):
-            value = pengine.get(key)
-            if isinstance(value, str) and os.path.isabs(value):
-                engine[key] = value
-    config_dir = generation / "config"
-    gen_engine = config_dir / "kimi.engine.json"
-    gen_adapter = config_dir / "kimi.adapter.json"
-    atomic_write(
-        gen_engine,
-        dict(
-            engine,
-            transcript_adapter=str(generation / "scripts" / "transcript.py"),
-            **__import__("capture_config").prepare(python, generation / "scripts"),
-        ),
-    )
-    profile = (padapter or adapter).get("profile_config")
-    if not (isinstance(profile, str) and os.path.isabs(profile)):
-        from paths import profile_config_path
-
-        profile = str(profile_config_path())
-    gen_adapter_value = dict(
-        adapter,
-        python=str(python),
-        engine_config=str(gen_engine),
-        profile_config=profile,
-    )
-    if padapter is not None and isinstance(padapter.get("community_config"), str):
-        gen_adapter_value["community_config"] = padapter["community_config"]
-    kimi_bin = adapter.get("kimi_bin")
-    if not (isinstance(kimi_bin, str) and kimi_bin):
-        from paths import resolve_kimi_bin
-
-        try:
-            kimi_bin = resolve_kimi_bin(padapter or adapter)
-        except (OSError, ValueError, FileNotFoundError):
-            kimi_bin = None
-    if isinstance(kimi_bin, str) and kimi_bin:
-        gen_adapter_value["kimi_bin"] = kimi_bin
-    git_bin = adapter.get("git_bin")
-    if not (isinstance(git_bin, str) and git_bin):
-        from paths import resolve_git_bin
-
-        try:
-            git_bin = resolve_git_bin()
-        except (OSError, ValueError):
-            git_bin = None
-    if isinstance(git_bin, str) and git_bin:
-        gen_adapter_value["git_bin"] = git_bin
-    gen_adapter_value['domain_source_configs'] = dict(adapter.get('domain_configs') or {})
-    from capture_config import prepare_domains
-    gen_adapter_value['domain_configs'] = prepare_domains(
-        python, gen_adapter_value, read_json(gen_engine), config_directory=str(config_dir / 'domains'),
-        authority_directory=str(Path(profile).parent / 'knowledge-domains'),
-        consent_config=str(Path(profile).with_name('mindie-consent.json')),
-        public_feeds=bool(engine.get('feeds')))
-    atomic_write(gen_adapter, gen_adapter_value)
-    return gen_adapter
-
-
-def host_valid_mcp_command(command: str) -> bool:
-    if not isinstance(command, str) or not command:
-        return False
-    if command.startswith("./"):
-        return True
-    return not (os.path.isabs(command) or "/" in command or "\\" in command)
-
-
-def _write_front_wrapper(package: Path, python: Path) -> str:
-    name = "mindie-front"
-    (package / name).write_text(f'#!/bin/sh\nexec {shlex.quote(str(python))} "$@"\n')
-    (package / name).chmod(0o755)
-    return f"./{name}"
-
-
-def _quote_front_command(python, launcher, config_file) -> str:
-    parts = [str(python), str(launcher), "--config", str(config_file)]
-    return " ".join(f'"{p}"' for p in parts) if os.name == "nt" else " ".join(shlex.quote(p) for p in parts)
-
-
-def schedule_command(launcher: Path, config_file: Path) -> list[str]:
-    return [sys.executable, str(launcher), "--config", str(config_file), "updater", "check"]
-
-
-def build_host_package(
-    generation: Path, adapter: dict, sha: str,
-    package_dir: Path | None = None, config_file=None,
-) -> Path:
-    if config_file is None:
-        raise ValueError("build_host_package requires an explicit config_file")
-    config_file = Path(config_file)
-    launcher_dir = launch_dir(adapter) / sha
-    launcher_dir.mkdir(parents=True, exist_ok=True)
-    launcher = launcher_dir / LAUNCHER
-    if not launcher.is_file():
-        for name in (LAUNCHER, "bounded.py", "diagnostic_support.py", "paths.py"):
-            shutil.copy2(generation / "scripts" / name, launcher_dir / name)
-    package = package_dir if package_dir is not None else generation / "host-package"
-    if package.exists():
-        shutil.rmtree(package)
-    package.mkdir(parents=True)
-    manifest = json.loads((generation / "kimi.plugin.json").read_text(encoding="utf-8"))
-    base = str(manifest.get("version") or "0.0.1").split("+")[0]
-    manifest["version"] = f"{base}+mindie.{sha[:12]}"
-    base_python = sys.executable
-    if os.name == "nt":
-        front = Path(base_python).name
-        front_env = {"PATH": str(Path(base_python).parent) + os.pathsep + os.environ.get("PATH", "")}
-    else:
-        front = _write_front_wrapper(package, Path(base_python))
-        front_env = None
-    bound = ["--config", str(config_file)]
-    for surface in ("knowledge", "remote"):
-        manifest["mcpServers"][surface] = {
-            "command": front,
-            "args": [str(launcher), *bound, "mcp", surface],
-        }
-        if front_env is not None:
-            manifest["mcpServers"][surface]["env"] = dict(front_env)
-    quoted = _quote_front_command(base_python, launcher, config_file)
-    for hook in manifest.get("hooks", []):
-        if op := {"PreToolUse": "pretool", "Stop": "stop"}.get(hook.get("event")):
-            hook["command"] = f"{quoted} hook {op}"
-    for name in ("skills", "commands"):
-        source = generation / name
-        if source.is_dir():
-            shutil.copytree(source, package / name)
-    (package / "kimi.plugin.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    metadata = {"version": manifest["version"]}
-    if re.fullmatch(SHA, sha):
-        metadata["revision"] = sha
-    for folder in (generation / "scripts", launcher_dir, package / "scripts"):
-        path = folder / "diagnostic-build.json"
-        if not path.exists():
-            atomic_write(path, metadata)
-    return package
-
-
-def _remove_owned_tree(path):
-    def retry_readonly(function, filename, exc_info):
-        error = exc_info[1]
-        if not isinstance(error, PermissionError):
-            raise error
-        os.chmod(filename, stat.S_IWRITE | stat.S_IREAD)
-        function(filename)
-
-    shutil.rmtree(path, onerror=retry_readonly)
-
-
-def stage_generation(
-    sha: str, remote: str, adapter: dict, deadline: float,
-    build=build_runtime, release=None,
-) -> tuple[Path, Path, Path]:
-    target = generations_dir(adapter) / sha
-    if (target / COMPLETE).is_file():
-        if release is not None:
-            _verify_generation_release(target, sha, release)
-        python = _venv_python(target / ".venv")
-        gen_adapter = target / "config" / "kimi.adapter.json"
-        if python.exists() and gen_adapter.is_file():
-            current = read_current(adapter)
-            active, candidate = read_json(Path(current['adapter_config'])), read_json(gen_adapter)
-            if (current.get('sha') != sha and active is not None and candidate is not None
-                    and candidate.get('domain_source_configs') != (active.get('domain_configs') or {})):
-                # A refreshed but unpublished generation is complete only
-                # after both its binding and host package were rebuilt.
-                (target / COMPLETE).unlink()
-                gen_adapter = write_generation_configs(target, python, active)
-                build_host_package(target, active, sha, config_file=gen_adapter)
-                (target / COMPLETE).write_text(f"{sha}\n")
-            return target, python, gen_adapter
-        _remove_owned_tree(target)
-    elif target.exists():
-        _remove_owned_tree(target)
-    staging = generations_dir(adapter) / f".staging-{sha}-{os.getpid()}"
-    staging.mkdir(parents=True, exist_ok=False)
-    try:
-        _git(["init", "-q", str(staging)], timeout=30, deadline=deadline)
-        _git(["remote", "add", "origin", remote], timeout=15, deadline=deadline, cwd=staging)
-        _git(["fetch", "--depth", "1", "origin", sha], timeout=180, deadline=deadline, cwd=staging, transport=True)
-        _git(["checkout", "-q", "--detach", "FETCH_HEAD"], timeout=60, deadline=deadline, cwd=staging)
-        os.replace(staging, target)
-    except Exception:
-        _remove_owned_tree(staging)
-        raise
-    try:
-        if release is not None:
-            _verify_generation_release(target, sha, release)
-        python = build(target, deadline)
-        probe_runtime(python, deadline, target)
-        gen_adapter = write_generation_configs(target, python, adapter)
-        build_host_package(target, adapter, sha, config_file=gen_adapter)
-        (target / COMPLETE).write_text(f"{sha}\n")
-        return target, python, gen_adapter
-    except Exception:
-        _remove_owned_tree(target)
-        raise
-
-
-def _verify_generation_release(generation: Path, sha: str, release: dict) -> None:
-    from release_metadata import metadata
-
-    if metadata(generation, sha) != release:
-        raise CheckFailed("fetched source does not match the formal Release metadata")
+updater_check.bind(sys.modules[__name__])
+updater_schedule.bind(sys.modules[__name__])
+updater_staging.bind(sys.modules[__name__])
 
 
 def _generation_engine(current: dict) -> str:
@@ -531,6 +255,8 @@ def stop_if_idle(adapter: dict, current: dict, deadline: float) -> dict:
             "", timeout=stop_budget,
         )
     except Deferred:
+        raise
+    except TimeoutError:
         raise
     except Exception:
         _record(adapter, service_handoff={"status": "failed", "error": "stop-outcome-unconfirmed", "sha": current.get("sha")})
@@ -584,6 +310,8 @@ def _kimi_env(adapter: dict) -> dict | None:
 
     try:
         kimi = resolve_kimi_bin(adapter)
+    except TimeoutError:
+        raise
     except (OSError, ValueError, FileNotFoundError):
         kimi = None
     if isinstance(kimi, str) and kimi:
@@ -633,9 +361,13 @@ def native_install(adapter: dict, package: Path, deadline: float, reserve: float
         report = json.loads(output)
     except CheckFailed:
         raise
+    except TimeoutError:
+        raise
     except Exception as exc:
         try:
             after = _readback(adapter, deadline, reserve)
+        except TimeoutError:
+            raise
         except Exception as read_exc:
             raise CheckFailed(
                 f"native install uncertain ({str(exc)[:200]}); readback also failed ({str(read_exc)[:200]})"
@@ -690,11 +422,15 @@ def switch(
             }
             write_current(final, adapter)
             _clear_switch_ghosts(adapter)
+        except TimeoutError:
+            raise
         except Exception:
             final = None
             pointer_error = None
             try:
                 write_current(current, adapter)
+            except TimeoutError:
+                raise
             except Exception as exc:
                 pointer_error = f"pointer restore FAILED: {str(exc)[:200]}"
             native_restored = not native_attempted or _rollback_native(adapter, current, install, deadline)
@@ -724,6 +460,8 @@ def _rollback_native(adapter: dict, previous: dict, install, deadline: float) ->
             install(prev_adapter, package, deadline, reserve=FEED_BUDGET + HANDOFF_BUDGET)
             restored = True
             status["rollback"] = "previous native package restored with readback"
+        except TimeoutError:
+            raise
         except Exception as exc:
             status["rollback"] = f"native restore FAILED ({str(exc)[:200]}); previous generation NOT proven restored"
     write_status(status, adapter)
@@ -753,6 +491,8 @@ def _restore_stopped_service(adapter, final, deadline):
         if result.get("status") not in {"restored", "not-needed"}:
             raise RuntimeError("invalid restoration result")
         result["sha"] = final.get("sha")
+    except TimeoutError:
+        raise
     except Exception as exc:
         result = {"status": "failed", "error": type(exc).__name__, "sha": (final or {}).get("sha")}
     _record(adapter, service_handoff=result)
@@ -909,228 +649,6 @@ def _clear_resolve_wait(adapter):
         write_status(status, adapter)
 
 
-def _check_once(adapter: dict, deadline: float, *, force, build, idle, install, lock_timeout) -> int:
-    current = read_current(adapter)
-    remote = os.environ.get("MINDIE_KIMI_UPDATE_REMOTE") or adapter.get("update_remote") or DEFAULT_REMOTE
-    if _resolve_is_waiting(adapter, force):
-        status = read_status(adapter)
-        print(
-            json.dumps({
-                "result": "retry-waiting" if status.get("resolve_failure_class") in _RETRYABLE else status.get("result", "check-failed"),
-                "error": status.get("error"),
-                "failure_class": status.get("resolve_failure_class"),
-                "next_retry_at": status.get("next_retry_at"),
-            })
-        )
-        return 0
-    try:
-        selected = resolve_release(remote, adapter, current, deadline)
-    except Exception as exc:
-        recorded = _note_resolve_failure(adapter, exc, current.get("sha"))
-        print(
-            json.dumps({
-                "result": recorded.get("result", "check-failed"),
-                "error": recorded.get("error"),
-                "failure_class": recorded.get("resolve_failure_class"),
-                "next_retry_at": recorded.get("next_retry_at"),
-                "diagnostic": recorded.get("diagnostic"),
-            })
-        )
-        return 1
-    _clear_resolve_wait(adapter)
-    candidate = selected["candidate"]
-    if candidate is None:
-        result = "current" if selected["status"] == "up_to_date" else selected["status"]
-        status = _record(
-            adapter, current_sha=current.get("sha"), result=result, error=None,
-            release_selection=selected,
-        )
-        print(json.dumps(status))
-        return int(result == "no_compatible_release" or status["result"] == "degraded")
-    release = candidate["metadata"]
-    sha = release["source"]["sha"]
-    failed = read_json(failed_path(adapter))
-    if not force and isinstance(failed, dict) and failed.get("sha") == sha and current.get("sha") != sha:
-        if _failure_gate(failed) == "wait":
-            result_name = "action-required" if failed.get("failure_class") in _ACTIONABLE else "retry-waiting"
-            _record(
-                adapter, current_sha=current.get("sha"), candidate_sha=sha,
-                result=result_name, error=failed.get("error"),
-                failure_class=failed.get("failure_class"),
-                next_retry_at=failed.get("next_retry_at"),
-            )
-            print(
-                json.dumps({
-                    "result": result_name, "sha": sha,
-                    "failure_class": failed.get("failure_class"),
-                    "next_retry_at": failed.get("next_retry_at"),
-                    "error": failed.get("error"),
-                })
-            )
-            return 0
-    if sha == current.get("sha"):
-        _clear_active_failure(adapter, sha)
-        status = _record(adapter, current_sha=sha, result="current", error=None)
-        print(json.dumps(status))
-        return int(status["result"] == "degraded")
-    try:
-        generation, python, gen_adapter = stage_generation(
-            sha, remote, adapter, deadline, build=build, release=release,
-        )
-    except Exception as exc:
-        record = _remember_failure(adapter, sha, exc)
-        diagnostic = _update_diagnostic("stage_generation", exc)
-        _record(
-            adapter, current_sha=current.get("sha"), candidate_sha=sha,
-            result="failed", error=record.get("error"),
-            failure_class=record.get("failure_class"),
-            next_retry_at=record.get("next_retry_at"), diagnostic=diagnostic,
-        )
-        print(
-            json.dumps({
-                "result": "failed", "error": record.get("error"),
-                "failure_class": record.get("failure_class"),
-                "next_retry_at": record.get("next_retry_at"),
-                "diagnostic": diagnostic,
-            })
-        )
-        return 1
-    try:
-        switch(adapter, current, generation, python, gen_adapter, sha, deadline, idle, install, lock_timeout)
-    except LockTimeout:
-        _record(adapter, current_sha=current.get("sha"), candidate_sha=sha, result="deferred-busy", error="operation lock stayed shared")
-        print(json.dumps({"result": "deferred-busy", "sha": sha}))
-        return 0
-    except Deferred as exc:
-        _record(adapter, current_sha=current.get("sha"), candidate_sha=sha, result="deferred", error=str(exc)[:500])
-        print(json.dumps({"result": "deferred", "sha": sha, "reason": str(exc)[:300]}))
-        return 0
-    except Exception as exc:
-        record = _remember_failure(adapter, sha, exc)
-        diagnostic = _update_diagnostic("switch", exc)
-        _record(
-            adapter, current_sha=current.get("sha"), candidate_sha=sha,
-            result="failed", error=record.get("error"),
-            failure_class=record.get("failure_class"),
-            next_retry_at=record.get("next_retry_at"), diagnostic=diagnostic,
-        )
-        print(
-            json.dumps({
-                "result": "failed", "error": record.get("error"),
-                "failure_class": record.get("failure_class"),
-                "next_retry_at": record.get("next_retry_at"),
-                "diagnostic": diagnostic,
-            })
-        )
-        return 1
-    _clear_active_failure(adapter, sha)
-    status = _record(
-        adapter, current_sha=sha, result="switched", needs_host_reload=True, error=None,
-        note=(
-            "MCP/hook dispatch uses the new generation per call; "
-            "existing task authorization is preserved. Native "
-            "Skill/command/MCP/hook definitions refresh with the Kimi host."
-        ),
-    )
-    print(json.dumps(status))
-    return int(status["result"] == "degraded")
-
-
-def check(
-    config=None, *, force=False, build=build_runtime,
-    idle=stop_if_idle, install=native_install, lock_timeout=30.0,
-) -> int:
-    adapter = config if isinstance(config, dict) else load_adapter_config()
-    update_dir(adapter).mkdir(parents=True, exist_ok=True)
-    deadline = time.monotonic() + CHECK_BUDGET
-    try:
-        with check_lock(adapter):
-            code = _check_once(
-                adapter, deadline, force=force, build=build,
-                idle=idle, install=install, lock_timeout=lock_timeout,
-            )
-            _feed_sync(adapter, deadline)
-            try:
-                _logging_maintenance(adapter, deadline)
-            except Exception as exc:
-                _update_diagnostic("logging_maintenance", exc)
-            return code
-    except LockTimeout:
-        print(json.dumps({"result": "check-already-running"}))
-        return 0
-
-
-def _logging_maintenance(adapter, deadline):
-    status = read_status(adapter)
-    remaining = deadline - time.monotonic()
-    if remaining <= 0.1:
-        status["logging_maintenance"] = {"status": "skipped_budget"}
-        write_status(status, adapter)
-        return
-    try:
-        with OperationLock(adapter).shared(timeout=min(0.5, remaining)):
-            current = read_current(adapter)
-        available = min(75, deadline - time.monotonic())
-        if available <= 0:
-            status["logging_maintenance"] = {"status": "skipped_budget"}
-            write_status(status, adapter)
-            return
-        output = bounded_run(
-            [
-                current["python"], "-m", "mindie_diagnostics.cli",
-                "reporting", "maintain", "--update-running", "--config",
-                str(diagnostic_support.reporting_config_path()),
-                "--budget-seconds", str(max(0, available - 2)),
-            ],
-            "", timeout=available, max_output=65536, check=False,
-        )
-        payload = json.loads((output or "").strip() or "null")
-        if not isinstance(payload, dict):
-            raise ValueError("maintenance result is not an object")
-        status["logging_maintenance"] = payload
-    except LockTimeout:
-        status["logging_maintenance"] = {"status": "deferred"}
-    except Exception as exc:
-        status["logging_maintenance"] = {"status": "unavailable", "type": type(exc).__name__}
-    write_status(status, adapter)
-
-
-def _feed_sync(adapter: dict, deadline: float) -> bool:
-    status = read_status(adapter)
-    left = deadline - time.monotonic()
-    if left <= 0:
-        status["feed_sync"] = "skipped: check budget exhausted"
-        status["feed_error"] = "skipped: check budget exhausted"
-        status.pop("feed_results", None)
-        write_status(status, adapter)
-        return False
-    try:
-        with OperationLock(adapter).shared(timeout=min(5, left)):
-            current = read_current(adapter)
-            engine = _generation_engine(current)
-            git_bin = adapter.get("git_bin")
-            env = dict(os.environ, MINDIE_GIT_BIN=git_bin) if isinstance(git_bin, str) and git_bin else None
-            output = bounded_run(
-                [current["python"], "-m", "mindie_knowledge.loop.cli", "sync", "--config", engine],
-                "", timeout=min(FEED_BUDGET, deadline - time.monotonic()), env=env,
-            )
-        aggregate, rows, summary = fold_feed_results(output)
-        status["feed_sync"] = aggregate
-        status["feed_results"] = rows
-        if summary:
-            status["feed_error"] = summary
-        else:
-            status.pop("feed_error", None)
-        write_status(status, adapter)
-        return aggregate == "ok"
-    except Exception as exc:
-        status["feed_sync"] = "sync_failed"
-        status["feed_error"] = str(exc)[:240]
-        status.pop("feed_results", None)
-        write_status(status, adapter)
-        return False
-
-
 def status() -> int:
     try:
         adapter = load_adapter_config()
@@ -1159,277 +677,6 @@ def recover() -> int:
     adapter = load_adapter_config()
     failed_path(adapter).unlink(missing_ok=True)
     return check(adapter, force=True)
-
-
-def _wrapper_body(command) -> str:
-    # Keep a hidden console for the launcher and its ordinary console children.
-    # CREATE_NO_WINDOW alone would let those children allocate a visible console.
-    return (
-        "import subprocess\n"
-        "startup = subprocess.STARTUPINFO()\n"
-        "startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW\n"
-        "startup.wShowWindow = subprocess.SW_HIDE\n"
-        f"raise SystemExit(subprocess.call({list(command)!r},\n"
-        "    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,\n"
-        "    startupinfo=startup, creationflags=subprocess.CREATE_NEW_CONSOLE))\n"
-    )
-
-
-def _schedule_wrapper(adapter: dict, command) -> Path:
-    wrapper = update_dir(adapter) / "MindIEKimiUpdate.pyw"
-    update_dir(adapter).mkdir(parents=True, exist_ok=True)
-    body = _wrapper_body(command)
-    tmp = wrapper.with_name(wrapper.name + f".tmp-{os.getpid()}")
-    tmp.write_text(body, encoding="utf-8")
-    os.replace(tmp, wrapper)
-    return wrapper
-
-
-def _verify_scheduled_task(wrapper: Path, pythonw: Path) -> None:
-    # schtasks writes its XML in the console codepage. Export Unicode directly
-    # so bounded_run's UTF-8 transport also preserves non-ASCII paths.
-    output = bounded_run([
-        "powershell", "-NoProfile", "-NonInteractive", "-Command",
-        "[Console]::OutputEncoding = [Text.UTF8Encoding]::new(); "
-        "Export-ScheduledTask -TaskName MindIEKimiUpdate -ErrorAction Stop",
-    ], "", timeout=30)
-    try:
-        actions = ET.fromstring(output).findall("./{*}Actions/{*}Exec")
-    except ET.ParseError:
-        actions = []
-    if (len(actions) != 1
-            or actions[0].findtext("{*}Command") != str(pythonw)
-            or actions[0].findtext("{*}Arguments") != subprocess.list2cmdline([str(wrapper)])):
-        raise SystemExit(
-            "scheduled task readback does not match the windowless wrapper action; "
-            "the registration is not trusted"
-        )
-
-
-def _register_windows_schedule(adapter: dict, command) -> dict:
-    pythonw = Path(command[0]).with_name("pythonw.exe")
-    if not pythonw.is_file():
-        raise SystemExit(f"windowless Python is unavailable at {pythonw}; task was not registered")
-    wrapper = _schedule_wrapper(adapter, command)
-    # XML keeps the interpreter and wrapper paths separate, without /TR's
-    # command-line length limit or cmd.exe's codepage and metacharacter parsing.
-    task = ET.Element("Task", xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task", version="1.2")
-    trigger = ET.SubElement(ET.SubElement(task, "Triggers"), "TimeTrigger")
-    start = datetime.now() + timedelta(seconds=INTERVAL_SECONDS)
-    ET.SubElement(trigger, "StartBoundary").text = start.isoformat(timespec="seconds")
-    ET.SubElement(ET.SubElement(trigger, "Repetition"), "Interval").text = "PT5M"
-    principal = ET.SubElement(ET.SubElement(task, "Principals"), "Principal", id="Author")
-    ET.SubElement(principal, "LogonType").text = "InteractiveToken"
-    settings = ET.SubElement(task, "Settings")
-    ET.SubElement(settings, "MultipleInstancesPolicy").text = "IgnoreNew"
-    action = ET.SubElement(ET.SubElement(task, "Actions", Context="Author"), "Exec")
-    ET.SubElement(action, "Command").text = str(pythonw)
-    ET.SubElement(action, "Arguments").text = subprocess.list2cmdline([str(wrapper)])
-    definition = wrapper.with_suffix(".xml")
-    ET.ElementTree(task).write(definition, encoding="utf-16", xml_declaration=True)
-    bounded_run(
-        ["schtasks", "/Create", "/F", "/TN", "MindIEKimiUpdate", "/XML", str(definition)],
-        "", timeout=30,
-    )
-    _verify_scheduled_task(wrapper, pythonw)
-    return {"result": "scheduled", "task": "MindIEKimiUpdate", "action": str(wrapper), "verified": True}
-
-
-def install_schedule(config_file=None) -> int:
-    if config_file is not None:
-        config_file = Path(config_file).expanduser().absolute()
-        adapter = json.loads(config_file.read_text(encoding="utf-8"))
-        if not isinstance(adapter, dict):
-            raise SystemExit("adapter configuration must be one JSON object")
-    else:
-        adapter = load_adapter_config()
-        config_file = config_path()
-    current = read_current(adapter)
-    launcher = launch_dir(adapter) / (current.get("sha") or "bootstrap") / LAUNCHER
-    if not launcher.is_file() or not (launcher.parent / "bounded.py").is_file():
-        raise SystemExit(f"no launcher available at {launcher.parent}")
-    command = schedule_command(launcher, config_file)
-    from mindie_diagnostics.service_environment import prepare
-    prepare(update_dir(adapter))
-    if sys.platform == "darwin":
-        import plistlib
-
-        plist = Path.home() / "Library" / "LaunchAgents" / "agent.mindie.kimi-update.plist"
-        plist.parent.mkdir(parents=True, exist_ok=True)
-        with plist.open("wb") as stream:
-            plistlib.dump(
-                {
-                    "Label": "agent.mindie.kimi-update",
-                    "ProgramArguments": command,
-                    "EnvironmentVariables": {
-                        "PATH": os.environ.get("PATH")
-                        or "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-                    },
-                    "StartInterval": INTERVAL_SECONDS,
-                    "StandardOutPath": os.devnull,
-                    "StandardErrorPath": os.devnull,
-                },
-                stream,
-            )
-        uid = os.getuid()
-        try:
-            bounded_run(["launchctl", "bootout", f"gui/{uid}", str(plist)], "", timeout=15)
-        except RuntimeError:
-            pass
-        bounded_run(["launchctl", "bootstrap", f"gui/{uid}", str(plist)], "", timeout=15)
-        print(json.dumps({"result": "scheduled", "agent": str(plist), "interval_seconds": INTERVAL_SECONDS}))
-        return 0
-    if os.name == "nt":
-        print(json.dumps(_register_windows_schedule(adapter, command)))
-        return 0
-    print(
-        json.dumps({
-            "result": "unsupported-platform",
-            "hint": f"run every {INTERVAL_SECONDS}s via your scheduler: " + " ".join(command),
-        })
-    )
-    return 1
-
-
-def _native_run(argv, timeout):
-    completed = subprocess.run(
-        argv, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-        errors="replace", timeout=timeout,
-    )
-    return completed.returncode, completed.stdout or "", completed.stderr or ""
-
-
-def _launchd_state(label, uid, timeout=10):
-    try:
-        code, _, stderr = _native_run(["launchctl", "print", f"gui/{uid}/{label}"], timeout)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return "unknown", f"{type(exc).__name__}: {exc}"[:240]
-    if code == 0:
-        return "loaded", ""
-    if code == 113:
-        return "absent", ""
-    return "unknown", (stderr or "").strip()[:240] or f"launchctl print exited {code}"
-
-
-def _task_state(task, timeout=30):
-    escaped = task.replace("'", "''")
-    script = (
-        "$ErrorActionPreference='Stop'; "
-        "$m = @(Get-ScheduledTask -ErrorAction Stop | Where-Object { "
-        f"$_.TaskName -eq '{escaped}' -and $_.TaskPath -eq '\\' }}); "
-        "Write-Output $m.Count"
-    )
-    try:
-        code, stdout, stderr = _native_run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script], timeout
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return "unknown", f"{type(exc).__name__}: {exc}"[:240]
-    if code != 0:
-        return "unknown", (stderr or "").strip()[:240] or f"powershell exited {code}"
-    try:
-        count = int((stdout or "").strip().splitlines()[-1])
-    except (ValueError, IndexError):
-        return "unknown", "unparseable task enumeration"
-    return ("present" if count else "absent"), ""
-
-
-def _schedule_failed(stage, category, *, plist=None, task=None, detail=""):
-    payload = {"result": "failed", "stage": stage, "category": category}
-    if plist is not None:
-        payload["retained_plist"] = str(plist)
-    if task is not None:
-        payload["retained_task"] = task
-    if detail:
-        payload["error"] = str(detail)[:240]
-    print(json.dumps(payload))
-    return 1
-
-
-def _uninstall_launchd(label, plist):
-    uid = os.getuid()
-    target = f"gui/{uid}/{label}"
-    state, detail = _launchd_state(label, uid)
-    if state == "unknown":
-        return _schedule_failed("query", "manager-or-permission", plist=plist, detail=detail)
-    if state == "loaded":
-        bootout_detail = ""
-        try:
-            code, _, stderr = _native_run(["launchctl", "bootout", target], 15)
-            if code:
-                bootout_detail = (stderr or "").strip()[:240]
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            bootout_detail = f"{type(exc).__name__}: {exc}"[:240]
-        cutoff = time.monotonic() + 3.0
-        while state != "absent" and time.monotonic() < cutoff:
-            time.sleep(0.2)
-            left = cutoff - time.monotonic()
-            if left <= 0:
-                break
-            state, detail = _launchd_state(label, uid, timeout=min(5.0, left))
-        if state != "absent":
-            return _schedule_failed(
-                "readback",
-                "service-retained" if state == "loaded" else "state-unproven",
-                plist=plist, detail=detail or bootout_detail,
-            )
-    plist.unlink(missing_ok=True)
-    print(json.dumps({"result": "unscheduled"}))
-    return 0
-
-
-def _uninstall_task(task):
-    state, detail = _task_state(task)
-    if state == "unknown":
-        return _schedule_failed("query", "manager-or-permission", task=task, detail=detail)
-    if state == "present":
-        escaped = task.replace("'", "''")
-        script = f"Unregister-ScheduledTask -TaskName '{escaped}' -TaskPath '\\' -Confirm:$false -ErrorAction Stop"
-        try:
-            code, _, stderr = _native_run(
-                ["powershell", "-NoProfile", "-NonInteractive", "-Command", script], 30
-            )
-            if code:
-                detail = (stderr or "").strip()[:240]
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            detail = f"{type(exc).__name__}: {exc}"[:240]
-        cutoff = time.monotonic() + 3.0
-        while state != "absent" and time.monotonic() < cutoff:
-            time.sleep(0.2)
-            left = cutoff - time.monotonic()
-            if left <= 0:
-                break
-            state, query_detail = _task_state(task, timeout=min(10.0, left))
-            if state != "present":
-                detail = query_detail or detail
-        if state != "absent":
-            return _schedule_failed(
-                "readback",
-                "service-retained" if state == "present" else "state-unproven",
-                task=task, detail=detail,
-            )
-    print(json.dumps({"result": "unscheduled"}))
-    return 0
-
-
-def uninstall_schedule(*, label=None, plist_path=None, schedule_root=None, task=None) -> int:
-    if sys.platform == "darwin":
-        label = label or "agent.mindie.kimi-update"
-        if plist_path is not None:
-            plist = Path(plist_path).expanduser().absolute()
-        else:
-            root = Path(schedule_root).expanduser().absolute() if schedule_root else Path.home() / "Library" / "LaunchAgents"
-            plist = root / (label + ".plist")
-        return _uninstall_launchd(label, plist)
-    if os.name == "nt":
-        return _uninstall_task(task or "MindIEKimiUpdate")
-    print(
-        json.dumps({
-            "result": "unsupported-platform",
-            "hint": "remove the agent.mindie.kimi-update schedule with your platform tools",
-        })
-    )
-    return 1
 
 
 def main(argv=None) -> int:

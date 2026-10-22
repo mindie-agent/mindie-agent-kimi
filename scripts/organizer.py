@@ -228,6 +228,8 @@ def prepare_isolated_home(base: Path) -> Path:
         if origin.exists() and not dest.exists():
             try:
                 os.symlink(origin, dest, target_is_directory=origin.is_dir())
+            except TimeoutError:
+                raise
             except OSError:
                 if origin.is_file():
                     shutil.copy2(origin, dest)
@@ -303,6 +305,8 @@ def _invoke_native(prompt, receipt, *, instruction=INSTRUCTION, agent_text=None,
     finally:
         try:
             shutil.rmtree(isolated)
+        except TimeoutError:
+            raise
         except OSError:
             receipt["cleanup_failed"] = True
 
@@ -404,6 +408,8 @@ def _run_summary(payload):
             raise ConfigurationError("summary worker policy changed")
         model = NativeKimiModel()
         result = summarizer.summarize_batch(payload, model)
+    except TimeoutError:
+        raise
     except Exception as exc:
         error = _category(exc)
         error_reason = _reason(exc, model.receipt if model else {})
@@ -451,6 +457,8 @@ def main():
     except UnsupportedSchema:
         print("summary protocol failed: invalid_result (unsupported schema)", file=sys.stderr)
         return AGENT_ERROR_EXIT_CODES["invalid_result"]
+    except TimeoutError:
+        raise
     except Exception as exc:
         category = _category(exc)
     print("summary protocol failed: " + category, file=sys.stderr)

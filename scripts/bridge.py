@@ -69,6 +69,8 @@ def _record_failure(stage, category):
         import diagnostic_support
 
         diagnostic_support.failure("stop", stage, category, reportable=False)
+    except TimeoutError:
+        raise
     except Exception:
         pass
 
@@ -86,6 +88,8 @@ def handle_pretool():
                 event.get("tool_call_id"),
                 tool_input,
             )
+    except TimeoutError:
+        raise
     except Exception:
         pass
     _print({})
@@ -98,6 +102,8 @@ def _authorized_lease(session):
     admission = gate()
     try:
         view = admission.inspect(session)
+    except TimeoutError:
+        raise
     except Exception:
         return None, "admission-unreadable"
     status = view.get("status") if isinstance(view, dict) else None
@@ -167,6 +173,8 @@ def handle_stop():
 
             prepare_service_env()
             result = capture_hook(str(engine_path()), normalized)
+        except TimeoutError:
+            raise
         except Exception:
             _record_failure("handoff", "internal")
             _print({})
@@ -177,6 +185,8 @@ def handle_stop():
         elif stage in {"unavailable", "rejected"}:
             cause = result.get("cause") or result.get("reason")
             _record_failure(stage, cause if cause in SAFE_CAUSES else "internal")
+    except TimeoutError:
+        raise
     except Exception:
         _record_failure("hook", "internal")
     _print({})

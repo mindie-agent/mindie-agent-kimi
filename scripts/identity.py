@@ -158,36 +158,40 @@ def session_state(session_id: str, *, kimi_home=None) -> dict:
         return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
+    except TimeoutError:
+        raise
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
 
 
 def _from_index(index: Path, session_id: str, home: Path) -> Path | None:
+    matched = None
     try:
-        raw = index.read_bytes()
+        with index.open("rb") as stream:
+            for line in stream:
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(row, dict):
+                    continue
+                if (row.get("sessionId") or row.get("session_id") or row.get("id")) != session_id:
+                    continue
+                directory = row.get("sessionDir") or row.get("session_dir")
+                if isinstance(directory, str) and directory:
+                    path = Path(directory) if Path(directory).is_absolute() else home / directory
+                    if path.is_dir():
+                        resolved = path.resolve()
+                        if matched is not None and matched != resolved:
+                            raise ValueError("session index has contradictory directories for this id")
+                        matched = resolved
+    except TimeoutError:
+        raise
     except OSError:
         return None
-    matched = None
-    for line in raw.splitlines():
-        if not line.strip():
-            continue
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(row, dict):
-            continue
-        if (row.get("sessionId") or row.get("session_id") or row.get("id")) != session_id:
-            continue
-        directory = row.get("sessionDir") or row.get("session_dir")
-        if isinstance(directory, str) and directory:
-            path = Path(directory) if Path(directory).is_absolute() else home / directory
-            if path.is_dir():
-                resolved = path.resolve()
-                if matched is not None and matched != resolved:
-                    raise ValueError("session index has contradictory directories for this id")
-                matched = resolved
     return matched
 
 
@@ -230,6 +234,8 @@ def _tail_records(session_id: str, *, kimi_home=None):
             if window >= size or window >= TAIL_MAX or any(_opens_turn(r) for r in records):
                 return records
             window = min(window * 4, TAIL_MAX, size)
+    except TimeoutError:
+        raise
     except OSError:
         return []
 
@@ -424,9 +430,8 @@ def _connect(path: Path, *, create: bool):
         raise FileNotFoundError(str(path))
     path.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(path, timeout=5.0)
+    db.execute("PRAGMA journal_mode=WAL;")
     db.execute("PRAGMA busy_timeout=5000;")
-    if create:
-        db.execute("PRAGMA journal_mode=WAL;")
     return db
 
 

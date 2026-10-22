@@ -31,11 +31,15 @@ def stop_real_services(engine_config, *, timeout=8.0, sleep=time.sleep):
 
     try:
         config = core_cli.config_at(str(engine_config))
+    except TimeoutError:
+        raise
     except (OSError, ValueError):
         return
     consumer = Path(config["root"]) / config["domain"] / "consumer.lock"
     try:
         connection = core_cli.connect(config)
+    except TimeoutError:
+        raise
     except (FileNotFoundError, OSError, ValueError):
         return
     try:
@@ -93,8 +97,29 @@ def close_diagnostic_writers(root):
             recorder.close()
 
 
+import atexit
+import shutil
+import tempfile
+
+_DIAG_ROOT = Path(tempfile.mkdtemp(prefix="mindie-kimi-test-diag-")).resolve()
+atexit.register(lambda: shutil.rmtree(_DIAG_ROOT, ignore_errors=True))
+
+os.environ.setdefault("MINDIE_DIAGNOSTICS_ROOT", str(_DIAG_ROOT / "diag-root"))
+
+
 def env_for(config=None, extra=None, kimi_home=None):
     env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    defaults = {
+        "HOME": _DIAG_ROOT / "home",
+        "USERPROFILE": _DIAG_ROOT / "home",
+        "XDG_CONFIG_HOME": _DIAG_ROOT / "config",
+        "XDG_DATA_HOME": _DIAG_ROOT / "data",
+    }
+    for name, value in defaults.items():
+        if not extra or name not in extra:
+            env[name] = str(value)
+    diag_base = Path(config).resolve().parent if config is not None else _DIAG_ROOT
+    env.setdefault("MINDIE_DIAGNOSTICS_ROOT", str(diag_base / "diag-root"))
     if config is not None:
         env["MINDIE_KIMI_CONFIG"] = str(config)
     if kimi_home is not None:
@@ -121,14 +146,16 @@ def redactor_executable():
     if _REDACTOR is None:
         from mindie_knowledge.loop.transcript_redaction import install_scanner
 
-        _REDACTOR = install_scanner(
-            _REAL_HOME / ".cache" / "mindie-agent" / "gitleaks"
-        )
+        source = _REAL_HOME / ".cache" / "mindie-agent" / "gitleaks"
+        cache = _DIAG_ROOT / "gitleaks"
+        if source.is_dir():
+            shutil.copytree(source, cache, dirs_exist_ok=True)
+        _REDACTOR = install_scanner(cache)
     return _REDACTOR
 
 
 _REDACTOR = None
-_REAL_HOME = Path.home()
+_REAL_HOME = Path(os.environ.get("MINDIE_TEST_REAL_HOME") or Path.home())
 
 
 def make_config(tmp: Path, *, sharing=False, roots=None):

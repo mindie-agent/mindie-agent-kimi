@@ -158,7 +158,8 @@ def run(request):
             status = "returned"
     except organizer.UnsupportedSchema:
         raise
-    except Exception as exc:
+    except (organizer.NativeFailure, organizer.NativeStartError, ImportError,
+            ValueError, KeyError, TypeError, AssertionError) as exc:
         error, error_reason = _classify(exc, receipt)
         status = _status(receipt)
     usage = receipt.get("usage")

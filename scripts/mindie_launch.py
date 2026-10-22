@@ -104,6 +104,8 @@ def _config_path() -> Path:
 def _load_config():
     try:
         data = json.loads(_config_path().read_text(encoding="utf-8"))
+    except TimeoutError:
+        raise
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None
@@ -122,6 +124,8 @@ def _state_dir(config=None) -> Path:
                 root = json.loads(Path(engine).read_text(encoding="utf-8")).get("root")
                 if isinstance(root, str):
                     return Path(root) / "kimi-adapter"
+            except TimeoutError:
+                raise
             except (OSError, ValueError):
                 pass
     base = os.environ.get("XDG_CONFIG_HOME")
@@ -134,6 +138,8 @@ def _sharing_enabled() -> bool:
         return False
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
+    except TimeoutError:
+        raise
     except (OSError, ValueError):
         _record_hook("sharing-probe", "configuration")
         return False
@@ -148,6 +154,8 @@ def _sharing_enabled() -> bool:
         return False
     try:
         raw = json.loads(community_path.read_text(encoding="utf-8"))
+    except TimeoutError:
+        raise
     except (OSError, ValueError):
         _record_hook("sharing-probe", "configuration")
         return False
@@ -196,6 +204,8 @@ def _unlock(descriptor) -> None:
             import fcntl
 
             fcntl.flock(descriptor, fcntl.LOCK_UN)
+    except TimeoutError:
+        raise
     except OSError:
         pass
 
@@ -231,6 +241,8 @@ def _release(descriptor) -> None:
 def _current(state: Path) -> dict:
     try:
         data = json.loads((state / "update" / "current.json").read_text(encoding="utf-8"))
+    except TimeoutError:
+        raise
     except (OSError, ValueError):
         data = None
     if isinstance(data, dict):
@@ -268,6 +280,8 @@ def _fail_open() -> int:
 def _record_hook(stage, category, op="stop"):
     try:
         diagnostic_support.failure("hook", stage, category, reportable=(op != "stop"))
+    except TimeoutError:
+        raise
     except Exception:
         pass
 
@@ -286,6 +300,8 @@ def _read_hook_stdin(deadline):
             while True:
                 try:
                     chunk = os.read(fd, 65536)
+                except TimeoutError:
+                    raise
                 except (OSError, ValueError):
                     return
                 if not chunk:
@@ -330,12 +346,16 @@ def _hook(op: str) -> int:
     try:
         state = _state_dir(config)
         descriptor = _shared_lock(state, lock_deadline)
+    except TimeoutError:
+        raise
     except Exception:
         _record_hook("entry", "lock-unavailable", op)
         return _fail_open()
     try:
         try:
             current = _current(state)
+        except TimeoutError:
+            raise
         except Exception:
             _record_hook("entry", "generation-unavailable", op)
             return _fail_open()
@@ -364,6 +384,8 @@ def _hook(op: str) -> int:
         except bounded.CommandTimedOut as exc:
             _hook_failure("helper_deadline", "child_deadline", exc)
             return _fail_open()
+        except TimeoutError:
+            raise
         except Exception as exc:
             _hook_failure("helper_failed", "child_failure", exc)
             return _fail_open()
@@ -378,6 +400,8 @@ def _hook(op: str) -> int:
             return _fail_open()
         print(json.dumps(value, ensure_ascii=False), flush=True)
         return 0
+    except TimeoutError:
+        raise
     except Exception:
         return _fail_open()
     finally:
@@ -563,6 +587,8 @@ def _mcp(surface: str) -> int:
                 response["result"] = diagnostic_support.attach(response["result"], exc.diagnostic)
             except (bounded.CommandTimedOut, LockUnavailable):
                 response = _stage_error(ident, message, "deadline", surface)
+            except TimeoutError:
+                raise
             except Exception:
                 response = _stage_error(ident, message, "helper_failed", surface)
             with pending_lock:
@@ -571,6 +597,8 @@ def _mcp(surface: str) -> int:
                 if pending.get(ident) is cancel:
                     pending.pop(ident)
             send(response)
+        except TimeoutError:
+            raise
         except OSError:
             transport_closed.set()
             with pending_lock:
@@ -676,6 +704,8 @@ def _mcp(surface: str) -> int:
 def _updater(rest) -> int:
     try:
         current = _current(_state_dir())
+    except TimeoutError:
+        raise
     except Exception as exc:
         print(f"no committed generation: {exc}"[:400], file=sys.stderr)
         return 2
@@ -688,8 +718,13 @@ def _updater(rest) -> int:
         if os.name == "nt":
             import subprocess
 
-            return subprocess.call([current["python"], str(script), *rest], env=_child_env(current))
+            return subprocess.run(
+                [current["python"], str(script), *rest],
+                env=_child_env(current), timeout=300, check=False,
+            ).returncode
         os.execve(current["python"], [current["python"], str(script), *rest], _child_env(current))
+    except TimeoutError:
+        raise
     except OSError:
         diagnostic_support.failure("updater", "helper_failed", "child_failure")
         print("committed generation updater could not start", file=sys.stderr)

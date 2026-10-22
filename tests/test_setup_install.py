@@ -170,7 +170,8 @@ class SetupInstallTests(unittest.TestCase):
             config = tmp / "kimi.json"
             project = tmp / "proj"
             project.mkdir()
-            env = env_for()
+            env = env_for(extra={"MINDIE_DIAGNOSTICS_ROOT": str(tmp / "diag-root"),
+                                 "MINDIE_DIAGNOSTICS_CONFIG": str(tmp / "diagnostics.json")})
             first = subprocess.run(
                 [
                     sys.executable,
@@ -205,6 +206,7 @@ class SetupInstallTests(unittest.TestCase):
                     str(project),
                     "--community-visibility",
                     "public",
+                    "--no-schedule",
                 ],
                 capture_output=True,
                 text=True,
@@ -398,6 +400,8 @@ class SetupInstallTests(unittest.TestCase):
             for _ in range(30):
                 try:
                     os.kill(pid, 0)
+                except TimeoutError:
+                    raise
                 except OSError:
                     alive = False
                     break
@@ -555,7 +559,8 @@ class SetupInstallTests(unittest.TestCase):
             config = tmp / "kimi.json"
             project = tmp / "proj"
             project.mkdir()
-            env = env_for()
+            env = env_for(extra={"MINDIE_DIAGNOSTICS_ROOT": str(tmp / "diag-root"),
+                                 "MINDIE_DIAGNOSTICS_CONFIG": str(tmp / "diagnostics.json")})
             first = subprocess.run(
                 [
                     sys.executable,
@@ -599,6 +604,7 @@ class SetupInstallTests(unittest.TestCase):
                     str(project),
                     "--community-visibility",
                     "public",
+                    "--no-schedule",
                 ],
                 capture_output=True,
                 text=True,

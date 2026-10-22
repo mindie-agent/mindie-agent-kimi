@@ -17,8 +17,29 @@ def _load(path: Path) -> dict:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
+    except TimeoutError:
+        raise
     except (OSError, ValueError):
         return {}
+
+
+def _read_regular_json(path: Path):
+    p = Path(path)
+    if not p.exists():
+        return "missing", None
+    if not p.is_file():
+        return "unavailable", None
+    try:
+        value = json.loads(p.read_text(encoding="utf-8"))
+    except TimeoutError:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+        return "unavailable", None
+    return (None, value) if isinstance(value, dict) else ("unavailable", None)
+
+
+def _number(value):
+    return None if isinstance(value, bool) or not isinstance(value, (int, float)) else value
 
 
 def first_use():

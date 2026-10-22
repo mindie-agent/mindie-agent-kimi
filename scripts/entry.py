@@ -40,7 +40,12 @@ import os
 import shlex
 from pathlib import Path
 
-from entry_state import configuration_required, consume_activation_id
+from entry_state import (
+    _number,
+    _read_regular_json,
+    configuration_required,
+    consume_activation_id,
+)
 from identity import (
     _entry_from_openings,
     current_entry_scan,
@@ -109,6 +114,8 @@ def consume_slash(session, command):
         lease = gate().active_lease(session)
         if lease and isinstance(lease.get("token"), str):
             token = lease["token"]
+    except TimeoutError:
+        raise
     except Exception:
         token = None
     if token is None:
@@ -121,6 +128,8 @@ def _diagnostics(session):
         from mindie_knowledge.loop.diagnostics import snapshot
 
         return snapshot(str(engine_config_path()), session=session)
+    except TimeoutError:
+        raise
     except Exception as exc:
         return dict(
             status="unavailable",
@@ -133,23 +142,6 @@ def _diagnostics(session):
 
 def _bounded_text(value, limit):
     return value[:limit] if isinstance(value, str) and value else None
-
-
-def _read_regular_json(path):
-    p = Path(path)
-    if not p.exists():
-        return "missing", None
-    if not p.is_file():
-        return "unavailable", None
-    try:
-        value = json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
-        return "unavailable", None
-    return (None, value) if isinstance(value, dict) else ("unavailable", None)
-
-
-def _number(value):
-    return None if isinstance(value, bool) or not isinstance(value, (int, float)) else value
 
 
 def _launcher_command(adapter, operation, current):
@@ -168,6 +160,8 @@ def _launcher_command(adapter, operation, current):
         config_value = adapter.get("base_config") if isinstance(adapter.get("base_config"), str) else str(config_path())
         config_file = str(Path(config_value).expanduser().resolve())
         return shlex.join([python, str(launcher.resolve()), "--config", config_file, "updater", operation])
+    except TimeoutError:
+        raise
     except Exception:
         return None
 
@@ -182,6 +176,8 @@ def _updater_view():
         failed_state, failed = _read_regular_json(failed_path(adapter))
         status_state, status = _read_regular_json(status_path(adapter))
         current_state, current = _read_regular_json(current_path(adapter))
+    except TimeoutError:
+        raise
     except Exception:
         return {"status": "unavailable"}
     if "unavailable" in {failed_state, status_state, current_state}:
@@ -255,6 +251,8 @@ def _knowledge_status_payload(session=None):
 
     try:
         sharing_view, saved = public_status(), consent_mod.load()
+    except TimeoutError:
+        raise
     except (OSError, ValueError, TypeError, KeyError) as exc:
         return dict(
             configured=None,
@@ -343,12 +341,16 @@ def _adopt_install_state():
         community = consent_mod.adopt_community_settings()
         if community.get("action") not in {"already"} or community.get("conflict"):
             report["community"] = community
+    except TimeoutError:
+        raise
     except Exception as exc:
         report["community"] = dict(action="error", error=type(exc).__name__)
     try:
         stranded = consent_mod.adopt_stranded_consent()
         if stranded.get("action") not in {"already"} or stranded.get("notes"):
             report["consent"] = stranded
+    except TimeoutError:
+        raise
     except Exception as exc:
         report["consent"] = dict(action="error", error=type(exc).__name__)
     return report or None
@@ -421,6 +423,8 @@ def _apply_choice(session, cwd, choice, *, repository=None, account=None, branch
             try:
                 ensure_service(engine_config_path())
                 view["service"] = "started"
+            except TimeoutError:
+                raise
             except Exception as exc:
                 view["service"] = f"not-started:{type(exc).__name__}"
     return view
@@ -444,6 +448,8 @@ def _configured_init_activation(session, cwd, activation_id, *, activate_reporte
             service = "started"
         else:
             service = "not-requested:configuration-incomplete-or-disabled"
+    except TimeoutError:
+        raise
     except Exception as exc:
         service = f"not-started:{type(exc).__name__}"
     import diagnostic_support
@@ -607,6 +613,8 @@ def op_status(session):
 
         try:
             admitted = gate().inspect(session).get("status") == "active"
+        except TimeoutError:
+            raise
         except (OSError, ValueError, TypeError):
             pass
     if not admitted:
@@ -728,6 +736,8 @@ def op_recover(session, _model_arguments=""):
             output = run([python, "-m", "mindie_knowledge.loop.cli", operation, "--config", engine, *extra], "", timeout=20)
             result[operation] = json.loads(output)
             result["actions"].append(operation)
+        except TimeoutError:
+            raise
         except Exception as exc:
             receipt = None
             if getattr(exc, "returncode", None) == 2:

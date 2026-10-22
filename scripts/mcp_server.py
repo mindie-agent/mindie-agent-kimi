@@ -627,6 +627,8 @@ def handle(surface, message):
 
             try:
                 cwd = session_cwd(session)
+            except TimeoutError:
+                raise
             except Exception:
                 cwd = None
             payload = dispatch(
@@ -649,6 +651,9 @@ def handle(surface, message):
         else:
             try:
                 payload = remote_call(name, body, session)
+            except TimeoutError as exc:
+                result = remote_stage_failure(body, name, "helper_failed", exc)
+                return dict(jsonrpc="2.0", id=ident, result=result)
             except (ValueError, OSError, RuntimeError, KeyError, TypeError) as exc:
                 result = remote_stage_failure(body, name, "helper_failed", exc)
                 return dict(jsonrpc="2.0", id=ident, result=result)
@@ -660,6 +665,9 @@ def handle(surface, message):
             )
         succeeded = result.get("isError") is not True
         return dict(jsonrpc="2.0", id=ident, result=result)
+    except TimeoutError as exc:
+        result = failure(exc)
+        return dict(jsonrpc="2.0", id=ident, result=result)
     except (ValueError, OSError, RuntimeError, KeyError, TypeError, ImportError) as exc:
         result = failure(exc)
         return dict(jsonrpc="2.0", id=ident, result=result)
@@ -667,6 +675,16 @@ def handle(surface, message):
         if claimed:
             try:
                 finish_nonce(nonce, succeeded)
+            except TimeoutError as exc:
+                from diagnostic_support import failure as record_failure
+
+                diagnostic = record_failure("mcp.call", "finish_nonce", "local_storage", exception=exc)
+                warning = "Local bind receipt could not be saved. The tool result is unchanged; do not repeat the call."
+                result["structuredContent"] = dict(
+                    result.get("structuredContent") or {},
+                    bind_warning=warning, diagnostic_ref=diagnostic,
+                )
+                result["content"] = [*result.get("content", []), dict(type="text", text=warning)]
             except (OSError, sqlite3.Error) as exc:
                 from diagnostic_support import failure as record_failure
 

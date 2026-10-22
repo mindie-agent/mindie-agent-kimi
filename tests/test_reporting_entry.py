@@ -28,7 +28,8 @@ class ReportingEntryTests(unittest.TestCase):
                 "reporting": "disabled",
             }))
             before = authority.read_bytes()
-            with patch.dict(os.environ, MINDIE_KIMI_CONFIG=str(config), KIMI_CODE_HOME=str(home)), \
+            with patch.dict(os.environ, MINDIE_KIMI_CONFIG=str(config), KIMI_CODE_HOME=str(home),
+                            MINDIE_DIAGNOSTICS_ROOT=str(root / "logs")), \
                     patch("mindie_diagnostics.reporting_commands.ensure", return_value={
                         "status": "degraded", "category": "test_service_unavailable",
                     }) as ensure, patch("knowledge_service.ensure_service"):
@@ -63,7 +64,8 @@ class ReportingEntryTests(unittest.TestCase):
             arguments = "contribute account/knowledge account"
             write_session(home, "ses_init", turn_records(
                 plugin_origin("init", "one-contribution-choice", arguments), arguments), cwd=root)
-            with patch.dict(os.environ, MINDIE_KIMI_CONFIG=str(config), KIMI_CODE_HOME=str(home)), \
+            with patch.dict(os.environ, MINDIE_KIMI_CONFIG=str(config), KIMI_CODE_HOME=str(home),
+                            MINDIE_DIAGNOSTICS_ROOT=str(root / "logs")), \
                     patch("mindie_diagnostics.reporting_commands.ensure", return_value={
                         "status": "degraded", "category": "test_service_unavailable",
                     }) as ensure, patch("knowledge_service.ensure_service"):
@@ -118,7 +120,8 @@ class ReportingEntryTests(unittest.TestCase):
             root = Path(raw).resolve()
             config = make_config(root)
             authority = config.parent / "mindie-consent.json"
-            with patch.dict(os.environ, MINDIE_KIMI_CONFIG=str(config)), \
+            with patch.dict(os.environ, MINDIE_KIMI_CONFIG=str(config),
+                            MINDIE_DIAGNOSTICS_ROOT=str(root / "logs")), \
                     patch("mindie_diagnostics.reporting_commands.ensure") as ensure:
                 for choice in ("contribute", "disabled", "later", "read-only"):
                     authority.write_text(json.dumps({"schema": "mindie-consent/1", "choice": choice,

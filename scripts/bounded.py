@@ -171,6 +171,8 @@ def _kill_tree(process, pgid=None):
             return
         try:
             os.killpg(pgid if pgid is not None else process.pid, signal.SIGKILL)
+        except TimeoutError:
+            raise
         except (OSError, ProcessLookupError):
             pass
         return
@@ -190,6 +192,8 @@ def _kill_tree(process, pgid=None):
                 [os.path.join(system_root, "System32", "taskkill.exe"), "/F", "/T", "/PID", str(process.pid)],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5,
             )
+        except TimeoutError:
+            raise
         except (OSError, subprocess.TimeoutExpired):
             pass
         if process.poll() is None:
@@ -496,6 +500,8 @@ def run(
         if POSIX:
             try:
                 pgid = os.getpgid(process.pid)
+            except TimeoutError:
+                raise
             except OSError:
                 pgid = process.pid
 
@@ -523,7 +529,4 @@ def run(
                 raise CommandTimedOut(message, category=category, retry_after=retry_after) from None
             raise CommandTimedOut(message) from exc
         finally:
-            try:
-                atexit.unregister(cleanup)
-            except Exception:
-                pass
+            atexit.unregister(cleanup)
