@@ -417,7 +417,7 @@ def _local_answer(message: dict):
             result=dict(
                 protocolVersion="2025-11-25",
                 capabilities={"tools": {}},
-                serverInfo={"name": "mindie-kimi-front", "version": "0.0.3"},
+                serverInfo={"name": "mindie-kimi-front", "version": "0.1.0"},
             ),
         )
     if method == "ping":
