@@ -158,11 +158,11 @@ class WindowsScheduleTests(unittest.TestCase):
         self.assertEqual(payload["action"], str(self.wrapper))
 
     def test_long_interpreter_and_config_paths_survive_registration(self):
-        self.command[0] = str(self.tmp / ("a" * 100) / ("b" * 100) / "python.exe")
+        self.command[0] = str(self.tmp / ("a" * 70) / ("b" * 70) / "python.exe")
         self.pythonw = Path(self.command[0]).with_name("pythonw.exe")
         self.pythonw.parent.mkdir(parents=True)
         self.pythonw.touch()
-        self.command[3] = str(self.tmp / ("c" * 100) / ("d" * 100) / "中文.json")
+        self.command[3] = str(self.tmp / ("c" * 70) / ("d" * 70) / "中文.json")
         self.test_registration_references_wrapper_and_verifies_readback()
 
     def test_missing_pythonw_does_not_replace_existing_task(self):

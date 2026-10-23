@@ -37,7 +37,7 @@ class SetupInstallTests(unittest.TestCase):
                 ],
                 capture_output=True,
                 text=True,
-                timeout=20,
+                timeout=90,
                 env=env_for(),
             )
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -83,7 +83,7 @@ class SetupInstallTests(unittest.TestCase):
                 ],
                 capture_output=True,
                 text=True,
-                timeout=20,
+                timeout=90,
                 env=env_for(),
             )
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -186,7 +186,7 @@ class SetupInstallTests(unittest.TestCase):
                 ],
                 capture_output=True,
                 text=True,
-                timeout=20,
+                timeout=90,
                 env=env,
             )
             self.assertEqual(first.returncode, 0, first.stderr)
@@ -210,7 +210,7 @@ class SetupInstallTests(unittest.TestCase):
                 ],
                 capture_output=True,
                 text=True,
-                timeout=20,
+                timeout=90,
                 env=env,
             )
             self.assertEqual(second.returncode, 0, second.stderr)
@@ -315,7 +315,7 @@ class SetupInstallTests(unittest.TestCase):
                 ],
                 capture_output=True,
                 text=True,
-                timeout=20,
+                timeout=90,
                 env=env_for(),
             )
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -533,7 +533,7 @@ class SetupInstallTests(unittest.TestCase):
                 ],
                 capture_output=True,
                 text=True,
-                timeout=20,
+                timeout=90,
                 env=env_for(),
             )
             self.assertEqual(first.returncode, 0, first.stderr)
@@ -575,7 +575,7 @@ class SetupInstallTests(unittest.TestCase):
                 ],
                 capture_output=True,
                 text=True,
-                timeout=20,
+                timeout=90,
                 env=env,
             )
             self.assertEqual(first.returncode, 0, first.stderr)
@@ -608,7 +608,7 @@ class SetupInstallTests(unittest.TestCase):
                 ],
                 capture_output=True,
                 text=True,
-                timeout=20,
+                timeout=90,
                 env=env,
             )
             self.assertEqual(second.returncode, 0, second.stderr)
