@@ -155,8 +155,8 @@ class UpdaterRecoveryTests(unittest.TestCase):
                      (p.is_dir() and not (p / updater.COMPLETE).exists())]
         self.assertEqual(leftovers, [])
         self.assertIsNone(genstate.read_current(self.adapter)["sha"])
-        # Feed sync is independent: it ran even though the candidate failed.
-        self.assertEqual(calls, ["sync"])
+        # Release recovery never starts the session knowledge flywheel.
+        self.assertEqual(calls, [])
         # Same failed revision waits during backoff window; installer never called.
         self.assertEqual(self.run_check(), 0)
         self.assertEqual(self.installs, [])

@@ -1,6 +1,6 @@
 {
   "name": "mindie-agent",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "MindIE Agent for Kimi Code: local knowledge retrieval, optional community contribution, and general remote-dev. No SessionStart auto-configuration.",
   "keywords": ["mindie", "knowledge", "vllm-ascend", "remote-dev"],
   "license": "MIT",
@@ -31,7 +31,7 @@
       "timeout": 20
     }
   ],
-  "systemPrompt": "MindIE Agent binds a task only from the native /mindie-agent entry (verified skill_activation or plugin_command origin). Call mindie_entry with a fresh request_nonce for that invocation; never pass a session id. The saved install-level choice persists and is never re-asked. Remote-dev works without the entry. Stop capture must not continue the turn.",
+  "systemPrompt": "Remote-dev tools use a fresh request_nonce bound by the native PreToolUse hook. Never pass or invent native session identity.",
   "interface": {
     "displayName": "MindIE Agent",
     "shortDescription": "Domain knowledge, optional public contribution, and general remote-dev for Kimi Code",

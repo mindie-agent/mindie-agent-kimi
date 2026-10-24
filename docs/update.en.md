@@ -13,7 +13,7 @@
 3. **Single Atomic Pointer (`update/current.json`)**: `current.json` stores one atomic tuple `{generation, python, adapter_config, sha}` so code, interpreter, and configuration always come from the same committed generation.
 4. **Versioned Persistent Launchers**: Each generated host package points to `update/launch/<sha>/mindie_launch.py` (with initial setup at `update/launch/bootstrap/`). Staging never mutates live entrypoints, and previously loaded launchers remain callable across updates.
 5. **Exclusive Cutover & Native Registry Readback**: Under the exclusive operation lock, the updater calls `stop_if_idle` on the current service, installs the new package through Kimi's native plugin API with full readback verification (ID, version, enabled state, and source path), and then flips `current.json`. If verification fails, both the pointer and the native package roll back and record `rollback` in status.
-6. **Independent Knowledge Feed Sync**: Under a shared operation lock, `mindie_knowledge.loop.cli sync` refreshes the public knowledge feed even when the plugin code itself is unchanged.
+6. **No Passive Knowledge Service Startup or Feed Sync**: Background update checks (`updater.py check`) strictly validate releases, stage immutable generations, and cut over when idle; they never start the knowledge service or run public feed sync in passive background checks (public feed sync runs only inside sessions explicitly enabled via `/mindie-agent`).
 
 ---
 

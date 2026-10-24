@@ -26,11 +26,11 @@
 
 ---
 
-**MindIE Agent for Kimi Code** (`mindie-agent-kimi`) is the native Kimi Code plugin adapter for [MindIE Agent](https://github.com/mindie-agent/mindie-agent), supporting the **Ascend NPU AI Infra design, development, and testing workflow**. In `v0.0.3`, it delivers **`vLLM-Ascend` feature development & testing**, **`AscendC` / `Triton` operator implementation & verification**, remote NPU execution, and sanitized public experience capture, while additional Ascend AI Infra domains continue expanding on the roadmap.
+**MindIE Agent for Kimi Code** (`mindie-agent-kimi`) is the native Kimi Code plugin adapter for [MindIE Agent](https://github.com/mindie-agent/mindie-agent), supporting the **Ascend NPU AI Infra design, development, and testing workflow**. In `v0.1.1`, it delivers **`vLLM-Ascend` feature development & testing**, **`AscendC` / `Triton` operator implementation & verification**, remote NPU execution, and sanitized public experience capture, while additional Ascend AI Infra domains continue expanding on the roadmap.
 
 Designed around the [MindIE Agent Engineering Design Principles](https://github.com/mindie-agent/mindie-agent/blob/main/docs/design-principles.en.md), this thin adapter handles Kimi session identity, `wire.jsonl` public transcript extraction, MCP dispatch, and atomic generation updates, while delegating core knowledge, remote execution, and diagnostics to shared components.
 
-> **Ecosystem & Release Note**: Currently `v0.0.3` supports four hosts — Claude Code ([`mindie-agent-cc`](https://github.com/mindie-agent/mindie-agent-cc)), OpenAI Codex CLI ([`mindie-agent-codex`](https://github.com/mindie-agent/mindie-agent-codex)), Kimi Code (this repository), and DeepSeek Harness ([`mindie-agent-dsh`](https://github.com/mindie-agent/mindie-agent-dsh)) — all built on the same shared knowledge, remote-dev, and diagnostics components. See the [Documentation Index](#documentation-index) for per-host verification scope.
+> **Ecosystem & Release Note**: Currently `v0.1.1` supports four hosts — Claude Code ([`mindie-agent-cc`](https://github.com/mindie-agent/mindie-agent-cc)), OpenAI Codex CLI ([`mindie-agent-codex`](https://github.com/mindie-agent/mindie-agent-codex)), Kimi Code (this repository), and DeepSeek Harness ([`mindie-agent-dsh`](https://github.com/mindie-agent/mindie-agent-dsh)) — all built on the same shared knowledge, remote-dev, and diagnostics components. See the [Documentation Index](#documentation-index) for per-host verification scope.
 
 ---
 
@@ -40,9 +40,9 @@ MindIE Agent combines **manual on-demand activation for domain knowledge & skill
 
 | Capability | Trigger Mode | When to Use | How to Trigger |
 | :--- | :--- | :--- | :--- |
-| **Experience, Knowledge & Skill System**<br/>(`mindie-knowledge` + `mindie-agent` Skill) | **🎯 Manual Trigger** | When designing Ascend AI Infra features, developing in `vLLM-Ascend`, writing `AscendC` / `Triton` kernels, authoring unit/accuracy tests, or tuning performance | Explicitly type **`/mindie-agent` + your task description** |
-| **Remote Ascend NPU Dev & Testing**<br/>(`remote-dev` MCP toolset) | **⚡ Default Auto-Trigger** | When syncing local code/tests to a remote Ascend server/container, running NPU builds/tests, checking `npu-smi`, or tailing long job logs | **No slash command needed**—just describe the remote task in natural language |
-| **Experience Capture & Unified Contribution Switch**<br/>(`Stop` Auto-Capture + Gitleaks Redaction + Fault Reporting) | **🔄 Opt-In Background Run** | When contributing sanitized design, kernel development, testing, or tuning takeaways back to the open-source knowledge base, or reporting sanitized tool faults | Once explicitly enabled in setup, every eligible session is redacted locally and packaged into a knowledge PR in the background |
+| **Experience, Knowledge & Skill System**<br/>(`mindie-knowledge` + `mindie-agent` Skill) | **🎯 Manual Per-Session Trigger** | When designing Ascend AI Infra features, developing in `vLLM-Ascend`, writing `AscendC` / `Triton` kernels, authoring unit/accuracy tests, or tuning performance | Explicitly type **`/mindie-agent` + your task description** once in the current session to enable knowledge search, feedback, distillation, and sync across subsequent turns (`/mindie-agent:deactivate` turns it off for the session) |
+| **Remote Ascend NPU Dev & Testing**<br/>(`remote-dev` MCP toolset + factual status) | **⚡ Default Auto-Trigger** | When syncing local code/tests to a remote Ascend server/container, running NPU builds/tests, checking `npu-smi`, or tailing long job logs | **No slash command needed**—just describe the remote task in natural language |
+| **Experience Capture & Unified Contribution Switch**<br/>(`Stop` Auto-Capture + Gitleaks Redaction + Fault Reporting) | **🔄 Background Run in Enabled Sessions** | When contributing sanitized design, kernel development, testing, or tuning takeaways back to the open-source knowledge base, or reporting sanitized tool faults | **Configure Consent Once, Active in `/mindie-agent` Sessions**—once explicitly enabled in setup, every `/mindie-agent`-enabled session is redacted locally and packaged into a knowledge PR in the background; unactivated sessions perform zero `Stop` capture |
 
 ### Scenario 1: Type `/mindie-agent` for Feature Design, Kernel Development & Test Authoring (Manual Trigger)
 > **Context**: Designing new Ascend features, implementing `AscendC` / `Triton` operators, or writing `vLLM-Ascend` accuracy tests benefits from prior architecture conventions, kernel constraints, and verified test patterns.  
@@ -167,7 +167,7 @@ Everyday tasks use a single entry point—**`/mindie-agent`**—without requirin
 | **Work on a remote Ascend server / container (sync files, run tests, check `npu-smi`)** | **No slash command needed**—just describe the remote task in natural language (`remote-dev` triggers automatically) |
 | **First-time setup, check status, or toggle the unified contribution switch** | `/mindie-agent` (or `/mindie-agent check status / enable community sharing`) |
 
-> 💡 **Background Experience Capture**: Once you explicitly opt in to community contribution during setup, eligible sessions extract and sanitize public user/assistant messages in the background at session end (`Stop`). Local capture completion is distinct from external PR creation; inspect status receipts to verify remote publication.
+> 💡 **Background Experience Capture**: Once you explicitly opt in to community contribution during setup, your saved consent persists across sessions; in any session where you have invoked `/mindie-agent`, turn end (`Stop`) extracts and sanitizes public user/assistant messages in the background (ordinary sessions where `/mindie-agent` was not invoked skip `Stop` capture). Local capture completion is distinct from external PR creation; inspect status receipts to verify remote publication.
 
 ### Automatic Updates & Safe Uninstall
 
@@ -218,9 +218,9 @@ python3 -m unittest discover -s tests/native -v
 python3 -m unittest discover -s tests
 ```
 
-### `0.0.3` Release Benchmark
+### `0.1.1` Release Benchmark
 
-[`benchmarks/release.json`](benchmarks/release.json) (driven by `benchmarks/release.py`) defines the reproducible `0.0.3` CPU microbenchmark (`public-transcript-parsing`, metric `public_transcript_parse` in `us/op`), measuring per-operation latency for extracting public user/assistant messages and filtering non-public reasoning fields from `wire.jsonl`. Every formal GitHub Release publishes `benchmark-results.json`, `benchmark-results.md`. These deterministic CPU microbenchmarks verify local parser latency only and are distinct from live Ascend A2/A3 NPU integration acceptance and end-to-end Agent productivity evaluation.
+[`benchmarks/release.json`](benchmarks/release.json) (driven by `benchmarks/release.py`) defines the reproducible `0.1.1` CPU microbenchmark (`public-transcript-parsing`, metric `public_transcript_parse` in `us/op`), measuring per-operation latency for extracting public user/assistant messages and filtering non-public reasoning fields from `wire.jsonl`. Every formal GitHub Release publishes `benchmark-results.json`, `benchmark-results.md`. These deterministic CPU microbenchmarks verify local parser latency only and are distinct from live Ascend A2/A3 NPU integration acceptance and end-to-end Agent productivity evaluation.
 
 ---
 

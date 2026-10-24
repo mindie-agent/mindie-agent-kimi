@@ -18,7 +18,7 @@ jobs:
         uv venv --python 3.13 && uv pip install -r runtime-requirements.txt pytest
       test-command: |
         .venv/bin/python tests/preflight.py
-        .venv/bin/python -m unittest discover -s tests
+        PYTHONPATH=tests:scripts .venv/bin/python -m pytest -q tests
         .venv/bin/python -m unittest discover -s tests/native
       node: true
       build-command: |

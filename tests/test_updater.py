@@ -23,7 +23,7 @@ GIT_ENV = dict(
 
 MANIFEST = {
     "name": "mindie-agent",
-    "version": "0.1.1",
+    "version": "0.1.2",
     "mcpServers": {
         "knowledge": {"command": "python3", "args": ["./old"]},
         "remote": {"command": "python3", "args": ["./old"]},
@@ -301,8 +301,8 @@ class UpdaterTests(unittest.TestCase):
     def test_release_tag_mismatch_fails_before_build_or_install(self):
         (self.src / "marker.txt").write_text("moved tag")
         git(["commit", "-am", "moved tag"], self.src)
-        git(["tag", "-f", "v0.1.1"], self.src)
-        git(["push", "--force", str(self.bare), "v0.1.1"], self.src)
+        git(["tag", "-f", "v0.1.2"], self.src)
+        git(["push", "--force", str(self.bare), "v0.1.2"], self.src)
         build_calls = []
         self.assertEqual(self.run_check(
             build=lambda *args: build_calls.append(args),
