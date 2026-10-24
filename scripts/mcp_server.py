@@ -497,17 +497,19 @@ def knowledge_call(name, args, session):
 
     body = rsi_explore.forwarded(args) if name in {"knowledge_query", "knowledge_explain"} else dict(args)
     if name == "knowledge_query":
+        # Boundary check, not the Store's duplicate: reject a malformed call
+        # before claiming a lease or cold-starting the knowledge service.
         from mindie_knowledge.materials.provenance import query_request
 
         query_request(body.get("query"), body.get("limit", 5), body.get("conditions"), body.get("continuation"))
     engine_path, engine, routed = _engine_for_call(name, body)
-    lease = Admission(admission_path(engine)).active_lease(session)
+    lease = Admission(admission_path(engine)).knowledge_lease(session)
     # A bound native task may read a configured public domain without granting
     # that domain contribution rights. Mutations still need its own lease.
     read_bound = False
     if lease is None and routed and name in {"knowledge_query", "knowledge_explain"}:
         default_engine = load_engine_config_at(engine_config_path())
-        read_bound = Admission(admission_path(default_engine)).active_lease(session) is not None
+        read_bound = Admission(admission_path(default_engine)).knowledge_lease(session) is not None
     if lease is None and not read_bound:
         domain_note = f" for domain {engine['domain']}" if routed else ""
         raise ValueError(
@@ -593,7 +595,7 @@ def handle(surface, message):
             result=dict(
                 protocolVersion="2025-11-25",
                 capabilities={"tools": {}},
-                serverInfo={"name": f"mindie-kimi-{surface}", "version": "0.1.0"},
+                serverInfo={"name": f"mindie-kimi-{surface}", "version": "0.1.1"},
             ),
         )
     if method == "ping":

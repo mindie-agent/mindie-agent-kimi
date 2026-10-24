@@ -80,7 +80,11 @@ class StatusDiagnosticTests(unittest.TestCase):
             admission.deactivate("task-A")
             proc = subprocess.run([sys.executable, "-c", code, str(scripts)], env=env,
                                   capture_output=True, text=True, timeout=5)
-            self.assertNotEqual(proc.returncode, 0)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            facts = json.loads(proc.stdout)
+            self.assertFalse(facts["knowledge_enabled"])
+            self.assertFalse(facts["this_session"]["bound"])
+            self.assertEqual(facts["this_session"]["failures"], 3)
 
 
 if __name__ == "__main__":

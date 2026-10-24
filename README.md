@@ -26,11 +26,11 @@
 
 ---
 
-**MindIE Agent for Kimi Code**（`mindie-agent-kimi`）是 [MindIE Agent](https://github.com/mindie-agent/mindie-agent) 面向 Kimi Code 的原生插件适配器，面向**昇腾（Ascend）NPU 上的 AI Infra 设计、开发与测试流程**提供统一的 Agent 支撑。当前 `v0.0.3` 已交付 **`vLLM-Ascend` 特性开发与测试**、**`AscendC` 与 `Triton` 算子实现验证**、远端 NPU 执行及公开经验脱敏沉淀能力；更多昇腾基础软件方向按路线图持续扩展。
+**MindIE Agent for Kimi Code**（`mindie-agent-kimi`）是 [MindIE Agent](https://github.com/mindie-agent/mindie-agent) 面向 Kimi Code 的原生插件适配器，面向**昇腾（Ascend）NPU 上的 AI Infra 设计、开发与测试流程**提供统一的 Agent 支撑。当前 `v0.1.1` 已交付 **`vLLM-Ascend` 特性开发与测试**、**`AscendC` 与 `Triton` 算子实现验证**、远端 NPU 执行及公开经验脱敏沉淀能力；更多昇腾基础软件方向按路线图持续扩展。
 
 项目设计遵循 [MindIE Agent 工程设计原则](https://github.com/mindie-agent/mindie-agent/blob/main/docs/design-principles.md)：共享知识引擎与远端开发能力由独立组件承载，本仓库专注于 Kimi 会话身份绑定、`wire.jsonl` 公开对话提取、MCP 桥接与本地不可变版本更新。
 
-> **生态与版本说明**：当前 `v0.0.3` 支持 Claude Code（[`mindie-agent-cc`](https://github.com/mindie-agent/mindie-agent-cc)）、OpenAI Codex CLI（[`mindie-agent-codex`](https://github.com/mindie-agent/mindie-agent-codex)）、Kimi Code（本仓库）与 DeepSeek Harness（[`mindie-agent-dsh`](https://github.com/mindie-agent/mindie-agent-dsh)）四个宿主，共享同一套知识、远端开发与诊断组件。各宿主的实机验证范围详见[文档导航](#文档导航)。
+> **生态与版本说明**：当前 `v0.1.1` 支持 Claude Code（[`mindie-agent-cc`](https://github.com/mindie-agent/mindie-agent-cc)）、OpenAI Codex CLI（[`mindie-agent-codex`](https://github.com/mindie-agent/mindie-agent-codex)）、Kimi Code（本仓库）与 DeepSeek Harness（[`mindie-agent-dsh`](https://github.com/mindie-agent/mindie-agent-dsh)）四个宿主，共享同一套知识、远端开发与诊断组件。各宿主的实机验证范围详见[文档导航](#文档导航)。
 
 ---
 
@@ -40,9 +40,9 @@ MindIE Agent 采用**「领域知识与 Skill 手动按需触发 + 远端开发�
 
 | 能力模块 | 触发方式 | 什么时候用？ | 怎么触发？ |
 | :--- | :--- | :--- | :--- |
-| **经验、知识库与 Skill 系统**<br/>（`mindie-knowledge` + `mindie-agent` Skill） | **🎯 手动触发** | 开展昇腾 AI Infra 架构设计、`vLLM-Ascend` 特性开发、`AscendC` / `Triton` 算子实现、单测/精度测试构建、性能调优或问题定位时 | 在输入框中显式输入 **`/mindie-agent` + 你的需求描述** |
-| **远端昇腾 NPU 开发与测试**<br/>（`remote-dev` MCP 工具集） | **⚡ 默认自动触发** | 日常需要将本地代码或测试同步到远端昇腾服务器/容器、在 NPU 上跑编译/测试、查看 `npu-smi` 或实时轮询长日志时 | **无需输入任何斜杠命令**，直接用自然语言描述远端操作即可 |
-| **研发经验沉淀与统一贡献开关**<br/>（`Stop` 后台采集 + Gitleaks 脱敏 + 故障上报） | **🔄 后台按需运行** | 希望将有价值的架构设计、算子开发、测试验证或调优经验脱敏沉淀回开源知识库，或自动上报经筛选的工具故障时 | 首次配置显式开启后，每次会话结束自动在后台完成本地脱敏与知识 PR 整理 |
+| **经验、知识库与 Skill 系统**<br/>（`mindie-knowledge` + `mindie-agent` Skill） | **🎯 当前会话手动触发** | 开展昇腾 AI Infra 架构设计、`vLLM-Ascend` 特性开发、`AscendC` / `Triton` 算子实现、单测/精度测试构建、性能调优或问题定位时 | 在当前会话中显式输入一次 **`/mindie-agent` + 你的需求描述**，即可在本会话后续轮次持续启用知识检索、反馈、蒸馏与同步（输入 `/mindie-agent:deactivate` 可在当前会话关闭） |
+| **远端昇腾 NPU 开发与测试**<br/>（`remote-dev` MCP 工具集 + 事实状态查询） | **⚡ 默认自动触发** | 日常需要将本地代码或测试同步到远端昇腾服务器/容器、在 NPU 上跑编译/测试、查看 `npu-smi` 或实时轮询长日志时 | **无需输入任何斜杠命令**，直接用自然语言描述远端操作即可 |
+| **研发经验沉淀与统一贡献开关**<br/>（`Stop` 后台采集 + Gitleaks 脱敏 + 故障上报） | **🔄 已启用会话后台运行** | 希望将有价值的架构设计、算子开发、测试验证或调优经验脱敏沉淀回开源知识库，或自动上报经筛选的工具故障时 | **授权一次配置，按会话生效**——首次配置显式开启社区贡献后，在已通过 `/mindie-agent` 启用知识系统的会话中，每次回合结束自动在后台完成本地脱敏与知识 PR 整理；未调用 `/mindie-agent` 的普通会话不触发后台采集 |
 
 ### 场景 1：输入 `/mindie-agent` 唤醒知识库与 Skill 辅助设计、开发与测试（手动触发）
 > **背景**：在昇腾上设计新特性、开发 `AscendC` / `Triton` 算子或编写 `vLLM-Ascend` 测试时，往往需要查阅既有架构约束与验证记录。  
@@ -167,7 +167,7 @@ python3 scripts/install_kimi_plugin.py --kimi-home "${KIMI_CODE_HOME:-$HOME/.kim
 | **操作远端昇腾服务器 / 容器（同步代码、跑单测、看 `npu-smi`）** | **无需斜杠命令**，直接用自然语言描述远端操作需求（`remote-dev` 默认自动触发） |
 | **首次初始化或调整偏好设置（如开启/关闭统一贡献开关、查看状态）** | `/mindie-agent`（或 `/mindie-agent 帮我看看当前状态 / 开启社区经验贡献`） |
 
-> 💡 **后台经验采集说明**：首次配置显式开启社区贡献后，每次会话结束时插件会在后台提取公开可见对话并完成本地脱敏与知识 PR 整理；本地采集完成不代表远端 PR 已创建，具体发布回执可通过状态查询确认。
+> 💡 **后台经验采集说明**：首次配置显式开启社区贡献后，保存的授权配置会跨会话持久生效；在已通过 `/mindie-agent` 启用知识系统的会话中，每次回合结束（`Stop`）时插件会在后台提取公开可见对话并完成本地脱敏与知识 PR 整理（未调用 `/mindie-agent` 的普通会话在 `Stop` 阶段直接跳过）。本地采集完成不代表远端 PR 已创建，具体发布回执可通过状态查询确认。
 
 ### 自动更新与安全卸载
 
@@ -218,9 +218,9 @@ python3 -m unittest discover -s tests/native -v
 python3 -m unittest discover -s tests
 ```
 
-### `0.0.3` 发布基准测试（Release Benchmark）
+### `0.1.1` 发布基准测试（Release Benchmark）
 
-本仓库在 [`benchmarks/release.json`](benchmarks/release.json)（由 `benchmarks/release.py` 执行）中定义了面向 `0.0.3` 发布的可复现 CPU 微基准测试（用例 `public-transcript-parsing`，指标 `public_transcript_parse`，单位 `us/op`），用于测量本地 `wire.jsonl` 公开可见消息提取与非公开推理字段过滤的单次解析耗时。每个正式版 GitHub Release 均随附 `benchmark-results.json`、`benchmark-results.md`；该微基准仅验证本地解析组件的性能基线，与常备昇腾 A2/A3 NPU 真机集成验收及端到端 Agent 研发任务评估相互独立。
+本仓库在 [`benchmarks/release.json`](benchmarks/release.json)（由 `benchmarks/release.py` 执行）中定义了面向 `0.1.1` 发布的可复现 CPU 微基准测试（用例 `public-transcript-parsing`，指标 `public_transcript_parse`，单位 `us/op`），用于测量本地 `wire.jsonl` 公开可见消息提取与非公开推理字段过滤的单次解析耗时。每个正式版 GitHub Release 均随附 `benchmark-results.json`、`benchmark-results.md`；该微基准仅验证本地解析组件的性能基线，与常备昇腾 A2/A3 NPU 真机集成验收及端到端 Agent 研发任务评估相互独立。
 
 ---
 

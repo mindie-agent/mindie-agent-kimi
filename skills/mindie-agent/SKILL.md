@@ -1,19 +1,27 @@
 ---
 name: mindie-agent
-description: The single MindIE Agent entry. Invoke /mindie-agent in a vLLM-Ascend task to bind it internally and use knowledge, skills, optional community sharing, and remote-dev. Once opted in, experience capture runs automatically at session end without per-task prompts.
-disableModelInvocation: false
+description: Explicit /mindie-agent entry for knowledge, domain skills, feedback, distillation and background capture in the current Kimi session. Configured deterministic tools remain available without this entry.
+disableModelInvocation: true
 ---
 
 # MindIE Agent (Unified Entry)
 
-This skill is the **only** entry a user ever needs to invoke (`/mindie-agent`).
-Meanwhile, `remote-dev` MCP tools are always available on demand in normal conversation without invoking `/mindie-agent`.
+Use `/mindie-agent` to enable knowledge and experience for the current session.
+Never invoke this skill from topic matching. The entire knowledge flywheel,
+including sync and Stop capture, requires the user's explicit entry in this
+task. New chats, forks and subagents do not inherit activation. Contribution
+consent and project scope are additional capture conditions, never activation.
+
+Configured deterministic tools (resource probes/leases, monitoring, profiling,
+simulation calculations, local diagnostics and factual status checks) remain
+available without this entry, just like remote-dev. Their normal interfaces
+do not require loading knowledge or experience context.
 
 1. **Bind & Initialize on Invocation (`request_nonce` on Every Call)**:
    - When `/mindie-agent` is invoked in the current native Kimi task, call `mindie_entry` **exactly once** with `op=init` (plus optional `domain="<domain>"` when explicitly activating a registered target domain for distillation/writes under its own consent and scope) and a fresh `request_nonce`. Never pass or fabricate a session ID (`${KIMI_SESSION_ID}` in text is not a capability).
    - Every subsequent knowledge (`knowledge_query`, `knowledge_explain`, `knowledge_feedback`, `knowledge_distill`, `knowledge_sync`) and remote MCP call MUST also include a fresh `request_nonce`.
-2. **Automatic Experience Loop by Default**:
-   - Once the unified contribution choice is enabled for the approved project scope, eligible `Stop` events run **automatically in the background**. Reuse a valid saved choice; no per-task permission or end-of-session save request is needed.
+2. **Experience Loop After Manual Session Entry**:
+   - In this explicitly enabled session, when the unified contribution choice and approved project scope allow capture, eligible `Stop` events run **automatically in the background**. Later turns retain the grant; reuse the saved contribution choice without asking again.
    - Inspect `first_use` and `reporting_activation` from the entry response. Preserve saved `disabled`, `later`, and `read-only` choices without prompting. If no choice exists, present the [contribution notice](references/user-notice.md) once and accept `contribute` or `disabled`. For a first conversational contribution choice, call `op=choose` only with the public `owner/repo` and GitHub account the user supplied in that reply.
    - If saved legacy `contribute` returns `needs_choice`, explain once that contribution now includes sanitized product-fault reporting. The supported migration entry is `/mindie-agent contribute owner/repo ACCOUNT`; its explicit arguments are the confirmation, so do not ask again. Never turn incomplete configuration or an old knowledge-only approval into a new opt-in. Reuse known destination values and ask only for missing ones.
 3. **Graded Knowledge, Multi-Domain Routing, `knowledge_distill`, Long-Horizon Continuation & Profiler Discipline**:

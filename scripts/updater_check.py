@@ -264,7 +264,8 @@ def check(
                 idle=idle or _h("stop_if_idle"), install=install or _h("native_install"),
                 lock_timeout=lock_timeout,
             )
-            _h("_feed_sync")(adapter, deadline)
+            # Plugin update checks do not authorize knowledge activity. Feed
+            # work belongs to a manually activated native session.
             try:
                 _h("_logging_maintenance")(adapter, deadline)
             except TimeoutError:

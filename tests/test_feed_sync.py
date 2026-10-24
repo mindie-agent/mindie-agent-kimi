@@ -139,7 +139,7 @@ class FeedSyncTests(unittest.TestCase):
         status = genstate.read_status(self.adapter)
         self.assertTrue(status["feed_sync"].startswith("skipped:"))
 
-    def test_check_runs_feed_even_if_plugin_failed(self):
+    def test_release_check_does_not_start_knowledge_sync(self):
         calls = []
 
         def feed(adapter, deadline):
@@ -155,7 +155,7 @@ class FeedSyncTests(unittest.TestCase):
             with patch.object(updater, "_check_once", boom):
                 code = updater.check(self.adapter, lock_timeout=1)
         self.assertEqual(code, 1)
-        self.assertEqual(calls, ["feed"])
+        self.assertEqual(calls, [])
 
     def test_check_returns_plugin_code_when_feed_not_ok(self):
         def feed(adapter, deadline):
