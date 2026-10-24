@@ -547,8 +547,7 @@ def knowledge_call(name, args, session):
     payload = dict(body, _session_id=session, _session_verified=True)
     if routed:
         payload["domain"] = engine["domain"]
-    result = rpc(connection, method, payload, timeout=KNOWLEDGE_RPC_TIMEOUT)
-    return rsi_explore.attach(result, body) if name in {"knowledge_query", "knowledge_explain"} else result
+    return rpc(connection, method, payload, timeout=KNOWLEDGE_RPC_TIMEOUT)
 
 
 def remote_tools():
