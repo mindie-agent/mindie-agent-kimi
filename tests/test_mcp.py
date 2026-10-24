@@ -179,6 +179,41 @@ class McpTests(unittest.TestCase):
             )
             self.assertTrue(camel["result"]["isError"])
 
+    def test_host_qualified_remote_name_strips_before_dispatch(self):
+        with tempfile.TemporaryDirectory() as raw:
+            config = make_config(Path(raw))
+            os.environ["MINDIE_KIMI_CONFIG"] = str(config)
+            sys.path.insert(0, str(SCRIPTS))
+            import identity
+            import mcp_server
+            import remote_dev.mcp.tools as remote_tools
+
+            host_name = "mcp__plugin-mindie-agent_remote__remote_Read"
+            args = {"path": "/remote/not-read", "request_nonce": "nonce-host-name"}
+            identity.publish_nonce_bind(
+                "ses_host_name", "nonce-host-name", host_name, "tool_host_name", args,
+            )
+            captured = {}
+
+            def fake_call(name, call_args):
+                captured["name"] = name
+                captured["args"] = dict(call_args)
+                return {"text": "ok", "result": {"outcome": "success"}}
+
+            original = remote_tools.call_tool
+            remote_tools.call_tool = fake_call
+            try:
+                response = mcp_server.handle(
+                    "remote",
+                    dict(jsonrpc="2.0", id=31, method="tools/call",
+                         params=dict(name=host_name, arguments=args)),
+                )
+            finally:
+                remote_tools.call_tool = original
+            self.assertFalse(response["result"]["isError"], response)
+            self.assertEqual(captured["name"], "remote_Read")
+            self.assertNotIn("request_nonce", captured["args"])
+
     def test_remote_tools_follow_the_trusted_profile_env(self):
         import mcp_server
         with patch.dict(os.environ, {"REMOTE_DEV_HARNESS_PROFILE": "kimi"}):

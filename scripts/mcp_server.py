@@ -47,7 +47,7 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-from identity import claim_nonce, finish_nonce, require_nonce
+from identity import claim_nonce, finish_nonce, local_tool_name, require_nonce
 from paths import (
     domain_configs,
     domain_from_ref,
@@ -584,7 +584,11 @@ def remote_call(name, args, session):
     root.mkdir(parents=True, exist_ok=True)
     os.environ["REMOTE_DEV_SESSION_ID"] = session
     os.environ["REMOTE_DEV_STATE_DIR"] = str(root)
-    return call_tool(ALIASES.get(name, name), clamp_remote_args(args))
+    # The native host calls a server-qualified name such as
+    # `mcp__plugin-mindie-agent_remote__remote_Read`; remote-dev dispatch takes
+    # the local wire name after the trusted nonce has already been claimed.
+    local = local_tool_name(name) if isinstance(name, str) else name
+    return call_tool(ALIASES.get(local, local), clamp_remote_args(args))
 
 
 def handle(surface, message):
