@@ -2,20 +2,37 @@
   "name": "mindie-agent",
   "version": "0.1.3",
   "description": "MindIE Agent for Kimi Code: local knowledge retrieval, optional community contribution, and general remote-dev. No SessionStart auto-configuration.",
-  "keywords": ["mindie", "knowledge", "vllm-ascend", "remote-dev"],
+  "keywords": [
+    "mindie",
+    "knowledge",
+    "vllm-ascend",
+    "remote-dev"
+  ],
   "license": "MIT",
   "skills": "./skills/",
   "commands": "./commands/",
   "mcpServers": {
     "knowledge": {
       "command": "python3",
-      "args": ["./scripts/with_runtime.py", "mcp_server.py", "knowledge"],
+      "args": [
+        "./scripts/with_runtime.py",
+        "mcp_server.py",
+        "knowledge"
+      ],
       "cwd": "./"
     },
     "remote": {
       "command": "python3",
-      "args": ["./scripts/with_runtime.py", "mcp_server.py", "remote"],
-      "cwd": "./"
+      "args": [
+        "./scripts/with_runtime.py",
+        "mcp_server.py",
+        "remote"
+      ],
+      "cwd": "./",
+      "env": {
+        "REMOTE_DEV_HARNESS_PROFILE": "kimi"
+      },
+      "toolTimeoutMs": 660000
     }
   },
   "hooks": [
