@@ -21,9 +21,10 @@ GIT_ENV = dict(
     GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t",
 )
 
+_MAJOR_MINOR, _PATCH = json.loads((SCRIPTS.parent / "kimi.plugin.json").read_text())["version"].rsplit(".", 1)
 MANIFEST = {
     "name": "mindie-agent",
-    "version": "0.1.3",
+    "version": f"{_MAJOR_MINOR}.{int(_PATCH) + 1}",
     "mcpServers": {
         "knowledge": {"command": "python3", "args": ["./old"]},
         "remote": {"command": "python3", "args": ["./old"]},
@@ -307,8 +308,9 @@ class UpdaterTests(unittest.TestCase):
     def test_release_tag_mismatch_fails_before_build_or_install(self):
         (self.src / "marker.txt").write_text("moved tag")
         git(["commit", "-am", "moved tag"], self.src)
-        git(["tag", "-f", "v0.1.3"], self.src)
-        git(["push", "--force", str(self.bare), "v0.1.3"], self.src)
+        tag = "v" + MANIFEST["version"]
+        git(["tag", "-f", tag], self.src)
+        git(["push", "--force", str(self.bare), tag], self.src)
         build_calls = []
         self.assertEqual(self.run_check(
             build=lambda *args: build_calls.append(args),
