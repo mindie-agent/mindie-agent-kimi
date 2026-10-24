@@ -11,10 +11,10 @@ and binds itself so monkeypatches keep resolving through it.
 - Registration is only reported as scheduled after native readback proves the
   exact wrapper action.
 - Uninstall reports success only after the scheduler state is observed absent.
-- The generated wrapper covers the 1200s updater budget plus 10s cleanup.
+- The generated wrapper covers the 1210s launcher budget plus 10s cleanup.
 
 [Timeouts & Locks]
-- `subprocess.run(..., timeout=1210)` in the generated wrapper; `_native_run`
+- `subprocess.run(..., timeout=1220)` in the generated wrapper; `_native_run`
   callers pass explicit 10-30s budgets and uninstall readback polls for 3s.
 
 [Side-Effect Policy]
@@ -72,7 +72,7 @@ def _wrapper_body(command) -> str:
         f"raise SystemExit(subprocess.run({list(command)!r},\n"
         "    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,\n"
         "    startupinfo=startup, creationflags=subprocess.CREATE_NEW_CONSOLE,\n"
-        "    timeout=1210, check=False).returncode)\n"
+        "    timeout=1220, check=False).returncode)\n"
     )
 
 

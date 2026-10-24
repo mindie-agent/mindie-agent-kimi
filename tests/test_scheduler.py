@@ -109,7 +109,7 @@ class SchedulerLauncherTests(unittest.TestCase):
         self.assertEqual(exit.exception.code, 7)
         self.assertEqual(process.call_args.args[0], [sys.executable, str(launcher),
                          "--config", str(self.config_path), "updater", "check"])
-        self.assertGreaterEqual(process.call_args.kwargs["timeout"], updater.CHECK_BUDGET + 10)
+        self.assertGreaterEqual(process.call_args.kwargs["timeout"], updater.CHECK_BUDGET + 20)
 
     def test_unscheduled_profile_stays_unscheduled_during_checks(self):
         import updater_schedule
