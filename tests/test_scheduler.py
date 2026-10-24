@@ -85,6 +85,39 @@ class SchedulerLauncherTests(unittest.TestCase):
         self.assertTrue(any("launchctl" in cmd[0] for cmd in captured))
         self.assertEqual(bootstrap.read_text(), STALE)
 
+    def test_existing_wrapper_dispatches_committed_launcher_with_full_budget(self):
+        from types import SimpleNamespace
+        import updater_schedule
+        self.write_current(SHA)
+        launcher = self.write_launch(SHA, CURRENT)
+        wrapper = genstate.update_dir(self.adapter) / "MindIEKimiUpdate.pyw"
+        wrapper.parent.mkdir(parents=True, exist_ok=True)
+        wrapper.write_text("# legacy 300-second action\n")
+        with mock.patch.object(updater, "bounded_run") as native:
+            self.assertTrue(updater_schedule.refresh_existing_wrapper(
+                self.adapter, genstate.read_current(self.adapter)))
+            self.assertFalse(updater_schedule.refresh_existing_wrapper(
+                self.adapter, genstate.read_current(self.adapter)))
+        native.assert_not_called()
+        process = mock.Mock(return_value=SimpleNamespace(returncode=7))
+        windows = SimpleNamespace(
+            STARTUPINFO=lambda: SimpleNamespace(dwFlags=0, wShowWindow=0),
+            STARTF_USESHOWWINDOW=1, SW_HIDE=0, CREATE_NEW_CONSOLE=16, DEVNULL=-3,
+            run=process)
+        with mock.patch.dict(sys.modules, {"subprocess": windows}), self.assertRaises(SystemExit) as exit:
+            exec(compile(wrapper.read_text(), str(wrapper), "exec"), {})
+        self.assertEqual(exit.exception.code, 7)
+        self.assertEqual(process.call_args.args[0], [sys.executable, str(launcher),
+                         "--config", str(self.config_path), "updater", "check"])
+        self.assertGreaterEqual(process.call_args.kwargs["timeout"], updater.CHECK_BUDGET + 20)
+
+    def test_unscheduled_profile_stays_unscheduled_during_checks(self):
+        import updater_schedule
+        self.write_current(SHA)
+        self.assertFalse(updater_schedule.refresh_existing_wrapper(
+            self.adapter, genstate.read_current(self.adapter)))
+        self.assertFalse((genstate.update_dir(self.adapter) / "MindIEKimiUpdate.pyw").exists())
+
     def test_missing_current_launcher_does_not_use_bootstrap(self):
         self.write_current(SHA)
         bootstrap = self.write_launch("bootstrap", STALE)

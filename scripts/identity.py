@@ -58,6 +58,7 @@ COMMANDS = {
     "reporting-status",
 }
 ENTRY_ALIASES = {"mindie-agent": "init"}
+ENTRY_SKILLS = {PLUGIN_ID, PLUGIN_ID + ":" + PLUGIN_ID}
 TAIL_CHUNK = 256 * 1024
 TAIL_MAX = 8 * 1024 * 1024
 MS_THRESHOLD = 1e12
@@ -246,7 +247,7 @@ def _normalize_activation(origin, *, steering):
     activations = origin.get("skillActivations")
     if not isinstance(activations, list):
         return {"kind": _NESTED_AMBIGUOUS}
-    mine = [item for item in activations if isinstance(item, dict) and item.get("skillName") == PLUGIN_ID]
+    mine = [item for item in activations if isinstance(item, dict) and item.get("skillName") in ENTRY_SKILLS]
     if not mine:
         return origin
     if len(mine) != 1:
@@ -364,7 +365,7 @@ def _invokes_entry(text) -> bool:
 
 
 def _current_skill_activation(origin, command):
-    if origin.get("skillName") != PLUGIN_ID:
+    if origin.get("skillName") not in ENTRY_SKILLS:
         raise ValueError("current skill activation is not the MindIE entry")
     skill_path = origin.get("skillPath")
     if not isinstance(skill_path, str) or not skill_path:
@@ -397,6 +398,16 @@ def _entry_from_openings(openings, command: str) -> dict:
         raise ValueError("current turn has ambiguous MindIE skill activations")
     if kind == _NESTED_STEERING:
         raise ValueError("an in-turn nested skill activation is not the user entry")
+    if kind == "user" and command == "init" and _invokes_entry(_record_text(_record)):
+        # New native versions may retain the slash as user input instead of
+        # expanding a Skill. The current native user opening is the authority;
+        # never derive a grant from model arguments or inherited transcript text.
+        prompt_id = _record.get("promptId") or (_record.get("message") or {}).get("id")
+        if not isinstance(prompt_id, str) or not prompt_id:
+            raise ValueError("native user entry lacks its prompt identity")
+        text = _record_text(_record).lstrip()
+        return dict(command="init", arguments=text[len("/mindie-agent"):].strip(),
+                    activation_id="user-entry:" + prompt_id)
     if kind == "plugin_command":
         return _validate_plugin_command_origin(origin, command)
     if kind == "skill_activation":

@@ -15,7 +15,7 @@ callers and monkeypatches resolve through the updater module.
 - Feed-sync status is written separately from generation-switch status.
 
 [Timeouts & Locks]
-- `CHECK_BUDGET = 240.0s`, `FEED_BUDGET = 60.0s`; all child commands are
+- `CHECK_BUDGET = 1200.0s`, `FEED_BUDGET = 60.0s`; all child commands are
   bounded `bounded_run` calls and the non-blocking `check.lock` never waits.
 
 [Side-Effect Policy]
@@ -44,7 +44,7 @@ try:
 except ImportError:
     pass
 
-CHECK_BUDGET = 240.0
+CHECK_BUDGET = 1200.0
 FEED_BUDGET = 60.0
 DEFAULT_REMOTE = "https://github.com/mindie-agent/mindie-agent-kimi.git"
 
@@ -119,6 +119,8 @@ def fold_feed_results(output):
 
 def _check_once(adapter: dict, deadline: float, *, force, build, idle, install, lock_timeout) -> int:
     current = _h("read_current")(adapter)
+    from updater_schedule import refresh_existing_wrapper
+    refresh_existing_wrapper(adapter, current)
     remote = os.environ.get("MINDIE_KIMI_UPDATE_REMOTE") or adapter.get("update_remote") or _h("DEFAULT_REMOTE")
     if _h("_resolve_is_waiting")(adapter, force):
         status = _h("read_status")(adapter)
@@ -150,10 +152,13 @@ def _check_once(adapter: dict, deadline: float, *, force, build, idle, install, 
     _h("_clear_resolve_wait")(adapter)
     candidate = selected["candidate"]
     if candidate is None:
+        from component_update import check as component_check
+        components = component_check(adapter, deadline, force=force, idle=idle,
+                                     install=install, lock_timeout=lock_timeout)
         result = "current" if selected["status"] == "up_to_date" else selected["status"]
         status = _h("_record")(
             adapter, current_sha=current.get("sha"), result=result, error=None,
-            release_selection=selected,
+            release_selection=selected, components=components,
         )
         print(json.dumps(status))
         return int(result == "no_compatible_release" or status["result"] == "degraded")
@@ -179,14 +184,22 @@ def _check_once(adapter: dict, deadline: float, *, force, build, idle, install, 
             )
             return 0
     if sha == current.get("sha"):
+        from component_update import check as component_check
+        components = component_check(adapter, deadline, force=force, idle=idle,
+                                     install=install, lock_timeout=lock_timeout)
         _h("_clear_active_failure")(adapter, sha)
-        status = _h("_record")(adapter, current_sha=sha, result="current", error=None)
+        status = _h("_record")(adapter, current_sha=sha, result="current", error=None, components=components)
         print(json.dumps(status))
         return int(status["result"] == "degraded")
     try:
         generation, python, gen_adapter = _h("stage_generation")(
             sha, remote, adapter, deadline, build=build, release=release,
         )
+        from component_update import prepare as component_prepare
+        effective = component_prepare(adapter, generation, python, deadline, force=force)
+        if effective:
+            generation, python, gen_adapter = effective
+            _h("build_host_package")(generation, adapter, sha, config_file=gen_adapter)
     except TimeoutError:
         raise
     except Exception as exc:

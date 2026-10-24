@@ -23,7 +23,7 @@ GIT_ENV = dict(
 
 MANIFEST = {
     "name": "mindie-agent",
-    "version": "0.1.2",
+    "version": "0.1.3",
     "mcpServers": {
         "knowledge": {"command": "python3", "args": ["./old"]},
         "remote": {"command": "python3", "args": ["./old"]},
@@ -126,6 +126,12 @@ def fake_build(generation: Path, deadline: float) -> Path:
 
 class UpdaterTests(unittest.TestCase):
     def setUp(self):
+        component_prepare = patch("component_update.prepare", return_value=None)
+        component_check = patch("component_update.check", return_value={"status": "up_to_date"})
+        self.component_prepare = component_prepare.start()
+        self.component_check = component_check.start()
+        self.addCleanup(component_prepare.stop)
+        self.addCleanup(component_check.stop)
         self._tmp = tempfile.TemporaryDirectory()
         tmp = Path(self._tmp.name)
         self.tmp = tmp
@@ -301,8 +307,8 @@ class UpdaterTests(unittest.TestCase):
     def test_release_tag_mismatch_fails_before_build_or_install(self):
         (self.src / "marker.txt").write_text("moved tag")
         git(["commit", "-am", "moved tag"], self.src)
-        git(["tag", "-f", "v0.1.2"], self.src)
-        git(["push", "--force", str(self.bare), "v0.1.2"], self.src)
+        git(["tag", "-f", "v0.1.3"], self.src)
+        git(["push", "--force", str(self.bare), "v0.1.3"], self.src)
         build_calls = []
         self.assertEqual(self.run_check(
             build=lambda *args: build_calls.append(args),

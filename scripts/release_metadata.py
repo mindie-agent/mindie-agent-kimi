@@ -37,7 +37,7 @@ def select_candidate(kimi_bin: str, installed_version: str) -> dict:
         [kimi_bin, "--version"], check=True, capture_output=True, text=True, timeout=10,
     ).stdout.strip()
     selected = select_release(
-        fetch_releases(REPOSITORY), repository=REPOSITORY, harness_name=HARNESS,
+        fetch_releases(REPOSITORY, minimum_version=installed_version), repository=REPOSITORY, harness_name=HARNESS,
         harness_version=version, installed_version=installed_version,
     )
     if selected["candidate"] is not None:

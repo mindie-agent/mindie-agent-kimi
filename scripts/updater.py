@@ -19,7 +19,7 @@ readback, and maintains diagnostic retention.
   preparation fails. Release checks never authorize knowledge feed activity.
 
 [Timeouts & Locks]
-- `CHECK_BUDGET = 240.0s`, `ROLLBACK_BUDGET = 45.0s`, `FEED_BUDGET = 60.0s`,
+- `CHECK_BUDGET = 1200.0s`, `ROLLBACK_BUDGET = 45.0s`, `FEED_BUDGET = 60.0s`,
   `HANDOFF_BUDGET = 8.0s` (`RESERVE = 113.0s`), `INTERVAL_SECONDS = 300`.
 - Serialized by non-blocking `check.lock`; generation switch acquires exclusive
   `operation.lock` (default `30.0s` wait).
@@ -80,7 +80,7 @@ except ImportError as exc:
 
 DEFAULT_REMOTE = "https://github.com/mindie-agent/mindie-agent-kimi.git"
 INTERVAL_SECONDS = 300
-CHECK_BUDGET = 240.0
+CHECK_BUDGET = 1200.0
 ROLLBACK_BUDGET = 45.0
 FEED_BUDGET = 60.0
 HANDOFF_BUDGET = 8.0
@@ -382,7 +382,7 @@ def native_install(adapter: dict, package: Path, deadline: float, reserve: float
 def switch(
     adapter: dict, current: dict, generation: Path, python: Path,
     gen_adapter: Path, sha: str, deadline: float,
-    idle, install, lock_timeout,
+    idle, install, lock_timeout, *, update_native=True,
 ) -> None:
     receipts_dir(adapter).mkdir(parents=True, exist_ok=True)
     atomic_write(
@@ -412,8 +412,9 @@ def switch(
                     timeout=_op_timeout(deadline, RESERVE, 5)))
                 if result.get('idle') is not True:
                     raise Deferred('domain ' + domain + ' has active work; switch deferred')
-            native_attempted = True
-            install(adapter, generation / "host-package", deadline)
+            if update_native:
+                native_attempted = True
+                install(adapter, generation / "host-package", deadline)
             final = {
                 "generation": str(generation),
                 "python": str(python),
