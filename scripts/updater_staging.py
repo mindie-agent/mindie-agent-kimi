@@ -99,7 +99,8 @@ def build_runtime(generation: Path, deadline: float) -> Path:
     _h("bounded_run")([uv, "venv", "--python", sys.executable, str(venv)], "",
                       timeout=min(180, _h("_remaining")(deadline, _h("RESERVE"))), env=env)
     _h("bounded_run")(
-        [uv, "pip", "install", "--python", str(python), "-r", str(requirements)],
+        [uv, "pip", "install", "--python", str(python), "-r", str(requirements),
+         "--overrides", str(requirements)],
         "", timeout=min(600, _h("_remaining")(deadline, _h("RESERVE"))),
         max_output=512 * 1024, env=env, transport=True,
     )

@@ -204,7 +204,8 @@ def build_bootstrap_runtime(domain_root: Path) -> str:
         create_venv(venv, timeout=180)
     run(
         [uv, "pip", "install", "--python", str(python),
-         "-r", str(PLUGIN_ROOT / "runtime-requirements.txt")],
+         "-r", str(PLUGIN_ROOT / "runtime-requirements.txt"),
+         "--overrides", str(PLUGIN_ROOT / "runtime-requirements.txt")],
         "", timeout=600, max_output=512 * 1024, env=installer_environment(),
     )
     return str(python)

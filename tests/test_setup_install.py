@@ -276,6 +276,7 @@ class SetupInstallTests(unittest.TestCase):
 
     def test_requirements_are_pinned_commits(self):
         expected = {
+            "mindie-diagnostics": "https://github.com/mindie-agent/diagnostics",
             "mindie-knowledge": "https://github.com/mindie-agent/knowledge",
             "remote-dev": "https://github.com/mindie-agent/remote-dev",
         }
