@@ -179,6 +179,20 @@ class McpTests(unittest.TestCase):
             )
             self.assertTrue(camel["result"]["isError"])
 
+    def test_remote_tools_follow_the_trusted_profile_env(self):
+        import mcp_server
+        with patch.dict(os.environ, {"REMOTE_DEV_HARNESS_PROFILE": "kimi"}):
+            tools = {item["name"]: item for item in mcp_server.remote_tools()}
+        self.assertIn("remote_read", tools)
+        self.assertTrue(
+            {"remote_Read", "remote_Write", "remote_Bash", "remote_TaskOutput",
+             "remote_TaskStop", "remote_TaskList", "remote_ReadMediaFile"}
+            <= set(tools)
+        )
+        self.assertNotIn("remote_exec_command", tools)
+        for name in ("remote_read", "remote_Read", "remote_TaskList"):
+            self.assertIn("request_nonce", tools[name]["inputSchema"]["required"])
+
     def test_remote_tools_are_listed_without_knowledge_activation(self):
         with tempfile.TemporaryDirectory() as raw:
             config = make_config(Path(raw))
