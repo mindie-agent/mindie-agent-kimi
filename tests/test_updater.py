@@ -126,6 +126,12 @@ def fake_build(generation: Path, deadline: float) -> Path:
 
 class UpdaterTests(unittest.TestCase):
     def setUp(self):
+        component_prepare = patch("component_update.prepare", return_value=None)
+        component_check = patch("component_update.check", return_value={"status": "up_to_date"})
+        self.component_prepare = component_prepare.start()
+        self.component_check = component_check.start()
+        self.addCleanup(component_prepare.stop)
+        self.addCleanup(component_check.stop)
         self._tmp = tempfile.TemporaryDirectory()
         tmp = Path(self._tmp.name)
         self.tmp = tmp

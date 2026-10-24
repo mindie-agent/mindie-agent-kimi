@@ -72,7 +72,7 @@ def _wrapper_body(command) -> str:
         f"raise SystemExit(subprocess.run({list(command)!r},\n"
         "    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,\n"
         "    startupinfo=startup, creationflags=subprocess.CREATE_NEW_CONSOLE,\n"
-        "    timeout=300, check=False).returncode)\n"
+        "    timeout=1210, check=False).returncode)\n"
     )
 
 

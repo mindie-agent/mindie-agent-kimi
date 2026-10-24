@@ -417,7 +417,7 @@ def _local_answer(message: dict):
             result=dict(
                 protocolVersion="2025-11-25",
                 capabilities={"tools": {}},
-                serverInfo={"name": "mindie-kimi-front", "version": "0.1.1"},
+                serverInfo={"name": "mindie-kimi-front", "version": "0.1.2"},
             ),
         )
     if method == "ping":
@@ -720,7 +720,7 @@ def _updater(rest) -> int:
 
             return subprocess.run(
                 [current["python"], str(script), *rest],
-                env=_child_env(current), timeout=300, check=False,
+                env=_child_env(current), timeout=1210, check=False,
             ).returncode
         os.execve(current["python"], [current["python"], str(script), *rest], _child_env(current))
     except TimeoutError:

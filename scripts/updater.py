@@ -382,7 +382,7 @@ def native_install(adapter: dict, package: Path, deadline: float, reserve: float
 def switch(
     adapter: dict, current: dict, generation: Path, python: Path,
     gen_adapter: Path, sha: str, deadline: float,
-    idle, install, lock_timeout,
+    idle, install, lock_timeout, *, update_native=True,
 ) -> None:
     receipts_dir(adapter).mkdir(parents=True, exist_ok=True)
     atomic_write(
@@ -412,8 +412,9 @@ def switch(
                     timeout=_op_timeout(deadline, RESERVE, 5)))
                 if result.get('idle') is not True:
                     raise Deferred('domain ' + domain + ' has active work; switch deferred')
-            native_attempted = True
-            install(adapter, generation / "host-package", deadline)
+            if update_native:
+                native_attempted = True
+                install(adapter, generation / "host-package", deadline)
             final = {
                 "generation": str(generation),
                 "python": str(python),
