@@ -8,7 +8,7 @@
 
 ## 1. 纯只读状态诊断（`/mindie-agent:status`）
 
-- **诊断输出内容**：报告客观的控制面事实状态（`status_facts`：`configured`、`knowledge_enabled`、当前的知识库配置、后台服务与存储健康状况、`this_session` 手动激活租约状态、诊断失败计数、`sharing` 与 `reporting` 状态，以及与当前绑定任务关联的最近 5 次采集和贡献批次），不包含任何首次引导提示字段（`first_use`、`next`、`recovery`），且无需事先通过 `/mindie-agent` 激活知识会话（无任务身份时不返回其他任务的记录）。
+- **诊断输出内容**：报告客观的控制面事实状态（`status_facts`：`configured`、`knowledge_enabled`、`this_session` 手动激活租约状态、`diagnostics` 中的知识库配置与服务/存储/准入健康状况及关联的最近 5 次采集、索引和贡献批次，以及 `reporting` 状态），不包含任何首次引导提示字段（`first_use`、`next`、`recovery`），且无需事先通过 `/mindie-agent` 激活知识会话（无任务身份时不返回其他任务的记录）。
 - **严格无副作用**：执行 `status` 绝不会初始化数据库、启动模型或后台服务、隐式绑定任务、清零失败计数或重放已消费的输入。
 - **敏感信息过滤与损坏配置检测**：故障诊断投影会自动剔除模型服务商原始标准错误输出（stderr）、会话正文与 Token 凭证。若已有适配器配置文件损坏，将直接报告配置诊断错误，绝不会误判为“首次使用”重新引导。
 - **远端开发独立可用**：当本地知识服务不可用时，原生 Shell/SSH 以及独立的 `remote-dev` 远端工具集仍可正常使用。
