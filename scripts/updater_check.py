@@ -15,7 +15,7 @@ callers and monkeypatches resolve through the updater module.
 - Feed-sync status is written separately from generation-switch status.
 
 [Timeouts & Locks]
-- `CHECK_BUDGET = 240.0s`, `FEED_BUDGET = 60.0s`; all child commands are
+- `CHECK_BUDGET = 1200.0s`, `FEED_BUDGET = 60.0s`; all child commands are
   bounded `bounded_run` calls and the non-blocking `check.lock` never waits.
 
 [Side-Effect Policy]
