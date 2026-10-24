@@ -32,7 +32,9 @@ jobs:
         with:
           python-version: "3.13"
       - name: Install pinned runtime
-        run: pip install -r runtime-requirements.txt pytest==9.1.1
+        run: |
+          pip install uv
+          uv pip install --system -r runtime-requirements.txt --overrides runtime-requirements.txt pytest==9.1.1
       - name: Compile all committed Python
         run: python -m compileall -q scripts tests
       - name: Pin preflight

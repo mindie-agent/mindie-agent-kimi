@@ -48,6 +48,8 @@ _STREAM_EDGE = 4096
 class CommandCancelled(RuntimeError):
     """The caller cancelled this attempt; owned children are reaped."""
 
+    category = "cancelled"
+
 
 class CommandTimedOut(RuntimeError):
     """The command did not finish before the absolute deadline."""

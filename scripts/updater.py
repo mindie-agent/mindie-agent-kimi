@@ -501,7 +501,7 @@ def _restore_stopped_service(adapter, final, deadline):
 
 def _update_diagnostic(stage, exc, revision=None):
     return diagnostic_support.failure(
-        "updater", stage, "update_failure", exception=exc, revision=revision, reportable=False
+        "updater", stage, "update", exception=exc, revision=revision
     )
 
 
@@ -710,6 +710,6 @@ if __name__ == "__main__":
     except (SystemExit, KeyboardInterrupt):
         raise
     except Exception as exc:
-        diagnostic = diagnostic_support.failure("updater", "entry", "update_failure", exception=exc, reportable=False)
+        diagnostic = diagnostic_support.failure("updater", "entry", "update", exception=exc)
         print(json.dumps({"result": "failed", "error_type": type(exc).__name__, "diagnostic": diagnostic}))
         raise SystemExit(1)
