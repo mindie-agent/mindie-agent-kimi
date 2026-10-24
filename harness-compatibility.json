@@ -13,6 +13,12 @@
       "minimum": "2.2.0",
       "maximum": "2.2.0",
       "maximum_inclusive": true
+    },
+    {
+      "minimum": "2.3.1",
+      "maximum": "2.3.1",
+      "maximum_inclusive": true,
+      "include_prerelease": false
     }
   ],
   "used_interfaces": [
@@ -50,6 +56,12 @@
           "minimum": "2.2.0",
           "maximum": "2.2.0",
           "maximum_inclusive": true
+        },
+        {
+          "minimum": "2.3.1",
+          "maximum": "2.3.1",
+          "maximum_inclusive": true,
+          "include_prerelease": false
         }
       ],
       "test_ids": [
@@ -76,6 +88,12 @@
           "minimum": "2.2.0",
           "maximum": "2.2.0",
           "maximum_inclusive": true
+        },
+        {
+          "minimum": "2.3.1",
+          "maximum": "2.3.1",
+          "maximum_inclusive": true,
+          "include_prerelease": false
         }
       ],
       "test_ids": [
@@ -103,6 +121,12 @@
           "minimum": "2.2.0",
           "maximum": "2.2.0",
           "maximum_inclusive": true
+        },
+        {
+          "minimum": "2.3.1",
+          "maximum": "2.3.1",
+          "maximum_inclusive": true,
+          "include_prerelease": false
         }
       ],
       "test_ids": [
@@ -129,6 +153,12 @@
           "minimum": "2.2.0",
           "maximum": "2.2.0",
           "maximum_inclusive": true
+        },
+        {
+          "minimum": "2.3.1",
+          "maximum": "2.3.1",
+          "maximum_inclusive": true,
+          "include_prerelease": false
         }
       ],
       "test_ids": [
@@ -156,6 +186,12 @@
           "minimum": "2.2.0",
           "maximum": "2.2.0",
           "maximum_inclusive": true
+        },
+        {
+          "minimum": "2.3.1",
+          "maximum": "2.3.1",
+          "maximum_inclusive": true,
+          "include_prerelease": false
         }
       ],
       "test_ids": [
@@ -181,6 +217,12 @@
           "minimum": "2.2.0",
           "maximum": "2.2.0",
           "maximum_inclusive": true
+        },
+        {
+          "minimum": "2.3.1",
+          "maximum": "2.3.1",
+          "maximum_inclusive": true,
+          "include_prerelease": false
         }
       ],
       "test_ids": [
@@ -208,6 +250,12 @@
           "minimum": "2.2.0",
           "maximum": "2.2.0",
           "maximum_inclusive": true
+        },
+        {
+          "minimum": "2.3.1",
+          "maximum": "2.3.1",
+          "maximum_inclusive": true,
+          "include_prerelease": false
         }
       ],
       "test_ids": [
@@ -235,6 +283,12 @@
           "minimum": "2.2.0",
           "maximum": "2.2.0",
           "maximum_inclusive": true
+        },
+        {
+          "minimum": "2.3.1",
+          "maximum": "2.3.1",
+          "maximum_inclusive": true,
+          "include_prerelease": false
         }
       ],
       "test_ids": [
@@ -262,6 +316,12 @@
           "minimum": "2.2.0",
           "maximum": "2.2.0",
           "maximum_inclusive": true
+        },
+        {
+          "minimum": "2.3.1",
+          "maximum": "2.3.1",
+          "maximum_inclusive": true,
+          "include_prerelease": false
         }
       ],
       "test_ids": [
@@ -288,6 +348,12 @@
           "minimum": "2.2.0",
           "maximum": "2.2.0",
           "maximum_inclusive": true
+        },
+        {
+          "minimum": "2.3.1",
+          "maximum": "2.3.1",
+          "maximum_inclusive": true,
+          "include_prerelease": false
         }
       ],
       "test_ids": [
@@ -314,6 +380,12 @@
           "minimum": "2.2.0",
           "maximum": "2.2.0",
           "maximum_inclusive": true
+        },
+        {
+          "minimum": "2.3.1",
+          "maximum": "2.3.1",
+          "maximum_inclusive": true,
+          "include_prerelease": false
         }
       ],
       "test_ids": [
