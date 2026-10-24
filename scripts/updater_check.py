@@ -119,6 +119,8 @@ def fold_feed_results(output):
 
 def _check_once(adapter: dict, deadline: float, *, force, build, idle, install, lock_timeout) -> int:
     current = _h("read_current")(adapter)
+    from updater_schedule import refresh_existing_wrapper
+    refresh_existing_wrapper(adapter, current)
     remote = os.environ.get("MINDIE_KIMI_UPDATE_REMOTE") or adapter.get("update_remote") or _h("DEFAULT_REMOTE")
     if _h("_resolve_is_waiting")(adapter, force):
         status = _h("read_status")(adapter)

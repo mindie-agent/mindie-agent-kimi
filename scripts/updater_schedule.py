@@ -11,10 +11,10 @@ and binds itself so monkeypatches keep resolving through it.
 - Registration is only reported as scheduled after native readback proves the
   exact wrapper action.
 - Uninstall reports success only after the scheduler state is observed absent.
-- The generated wrapper and every native invocation are bounded at 300s.
+- The generated wrapper covers the 1200s updater budget plus 10s cleanup.
 
 [Timeouts & Locks]
-- `subprocess.run(..., timeout=300)` in the generated wrapper; `_native_run`
+- `subprocess.run(..., timeout=1210)` in the generated wrapper; `_native_run`
   callers pass explicit 10-30s budgets and uninstall readback polls for 3s.
 
 [Side-Effect Policy]
@@ -84,6 +84,28 @@ def _schedule_wrapper(adapter: dict, command) -> Path:
     tmp.write_text(body, encoding="utf-8")
     os.replace(tmp, wrapper)
     return wrapper
+
+
+
+def refresh_existing_wrapper(adapter, current):
+    """Carry an already scheduled action to the committed launcher and budget.
+
+    Replacing the managed script preserves the native task's enabled/disabled
+    choice and never re-registers a task or terminates its current invocation.
+    """
+    wrapper = _h("update_dir")(adapter) / "MindIEKimiUpdate.pyw"
+    if not wrapper.is_file():
+        return False
+    from paths import profile_config_path
+    launcher = _h("launch_dir")(adapter) / (current.get("sha") or "bootstrap") / _h("LAUNCHER")
+    if not launcher.is_file() or not (launcher.parent / "bounded.py").is_file():
+        raise ValueError("committed scheduled launcher is unavailable")
+    command = [current["python"], str(launcher), "--config", str(profile_config_path()),
+               "updater", "check"]
+    if wrapper.read_text(encoding="utf-8") == _h("_wrapper_body")(command):
+        return False
+    _h("_schedule_wrapper")(adapter, command)
+    return True
 
 
 def _verify_scheduled_task(wrapper: Path, pythonw: Path) -> None:
