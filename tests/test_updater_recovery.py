@@ -23,6 +23,17 @@ from test_updater import (  # noqa: E402
 )
 
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def unchanged_independent_components(monkeypatch):
+    # These local-Git cases exercise native installation, rollback and retry.
+    # Independent component discovery/build has its own contracts and live canaries.
+    monkeypatch.setattr("component_update.prepare", lambda *args, **kwargs: None)
+    monkeypatch.setattr("component_update.check", lambda *args, **kwargs: {"status": "up_to_date"})
+
+
 class UpdaterRecoveryTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
