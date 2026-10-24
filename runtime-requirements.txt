@@ -2,11 +2,11 @@
 #
 # Each pin is the exact component commit selected for this integration:
 #   mindie-agent/diagnostics v0.5.3 -> 1c465a18e4db59a0889557971b59d6233d8ae726
-#   mindie-agent/remote-dev  v0.10.7 -> a571f74edbe65b2d44d6017f4bba7e010946cb9b
+#   mindie-agent/remote-dev  v0.10.7 -> 42e18689b3d231d2144c08bb264171392f62d13e
 #   mindie-agent/knowledge   v0.13.3 -> 38a42f6f778cfa555d8918fdcacd12cee4a181f5
 #
 # This file records the adapter's three direct integration revisions.
 # Component metadata declares their transitive dependencies.
 mindie-diagnostics @ git+https://github.com/mindie-agent/diagnostics@1c465a18e4db59a0889557971b59d6233d8ae726
 mindie-knowledge @ git+https://github.com/mindie-agent/knowledge@38a42f6f778cfa555d8918fdcacd12cee4a181f5
-remote-dev @ git+https://github.com/mindie-agent/remote-dev@a571f74edbe65b2d44d6017f4bba7e010946cb9b
+remote-dev @ git+https://github.com/mindie-agent/remote-dev@42e18689b3d231d2144c08bb264171392f62d13e
