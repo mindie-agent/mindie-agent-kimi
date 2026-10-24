@@ -8,7 +8,7 @@ Following Principle 9 of the [MindIE Agent Engineering Design Principles](https:
 
 ## 1. Read-Only Status Inspection (`/mindie-agent:status`)
 
-- **What It Reports**: Current knowledge configuration, service and storage health, the bound task's state and diagnostic failure counter, and the latest 5 captures and contribution batches associated with the bound task.
+- **What It Reports**: Factual control-plane state (`status_facts`: `configured`, `knowledge_enabled`, current knowledge configuration, service and storage health, `this_session` manual-entry lease state, diagnostic failure counter, `sharing` and `reporting` state, and the latest 5 captures and contribution batches associated with the bound task) without onboarding prompt fields (`first_use`, `next`, `recovery`) and without requiring prior `/mindie-agent` session activation.
 - **Strictly Read-Only**: Calling `status` never initializes databases, starts models or background services, binds a task, resets failure counters, or replays consumed input. Uncertain external PR publications must be reconciled before any explicit `recover` retry.
 - **Sanitized Diagnostics & Corrupt Config Detection**: Failure projections omit raw provider stderr, transcript text, and tokens. If an existing adapter configuration file is malformed, `status` reports an explicit diagnostic error rather than presenting first-time onboarding choices.
 - **Independent Remote Execution**: Native shell/SSH and `remote-dev` remain fully usable even if the local knowledge service is unavailable.

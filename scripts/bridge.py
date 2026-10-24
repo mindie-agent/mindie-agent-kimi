@@ -134,6 +134,8 @@ def handle_stop():
         from paths import engine_config_path as engine_path
 
         lease, unavailable = _authorized_lease(session)
+        if lease is not None and not lease.get("entry_enabled"):
+            lease = None
         if unavailable is not None:
             _record_failure("admission", unavailable)
             _print({})

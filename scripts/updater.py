@@ -7,7 +7,7 @@ explicit recovery (`recover`), or scheduler registration (`install-schedule` /
 `uninstall-schedule`). Selects a compatible formal Release, stages its exact generation
 with its own pinned venv and versioned launcher, switches `current.json` under
 the exclusive `operation.lock` after `stop_if_idle` and native plugin install
-readback, and runs independent knowledge feed sync.
+readback, and maintains diagnostic retention.
 
 [Invariants]
 - Live entrypoints are never mutated during staging; each generation gets a
@@ -15,8 +15,8 @@ readback, and runs independent knowledge feed sync.
 - Switch requires an idle knowledge service (`stop_if_idle`), verified native
   plugin readback, and atomic `current.json` replacement; failures roll back both
   `current.json` and the native plugin package under the same exclusive lock.
-- Knowledge feed sync (`_feed_sync`) and diagnostic retention maintenance run
-  inside reserved tail budgets even when candidate preparation fails.
+- Diagnostic retention runs inside its reserved tail budget even when candidate
+  preparation fails. Release checks never authorize knowledge feed activity.
 
 [Timeouts & Locks]
 - `CHECK_BUDGET = 240.0s`, `ROLLBACK_BUDGET = 45.0s`, `FEED_BUDGET = 60.0s`,

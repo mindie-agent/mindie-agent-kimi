@@ -324,6 +324,26 @@ def status_payload(session=None):
     return payload
 
 
+def status_facts(session=None):
+    """Deterministic control-plane facts, without knowledge setup guidance."""
+    payload = dict(configured=_configured(), knowledge_enabled=False)
+    if payload["configured"] and session:
+        from admission import gate
+        lease = gate().knowledge_lease(session)
+        payload["knowledge_enabled"] = lease is not None
+        payload["this_session"] = dict(bound=lease is not None, enabled=lease is not None,
+                                       status="active" if lease else "inactive",
+                                       project_root=lease["project_root"] if lease else None)
+    if payload["configured"]:
+        diagnostics = _diagnostics(session)
+        payload["diagnostics"] = {key: value for key, value in diagnostics.items() if key != "hints"}
+        if session:
+            payload["this_session"]["failures"] = (diagnostics.get("admission") or {}).get("failures")
+    import diagnostic_support
+    payload["reporting"] = diagnostic_support.reporting_status()
+    return payload
+
+
 def _project_root(session, cwd):
     if isinstance(cwd, str) and os.path.isabs(cwd):
         return str(Path(cwd).resolve())
@@ -607,19 +627,7 @@ def op_choose(session, choice, cwd=None, *, repository=None, account=None):
 
 
 def op_status(session):
-    admitted = False
-    if _configured():
-        from admission import gate
-
-        try:
-            admitted = gate().inspect(session).get("status") == "active"
-        except TimeoutError:
-            raise
-        except (OSError, ValueError, TypeError):
-            pass
-    if not admitted:
-        require_current_plugin_command(session, "status")
-    return status_payload(session)
+    return status_facts(session)
 
 
 def op_deactivate(session):
