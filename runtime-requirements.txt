@@ -1,11 +1,11 @@
 # Component integration revisions used by the MindIE Agent Kimi Code adapter.
 #
 # Each pin is the exact component commit selected for this integration:
-#   mindie-agent/diagnostics v0.5.1 -> fba07e8607ddadde14cea315c9dbda23726c1c79
-#   mindie-agent/remote-dev  v0.10.5 -> 20d34abebeab17bb6a68f0966ac4d627af54be88
-#   mindie-agent/knowledge   v0.13.2 -> 0e4123d09aad7dcbf9b7497f83c873163c17033e
+#   mindie-agent/diagnostics v0.5.2 -> 801a01b2789aed7f58e971a909205a7d40b61077
+#   mindie-agent/remote-dev  v0.10.6 -> 0463a13fce9618ec9a51904869d61acb0cdb8538
+#   mindie-agent/knowledge   v0.13.3 -> 38a42f6f778cfa555d8918fdcacd12cee4a181f5
 #
 # This file records the adapter's two direct integration revisions.
 # Component metadata declares their transitive dependencies.
-mindie-knowledge @ git+https://github.com/mindie-agent/knowledge@0e4123d09aad7dcbf9b7497f83c873163c17033e
-remote-dev @ git+https://github.com/mindie-agent/remote-dev@20d34abebeab17bb6a68f0966ac4d627af54be88
+mindie-knowledge @ git+https://github.com/mindie-agent/knowledge@38a42f6f778cfa555d8918fdcacd12cee4a181f5
+remote-dev @ git+https://github.com/mindie-agent/remote-dev@0463a13fce9618ec9a51904869d61acb0cdb8538
