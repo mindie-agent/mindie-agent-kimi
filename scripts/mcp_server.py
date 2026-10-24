@@ -375,6 +375,93 @@ def clamp_remote_args(args):
     return body
 
 
+_TERMINAL_COMMAND_STATES = {"succeeded", "failed", "timeout", "cancelled"}
+_COMMAND_TOOLS = {
+    "remote_Bash", "remote_bash", "remote_TaskOutput",
+    "remote_exec_command", "remote_write_stdin", "remote_shell",
+}
+
+
+def _observed_exit_code(result):
+    """Find a native exit code without inventing one for helper failures."""
+    if not isinstance(result, dict):
+        return None
+    for value in (
+        result.get("exit_code"),
+        (result.get("task") or {}).get("exitCode") if isinstance(result.get("task"), dict) else None,
+    ):
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    for container in (result.get("job"), result.get("remote_status")):
+        if not isinstance(container, dict):
+            continue
+        value = container.get("exit_code")
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+        for nested in (container.get("result"), container.get("remote_status")):
+            if isinstance(nested, dict) and isinstance(nested.get("exit_code"), int) \
+                    and not isinstance(nested.get("exit_code"), bool):
+                return nested["exit_code"]
+    return None
+
+
+def _completed_command(name, result):
+    if name not in _COMMAND_TOOLS or not isinstance(result, dict):
+        return False
+    error_details = result.get("error_details")
+    if result.get("unknown") or (
+            isinstance(error_details, dict)
+            and error_details.get("submission_state") == "uncertain"):
+        return False
+    if (result.get("state") or result.get("status")) not in _TERMINAL_COMMAND_STATES:
+        return False
+    # A terminal state alone is not proof that the command ran: a failed
+    # start/status RPC has no observed exit code. Require the real observation.
+    return _observed_exit_code(result) is not None
+
+
+def remote_result(name, payload):
+    """Preserve native content blocks and a completed nonzero command."""
+    result_payload = payload.get("result", payload) if isinstance(payload, dict) else payload
+    text = payload.get("text") if isinstance(payload, dict) else None
+    blocks = [dict(
+        type="text",
+        text=text if isinstance(text, str) else canonical(payload),
+    )]
+    native = payload.get("content") if isinstance(payload, dict) else None
+    if isinstance(native, list):
+        blocks.extend(item for item in native
+                      if isinstance(item, dict) and isinstance(item.get("type"), str))
+    if isinstance(result_payload, dict):
+        error_details = result_payload.get("error_details")
+        uncertain = (
+            result_payload.get("status") == "submission_uncertain"
+            or result_payload.get("unknown")
+            or (isinstance(error_details, dict)
+                and error_details.get("submission_state") == "uncertain")
+        )
+    else:
+        uncertain = False
+    if uncertain:
+        is_error = True
+    elif _completed_command(name, result_payload):
+        is_error = False
+    elif isinstance(result_payload, dict):
+        outcome = result_payload.get("outcome")
+        if result_payload.get("status") == "local_recording_failed":
+            completed_locally = (
+                result_payload.get("operation_completed") is True
+                or (isinstance(result_payload.get("error_details"), dict)
+                    and result_payload["error_details"].get("operation_completed") is True)
+            )
+            if completed_locally:
+                outcome = result_payload.get("execution_outcome", outcome)
+        is_error = outcome not in {None, "success", "cancelled"}
+    else:
+        is_error = False
+    return dict(content=blocks, structuredContent=result_payload, isError=is_error)
+
+
 def reject_native_identity_args(args, surface):
     if (
         "sessionId" in args
@@ -665,12 +752,7 @@ def handle(surface, message):
             except (ValueError, OSError, RuntimeError, KeyError, TypeError) as exc:
                 result = remote_stage_failure(body, name, "helper_failed", exc)
                 return dict(jsonrpc="2.0", id=ident, result=result)
-            text = payload.get("text") if isinstance(payload, dict) else canonical(payload)
-            result = dict(
-                content=[dict(type="text", text=text if isinstance(text, str) else canonical(payload))],
-                structuredContent=payload.get("result", payload) if isinstance(payload, dict) else payload,
-                isError=isinstance(payload, dict) and payload.get("result", {}).get("outcome") not in {None, "success", "cancelled"},
-            )
+            result = remote_result(local_tool_name(name), payload)
         succeeded = result.get("isError") is not True
         return dict(jsonrpc="2.0", id=ident, result=result)
     except TimeoutError as exc:

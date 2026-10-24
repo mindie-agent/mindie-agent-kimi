@@ -421,9 +421,11 @@ class KnowledgePageTests(unittest.TestCase):
         self.assertGreater(len(text.encode()), 256 * 1024)
         self.assertLess(len(text.encode()), mindie_launch.KNOWLEDGE_MAX_OUTPUT)
         self.assertEqual(bounded.MAX_OUTPUT, 256 * 1024)
-        with self.assertRaises(mindie_launch.DispatchFailure) as caught:
-            mindie_launch._dispatch("remote", raw, "cap-1")
-        self.assertEqual(caught.exception.stage, "helper_failed")
+        # The 32 MiB remote cap is separate from the local bound; the same
+        # >256 KiB helper response must survive a remote dispatch.
+        remote = mindie_launch._dispatch("remote", raw, "cap-1")
+        self.assertGreater(len(remote["result"]["content"][0]["text"].encode()),
+                           256 * 1024)
 
     def test_knowledge_bound_accepts_output_past_512kib(self):
         import bounded

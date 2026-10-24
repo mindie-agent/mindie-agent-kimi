@@ -17,7 +17,7 @@ under the shared `operation.lock` and dispatches one-shot children.
 
 [Timeouts & Locks]
 - `HOOK_TOTAL = 10.0s`, `HOOK_LOCK_BUDGET = 2.0s`, `BOOTSTRAP_TOTAL = 540.0s`,
-  `CALL_LOCK_BUDGET = 5.0s`, `CALL_CHILD_BUDGET = 60.0s` (180s for explicit entry activation/configuration including reporter startup), `EOF_JOIN = 3.0s`,
+  `CALL_LOCK_BUDGET = 5.0s`, `CALL_CHILD_BUDGET = 60.0s` (180s for explicit entry activation/configuration including reporter startup; remote calls derive native wait + 60s grace: Bash foreground/Read/Glob/Grep 360s, background launch 180s), `EOF_JOIN = 3.0s`,
   `OUTPUT_BUDGET = 1.0s`.
 - Acquires shared `operation.lock` (`fcntl.flock` / `msvcrt.locking`) before
   reading `current.json` and holds it across child execution.
@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import math
 import os
 import re
 import sys
@@ -81,6 +82,19 @@ BOOTSTRAP_TOTAL = float(os.environ.get("MINDIE_BOOTSTRAP_TOTAL_SECONDS") or 540.
 CALL_LOCK_BUDGET = 5.0
 CALL_CHILD_BUDGET = 60.0
 KNOWLEDGE_MAX_OUTPUT = 1024 * 1024
+# Remote child budget: native Kimi Bash foreground waits up to 300s, Read/
+# Glob/Grep up to 300s; SSH setup, framing, pipe drain and cleanup happen
+# outside that wait. A fixed 60s outer deadline would cut off a legal call.
+REMOTE_GRACE_SECONDS = 60.0
+REMOTE_MIN_BUDGET_SECONDS = 180.0
+REMOTE_MAX_OUTPUT = bounded.REMOTE_MAX_OUTPUT
+KIMI_REMOTE_INNER_SECONDS = {
+    "remote_bash": 300.0,
+    "remote_read": 300.0,
+    "remote_glob": 300.0,
+    "remote_grep": 300.0,
+    "remote_readmediafile": 300.0,
+}
 MAX_RPC_ID = 256
 WORK_LIMIT = 3
 CONTROL_LIMIT = 1
@@ -472,10 +486,61 @@ def _stage_error(ident, message, stage: str, surface: str):
     )
 
 
-def _call_budget(raw):
+def kimi_remote_inner_seconds(name, arguments):
+    """Largest legal native inner wait for this Kimi remote tool, in seconds.
+
+    Kimi Bash takes ``timeout`` in seconds; canonical aliases take
+    ``yield_time_ms``/``timeout_ms`` in milliseconds. A background launch
+    returns immediately, so only the minimum remote budget is needed.
+    """
+    key = name.rsplit("__", 1)[-1].lower() if isinstance(name, str) else ""
+    if isinstance(arguments, dict) and arguments.get("run_in_background") is True:
+        return 0.0
+    native = KIMI_REMOTE_INNER_SECONDS.get(key, 0.0)
+    explicit = 0.0
+    if isinstance(arguments, dict):
+        for field in ("timeout", "yield_time_ms", "timeout_ms"):
+            value = arguments.get(field)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            if not math.isfinite(value) or value <= 0:
+                continue
+            # Kimi Bash's native timeout is seconds; transport waits are ms.
+            seconds = float(value) if field == "timeout" and key in {
+                "remote_bash", "bash"} else float(value) / 1000.0
+            explicit = max(explicit, seconds)
+    return max(native, explicit)
+
+
+def remote_budget(name, arguments=None, *, native_wait_ms=None,
+                  grace=REMOTE_GRACE_SECONDS, minimum=REMOTE_MIN_BUDGET_SECONDS):
+    """Outer child budget: native wait + SSH/framing/drain/cleanup grace.
+
+    Pure and injectable so the arithmetic is proven without a 300s sleep.
+    """
+    if isinstance(grace, bool) or not isinstance(grace, (int, float)) \
+            or not math.isfinite(grace) or grace <= 0:
+        raise ValueError("remote grace must be a positive finite number")
+    if isinstance(minimum, bool) or not isinstance(minimum, (int, float)) \
+            or not math.isfinite(minimum) or minimum <= 0:
+        raise ValueError("remote minimum budget must be a positive finite number")
+    if native_wait_ms is None:
+        wait = kimi_remote_inner_seconds(name, arguments)
+    else:
+        if isinstance(native_wait_ms, bool) or not isinstance(native_wait_ms, (int, float)) \
+                or not math.isfinite(native_wait_ms) or native_wait_ms < 0:
+            raise ValueError("native wait must be a nonnegative finite number of milliseconds")
+        wait = float(native_wait_ms) / 1000.0
+    return max(float(minimum), wait + float(grace))
+
+
+def _call_budget(surface, raw):
     message = json.loads(raw)
     arguments = (message.get("params") or {}).get("arguments") or {}
-    if _local_tool_name(message) == "mindie_entry" and arguments.get("op") in {
+    name = _local_tool_name(message)
+    if surface == "remote":
+        return remote_budget(name, arguments)
+    if name == "mindie_entry" and arguments.get("op") in {
         "init", "choose", "sharing-enable", "sharing-disable",
     }:
         return 180.0
@@ -499,9 +564,10 @@ def _dispatch(surface: str, raw: bytes, ident, cancel=None):
         try:
             out = bounded.run(
                 [current["python"], str(script), surface, "--once"],
-                payload, timeout=_call_budget(raw), env=_child_env(current),
+                payload, timeout=_call_budget(surface, raw), env=_child_env(current),
                 cwd=str(Path(current["generation"])), cancel=cancel,
-                **({"max_output": KNOWLEDGE_MAX_OUTPUT} if surface == "knowledge" else {}),
+                **({"max_output": KNOWLEDGE_MAX_OUTPUT} if surface == "knowledge"
+                   else {"max_output": REMOTE_MAX_OUTPUT}),
             )
         except bounded.CommandCancelled:
             raise

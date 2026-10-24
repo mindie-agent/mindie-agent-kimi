@@ -41,6 +41,10 @@ if POSIX:
     import signal
 
 MAX_OUTPUT = 256 * 1024
+# Remote image/PDF/content responses are base64 JSON and may legitimately
+# exceed the local 256 KiB cap; multi-page PDFs can approach 32 MiB. Applied
+# only to the remote MCP surface.
+REMOTE_MAX_OUTPUT = 32 * 1024 * 1024
 _CHUNK = 8192
 _STREAM_EDGE = 4096
 
