@@ -4,6 +4,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from support import FIXTURES, SCRIPTS, plugin_origin, turn_records, write_session
@@ -261,3 +262,19 @@ class NativeUserEntryTests(unittest.TestCase):
             identity._entry_from_openings([(prompt, {"kind": "injection"})], "init")
         with self.assertRaises(ValueError):
             identity._entry_from_openings([(prompt, {"kind": "user"})], "choose")
+
+
+    def test_qualified_plugin_skill_keeps_native_path_and_user_origin_checks(self):
+        skill = dict(skillName="mindie-agent:mindie-agent", activationId="native-qualified-231",
+                     skillPath=str(REPO / "skills/mindie-agent/SKILL.md"), skillArgs="status")
+        origin = dict(kind="user", skillActivations=[skill])
+        normalized = identity._normalize_activation(origin, steering=False)
+        with patch.dict(os.environ, {"KIMI_PLUGIN_ROOT": str(REPO)}):
+            entry = identity._entry_from_openings([({}, normalized)], "init")
+            self.assertEqual(entry["activation_id"], "native-qualified-231")
+            self.assertEqual(entry["arguments"], "status")
+            for changed in [dict(skill, skillName="other:mindie-agent"),
+                            dict(skill, skillPath=str(REPO / "foreign/SKILL.md"))]:
+                other = identity._normalize_activation(dict(kind="user", skillActivations=[changed]), steering=False)
+                with self.subTest(changed=changed), self.assertRaises(ValueError):
+                    identity._entry_from_openings([({}, other)], "init")

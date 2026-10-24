@@ -1,7 +1,7 @@
 """[Role] Advance component releases using Kimi's existing generation transaction.
 [Invariants] Native plugin definitions are reinstalled only for plugin updates.
 Component updates preserve the plugin SHA and all profile authority paths.
-[Timeouts & Locks] Builder uses the remaining enclosing budget minus 80s for
+[Timeouts & Locks] Builder uses the remaining enclosing budget minus 260s for
 probe/configuration/handoff; the existing exclusive operation lock gates commit.
 [Side-Effect Policy] Software release reads/builds and idle generation switch;
 never authorizes knowledge, reads a corpus or changes contribution consent.
