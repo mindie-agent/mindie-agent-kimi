@@ -129,6 +129,7 @@ class McpTests(unittest.TestCase):
                 captured["name"] = name
                 captured["args"] = dict(args)
                 captured["native"] = os.environ.get("REMOTE_DEV_SESSION_ID")
+                captured["profile"] = os.environ.get("REMOTE_DEV_HARNESS_PROFILE")
                 return {
                     "text": "ok",
                     "result": {"outcome": "success", "job_id": args.get("session_id")},
@@ -145,15 +146,16 @@ class McpTests(unittest.TestCase):
             original = remote_tools.call_tool
             remote_tools.call_tool = fake_call
             try:
-                response = mcp_server.handle(
-                    "remote",
-                    dict(
-                        jsonrpc="2.0",
-                        id=21,
-                        method="tools/call",
-                        params=dict(name="remote_job_status", arguments=args),
-                    ),
-                )
+                with patch.dict(os.environ, {"REMOTE_DEV_HARNESS_PROFILE": "codex"}):
+                    response = mcp_server.handle(
+                        "remote",
+                        dict(
+                            jsonrpc="2.0",
+                            id=21,
+                            method="tools/call",
+                            params=dict(name="remote_job_status", arguments=args),
+                        ),
+                    )
             finally:
                 remote_tools.call_tool = original
             self.assertFalse(response["result"]["isError"], response)
@@ -161,6 +163,7 @@ class McpTests(unittest.TestCase):
             self.assertNotIn("request_nonce", captured["args"])
             self.assertEqual(captured["native"], "ses_native_owner")
             self.assertNotEqual(captured["native"], "job-alias-1")
+            self.assertEqual(captured["profile"], "kimi")
 
             camel = mcp_server.handle(
                 "remote",

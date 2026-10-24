@@ -574,6 +574,9 @@ def remote_call(name, args, session):
     import diagnostic_support
 
     diagnostic_support.bind_environment()
+    # Trusted plugin binding for this MCP process. The launcher injects the
+    # same literal value; tool arguments can never select or override it.
+    os.environ["REMOTE_DEV_HARNESS_PROFILE"] = "kimi"
     from remote_dev.mcp.schemas import ALIASES
     from remote_dev.mcp.tools import call_tool
 

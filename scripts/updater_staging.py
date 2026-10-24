@@ -276,12 +276,17 @@ def build_host_package(
         front_env = None
     bound = ["--config", str(config_file)]
     for surface in ("knowledge", "remote"):
-        manifest["mcpServers"][surface] = {
+        previous = manifest["mcpServers"].get(surface)
+        env = dict(previous.get("env") or {}) if isinstance(previous, dict) else {}
+        if front_env is not None:
+            env.update(front_env)
+        entry = {
             "command": front,
             "args": [str(launcher), *bound, "mcp", surface],
         }
-        if front_env is not None:
-            manifest["mcpServers"][surface]["env"] = dict(front_env)
+        if env:
+            entry["env"] = env
+        manifest["mcpServers"][surface] = entry
     quoted = _h("_quote_front_command")(base_python, launcher, config_file)
     for hook in manifest.get("hooks", []):
         if op := {"PreToolUse": "pretool", "Stop": "stop"}.get(hook.get("event")):

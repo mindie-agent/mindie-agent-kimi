@@ -15,7 +15,10 @@
     "remote": {
       "command": "python3",
       "args": ["./scripts/with_runtime.py", "mcp_server.py", "remote"],
-      "cwd": "./"
+      "cwd": "./",
+      "env": {
+        "REMOTE_DEV_HARNESS_PROFILE": "kimi"
+      }
     }
   },
   "hooks": [

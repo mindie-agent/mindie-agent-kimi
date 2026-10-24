@@ -30,6 +30,11 @@ class ManifestTests(unittest.TestCase):
             self.assertEqual(server["command"], "python3")
             self.assertEqual(server["args"][0], "./scripts/with_runtime.py")
             self.assertEqual(server["cwd"], "./")
+        self.assertEqual(
+            self.manifest["mcpServers"]["remote"].get("env"),
+            {"REMOTE_DEV_HARNESS_PROFILE": "kimi"},
+        )
+        self.assertNotIn("env", self.manifest["mcpServers"]["knowledge"])
 
     def test_no_updater_shim(self):
         self.assertFalse((ROOT / "scripts" / "update.py").exists())
