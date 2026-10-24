@@ -397,6 +397,16 @@ def _entry_from_openings(openings, command: str) -> dict:
         raise ValueError("current turn has ambiguous MindIE skill activations")
     if kind == _NESTED_STEERING:
         raise ValueError("an in-turn nested skill activation is not the user entry")
+    if kind == "user" and command == "init" and _invokes_entry(_record_text(_record)):
+        # New native versions may retain the slash as user input instead of
+        # expanding a Skill. The current native user opening is the authority;
+        # never derive a grant from model arguments or inherited transcript text.
+        prompt_id = _record.get("promptId") or (_record.get("message") or {}).get("id")
+        if not isinstance(prompt_id, str) or not prompt_id:
+            raise ValueError("native user entry lacks its prompt identity")
+        text = _record_text(_record).lstrip()
+        return dict(command="init", arguments=text[len("/mindie-agent"):].strip(),
+                    activation_id="user-entry:" + prompt_id)
     if kind == "plugin_command":
         return _validate_plugin_command_origin(origin, command)
     if kind == "skill_activation":

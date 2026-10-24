@@ -237,3 +237,27 @@ class SkillActivationShapeTests(unittest.TestCase):
                 identity.require_current_entry(
                     "ses_nested_steer", "init", kimi_home=home
                 )
+
+
+class NativeUserEntryTests(unittest.TestCase):
+    def test_current_native_user_prefix_authorizes_without_skill_expansion(self):
+        # Kimi 2.3.1 native turn.prompt/context.append_message envelope.
+        prompt = dict(type="turn.prompt", promptId="msg_native_231", turnId=0,
+                      origin={"kind": "user"}, input=[{"type": "text", "text":
+                          "/mindie-agent initialize entry only"}], time=1792840620684)
+        appended = dict(type="context.append_message", time=1792840620684,
+                        message=dict(role="user", id="msg_native_231", origin={"kind": "user"},
+                                     content=prompt["input"]))
+        for record in [prompt, appended]:
+            with self.subTest(record=record["type"]):
+                result = identity._entry_from_openings([(record, {"kind": "user"})], "init")
+                self.assertEqual(result, dict(command="init", arguments="initialize entry only",
+                                              activation_id="user-entry:msg_native_231"))
+        for text in ["please run /mindie-agent", "`/mindie-agent`", "/mindie-agent-other"]:
+            record = dict(prompt, input=[{"type": "text", "text": text}])
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                identity._entry_from_openings([(record, {"kind": "user"})], "init")
+        with self.assertRaises(ValueError):
+            identity._entry_from_openings([(prompt, {"kind": "injection"})], "init")
+        with self.assertRaises(ValueError):
+            identity._entry_from_openings([(prompt, {"kind": "user"})], "choose")
