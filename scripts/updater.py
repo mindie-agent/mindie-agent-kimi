@@ -446,15 +446,28 @@ def repair_host_package(adapter: dict, current: dict, deadline: float,
                         reserve=FEED_BUDGET + HANDOFF_BUDGET)
             except Exception:
                 _restore_host_package(destination, backup)
+                # Restoring source JSON is not enough: Kimi registers parsed
+                # MCP/hook definitions. Re-apply the previous package through
+                # the existing native install/readback and only then permit
+                # stopped-service restoration. If rollback is unproven, keep
+                # the explicit failure and do not claim the old service is
+                # safely restored.
+                restored = _rollback_native(adapter, current, install, deadline)
+                if stopped:
+                    _restore_stopped_service(
+                        adapter, current if restored else None, deadline,
+                    )
+                    stopped = False
                 raise
             if backup is not None:
                 _remove_owned_tree(backup)
             _mark_host_package(receipt_path, destination)
+            if stopped:
+                _restore_stopped_service(adapter, current, deadline)
+                stopped = False
     finally:
         if staging.exists():
             _remove_owned_tree(staging)
-        if stopped:
-            _restore_stopped_service(adapter, current, deadline)
     return destination
 
 

@@ -286,6 +286,31 @@ class LegacyRepairTests(unittest.TestCase):
         self.assertNotIn("host_package", json.loads(receipt_path.read_text(encoding="utf-8")))
         self.assertFalse((self.generation / "host-package.repair-previous").exists())
 
+    def test_install_failure_rolls_back_native_before_service_restore(self):
+        receipt_path = self._legacy_receipt()
+        package = self.generation / "host-package"
+        package.mkdir()
+        write_json(package / "kimi.plugin.json", {"name": "mindie-agent", "version": "0.1.3"})
+        calls = []
+
+        def install(_adapter, path, _deadline, reserve=0.0):
+            calls.append(Path(path))
+            if len(calls) == 1:
+                raise RuntimeError("native API failed")
+            return {"install": {"ok": True}}
+
+        restored = []
+        with patch.object(updater, "_restore_stopped_service",
+                          side_effect=lambda adapter, final, deadline: restored.append(final)):
+            with self.assertRaises(RuntimeError):
+                updater.repair_host_package(
+                    self.adapter, self.current, time.monotonic() + 120,
+                    install, lambda *_: {"idle": True, "service": "stopped"},
+                )
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(restored, [self.current])
+        self.assertTrue((package / "kimi.plugin.json").is_file())
+
     def test_check_repairs_legacy_receipt_before_reporting_current(self):
         self._legacy_receipt()
         installed = []

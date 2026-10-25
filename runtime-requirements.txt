@@ -1,17 +1,17 @@
 # Component integration revisions used by the MindIE Agent Kimi Code adapter.
 #
 # Each pin is the exact component commit selected for this integration:
-#   mindie-agent/diagnostics v0.5.3 -> 1c465a18e4db59a0889557971b59d6233d8ae726
+#   mindie-agent/diagnostics bootstrap floor v0.5.2 -> 801a01b2789aed7f58e971a909205a7d40b61077
+#   (actual activation is selected by component_prepare, preserving installed 0.5.3)
 #   mindie-agent/remote-dev  v0.10.7 -> 1fefcc383f91e74210c5709af5c25ac68ec05fd6
 #   mindie-agent/knowledge   v0.13.3 -> 38a42f6f778cfa555d8918fdcacd12cee4a181f5
 #
-# The immutable 0.1.2 updater's plain `uv pip install` cannot resolve the
-# 0.5.3 direct URL against knowledge/remote-dev's 801a01b transitive URL. That
-# first hop is recovered by running the candidate `scripts/setup.py` (which
-# uses the candidate `--overrides` build) in an explicit one-time recovery,
-# never by downgrading this baseline or claiming seamless 0.1.2 auto-update.
+# Immutable 0.1.2 has no --overrides. A 0.5.2 bootstrap URL resolves its
+# first hop; its real component_prepare step then selects the installed
+# 0.5.3 floor and advances knowledge, so the activated runtime is not
+# downgraded. This is a bootstrap baseline, not the active version.
 # This file records the adapter's three direct integration revisions.
 # Component metadata declares their transitive dependencies.
-mindie-diagnostics @ git+https://github.com/mindie-agent/diagnostics@1c465a18e4db59a0889557971b59d6233d8ae726
+mindie-diagnostics @ git+https://github.com/mindie-agent/diagnostics@801a01b2789aed7f58e971a909205a7d40b61077
 mindie-knowledge @ git+https://github.com/mindie-agent/knowledge@38a42f6f778cfa555d8918fdcacd12cee4a181f5
 remote-dev @ git+https://github.com/mindie-agent/remote-dev@1fefcc383f91e74210c5709af5c25ac68ec05fd6
