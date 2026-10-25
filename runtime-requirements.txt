@@ -3,7 +3,7 @@
 # Each pin is the exact component commit selected for this integration:
 #   mindie-agent/diagnostics bootstrap floor v0.5.2 -> 801a01b2789aed7f58e971a909205a7d40b61077
 #   (actual activation is selected by component_prepare, preserving installed 0.5.3)
-#   mindie-agent/remote-dev  v0.10.7 -> 1fefcc383f91e74210c5709af5c25ac68ec05fd6
+#   mindie-agent/remote-dev  v0.10.7 -> 2bd3a9e7c89a49cb9d495405a87316f5ea3064ec
 #   mindie-agent/knowledge   v0.13.3 -> 38a42f6f778cfa555d8918fdcacd12cee4a181f5
 #
 # Immutable 0.1.2 has no --overrides. A 0.5.2 bootstrap URL resolves its
@@ -14,4 +14,4 @@
 # Component metadata declares their transitive dependencies.
 mindie-diagnostics @ git+https://github.com/mindie-agent/diagnostics@801a01b2789aed7f58e971a909205a7d40b61077
 mindie-knowledge @ git+https://github.com/mindie-agent/knowledge@38a42f6f778cfa555d8918fdcacd12cee4a181f5
-remote-dev @ git+https://github.com/mindie-agent/remote-dev@1fefcc383f91e74210c5709af5c25ac68ec05fd6
+remote-dev @ git+https://github.com/mindie-agent/remote-dev@2bd3a9e7c89a49cb9d495405a87316f5ea3064ec
