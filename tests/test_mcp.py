@@ -129,6 +129,7 @@ class McpTests(unittest.TestCase):
                 captured["name"] = name
                 captured["args"] = dict(args)
                 captured["native"] = os.environ.get("REMOTE_DEV_SESSION_ID")
+                captured["profile"] = os.environ.get("REMOTE_DEV_HARNESS_PROFILE")
                 return {
                     "text": "ok",
                     "result": {"outcome": "success", "job_id": args.get("session_id")},
@@ -145,15 +146,16 @@ class McpTests(unittest.TestCase):
             original = remote_tools.call_tool
             remote_tools.call_tool = fake_call
             try:
-                response = mcp_server.handle(
-                    "remote",
-                    dict(
-                        jsonrpc="2.0",
-                        id=21,
-                        method="tools/call",
-                        params=dict(name="remote_job_status", arguments=args),
-                    ),
-                )
+                with patch.dict(os.environ, {"REMOTE_DEV_HARNESS_PROFILE": "codex"}):
+                    response = mcp_server.handle(
+                        "remote",
+                        dict(
+                            jsonrpc="2.0",
+                            id=21,
+                            method="tools/call",
+                            params=dict(name="remote_job_status", arguments=args),
+                        ),
+                    )
             finally:
                 remote_tools.call_tool = original
             self.assertFalse(response["result"]["isError"], response)
@@ -161,6 +163,7 @@ class McpTests(unittest.TestCase):
             self.assertNotIn("request_nonce", captured["args"])
             self.assertEqual(captured["native"], "ses_native_owner")
             self.assertNotEqual(captured["native"], "job-alias-1")
+            self.assertEqual(captured["profile"], "kimi")
 
             camel = mcp_server.handle(
                 "remote",
@@ -175,6 +178,55 @@ class McpTests(unittest.TestCase):
                 ),
             )
             self.assertTrue(camel["result"]["isError"])
+
+    def test_host_qualified_remote_name_strips_before_dispatch(self):
+        with tempfile.TemporaryDirectory() as raw:
+            config = make_config(Path(raw))
+            os.environ["MINDIE_KIMI_CONFIG"] = str(config)
+            sys.path.insert(0, str(SCRIPTS))
+            import identity
+            import mcp_server
+            import remote_dev.mcp.tools as remote_tools
+
+            host_name = "mcp__plugin-mindie-agent_remote__remote_Read"
+            args = {"path": "/remote/not-read", "request_nonce": "nonce-host-name"}
+            identity.publish_nonce_bind(
+                "ses_host_name", "nonce-host-name", host_name, "tool_host_name", args,
+            )
+            captured = {}
+
+            def fake_call(name, call_args):
+                captured["name"] = name
+                captured["args"] = dict(call_args)
+                return {"text": "ok", "result": {"outcome": "success"}}
+
+            original = remote_tools.call_tool
+            remote_tools.call_tool = fake_call
+            try:
+                response = mcp_server.handle(
+                    "remote",
+                    dict(jsonrpc="2.0", id=31, method="tools/call",
+                         params=dict(name=host_name, arguments=args)),
+                )
+            finally:
+                remote_tools.call_tool = original
+            self.assertFalse(response["result"]["isError"], response)
+            self.assertEqual(captured["name"], "remote_Read")
+            self.assertNotIn("request_nonce", captured["args"])
+
+    def test_remote_tools_follow_the_trusted_profile_env(self):
+        import mcp_server
+        with patch.dict(os.environ, {"REMOTE_DEV_HARNESS_PROFILE": "kimi"}):
+            tools = {item["name"]: item for item in mcp_server.remote_tools()}
+        self.assertIn("remote_read", tools)
+        self.assertTrue(
+            {"remote_Read", "remote_Write", "remote_Bash", "remote_TaskOutput",
+             "remote_TaskStop", "remote_TaskList", "remote_ReadMediaFile"}
+            <= set(tools)
+        )
+        self.assertNotIn("remote_exec_command", tools)
+        for name in ("remote_read", "remote_Read", "remote_TaskList"):
+            self.assertIn("request_nonce", tools[name]["inputSchema"]["required"])
 
     def test_remote_tools_are_listed_without_knowledge_activation(self):
         with tempfile.TemporaryDirectory() as raw:

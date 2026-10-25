@@ -47,7 +47,7 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-from identity import claim_nonce, finish_nonce, require_nonce
+from identity import claim_nonce, finish_nonce, local_tool_name, require_nonce
 from paths import (
     domain_configs,
     domain_from_ref,
@@ -59,6 +59,10 @@ import rsi_explore
 
 MAX_YIELD_TIME_MS = 30000
 KNOWLEDGE_RPC_TIMEOUT = 30.0
+# Trusted Kimi plugin binding for the remote surface. This must be in the
+# process environment before remote_dev is imported: its harness catalog reads
+# the profile during tools/list, not only during tools/call.
+REMOTE_PROFILE = "kimi"
 REMOTE_ERROR_CATEGORIES = frozenset({
     "internal", "caller", "validation", "permission", "remote_execution",
     "cancelled", "cancel_unconfirmed", "cleanup", "configuration",
@@ -375,6 +379,93 @@ def clamp_remote_args(args):
     return body
 
 
+_TERMINAL_COMMAND_STATES = {"succeeded", "failed", "timeout", "cancelled"}
+_COMMAND_TOOLS = {
+    "remote_Bash", "remote_bash", "remote_TaskOutput",
+    "remote_exec_command", "remote_write_stdin", "remote_shell",
+}
+
+
+def _observed_exit_code(result):
+    """Find a native exit code without inventing one for helper failures."""
+    if not isinstance(result, dict):
+        return None
+    for value in (
+        result.get("exit_code"),
+        (result.get("task") or {}).get("exitCode") if isinstance(result.get("task"), dict) else None,
+    ):
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    for container in (result.get("job"), result.get("remote_status")):
+        if not isinstance(container, dict):
+            continue
+        value = container.get("exit_code")
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+        for nested in (container.get("result"), container.get("remote_status")):
+            if isinstance(nested, dict) and isinstance(nested.get("exit_code"), int) \
+                    and not isinstance(nested.get("exit_code"), bool):
+                return nested["exit_code"]
+    return None
+
+
+def _completed_command(name, result):
+    if name not in _COMMAND_TOOLS or not isinstance(result, dict):
+        return False
+    error_details = result.get("error_details")
+    if result.get("unknown") or (
+            isinstance(error_details, dict)
+            and error_details.get("submission_state") == "uncertain"):
+        return False
+    if (result.get("state") or result.get("status")) not in _TERMINAL_COMMAND_STATES:
+        return False
+    # A terminal state alone is not proof that the command ran: a failed
+    # start/status RPC has no observed exit code. Require the real observation.
+    return _observed_exit_code(result) is not None
+
+
+def remote_result(name, payload):
+    """Preserve native content blocks and a completed nonzero command."""
+    result_payload = payload.get("result", payload) if isinstance(payload, dict) else payload
+    text = payload.get("text") if isinstance(payload, dict) else None
+    blocks = [dict(
+        type="text",
+        text=text if isinstance(text, str) else canonical(payload),
+    )]
+    native = payload.get("content") if isinstance(payload, dict) else None
+    if isinstance(native, list):
+        blocks.extend(item for item in native
+                      if isinstance(item, dict) and isinstance(item.get("type"), str))
+    if isinstance(result_payload, dict):
+        error_details = result_payload.get("error_details")
+        uncertain = (
+            result_payload.get("status") == "submission_uncertain"
+            or result_payload.get("unknown")
+            or (isinstance(error_details, dict)
+                and error_details.get("submission_state") == "uncertain")
+        )
+    else:
+        uncertain = False
+    if uncertain:
+        is_error = True
+    elif _completed_command(name, result_payload):
+        is_error = False
+    elif isinstance(result_payload, dict):
+        outcome = result_payload.get("outcome")
+        if result_payload.get("status") == "local_recording_failed":
+            completed_locally = (
+                result_payload.get("operation_completed") is True
+                or (isinstance(result_payload.get("error_details"), dict)
+                    and result_payload["error_details"].get("operation_completed") is True)
+            )
+            if completed_locally:
+                outcome = result_payload.get("execution_outcome", outcome)
+        is_error = outcome not in {None, "success", "cancelled"}
+    else:
+        is_error = False
+    return dict(content=blocks, structuredContent=result_payload, isError=is_error)
+
+
 def reject_native_identity_args(args, surface):
     if (
         "sessionId" in args
@@ -550,7 +641,18 @@ def knowledge_call(name, args, session):
     return rpc(connection, method, payload, timeout=KNOWLEDGE_RPC_TIMEOUT)
 
 
+def bind_remote_profile() -> None:
+    """Bind the trusted Kimi native profile before any remote_dev lookup.
+
+    The launcher and host-package manifest also carry this value; this is the
+    last-resort boundary for an older package whose manifest predates the env
+    field. It never grants a caller-selectable profile.
+    """
+    os.environ["REMOTE_DEV_HARNESS_PROFILE"] = REMOTE_PROFILE
+
+
 def remote_tools():
+    bind_remote_profile()
     from remote_dev.mcp.tools import list_tools
 
     tools = []
@@ -574,6 +676,9 @@ def remote_call(name, args, session):
     import diagnostic_support
 
     diagnostic_support.bind_environment()
+    # Trusted plugin binding for this MCP process. The launcher injects the
+    # same literal value; tool arguments can never select or override it.
+    bind_remote_profile()
     from remote_dev.mcp.schemas import ALIASES
     from remote_dev.mcp.tools import call_tool
 
@@ -581,7 +686,11 @@ def remote_call(name, args, session):
     root.mkdir(parents=True, exist_ok=True)
     os.environ["REMOTE_DEV_SESSION_ID"] = session
     os.environ["REMOTE_DEV_STATE_DIR"] = str(root)
-    return call_tool(ALIASES.get(name, name), clamp_remote_args(args))
+    # The native host calls a server-qualified name such as
+    # `mcp__plugin-mindie-agent_remote__remote_Read`; remote-dev dispatch takes
+    # the local wire name after the trusted nonce has already been claimed.
+    local = local_tool_name(name) if isinstance(name, str) else name
+    return call_tool(ALIASES.get(local, local), clamp_remote_args(args))
 
 
 def handle(surface, message):
@@ -658,12 +767,7 @@ def handle(surface, message):
             except (ValueError, OSError, RuntimeError, KeyError, TypeError) as exc:
                 result = remote_stage_failure(body, name, "helper_failed", exc)
                 return dict(jsonrpc="2.0", id=ident, result=result)
-            text = payload.get("text") if isinstance(payload, dict) else canonical(payload)
-            result = dict(
-                content=[dict(type="text", text=text if isinstance(text, str) else canonical(payload))],
-                structuredContent=payload.get("result", payload) if isinstance(payload, dict) else payload,
-                isError=isinstance(payload, dict) and payload.get("result", {}).get("outcome") not in {None, "success", "cancelled"},
-            )
+            result = remote_result(local_tool_name(name), payload)
         succeeded = result.get("isError") is not True
         return dict(jsonrpc="2.0", id=ident, result=result)
     except TimeoutError as exc:
@@ -738,6 +842,8 @@ def main(argv=None):
     surface = args[0] if args else "knowledge"
     if surface not in {"knowledge", "remote"}:
         raise SystemExit("surface must be knowledge or remote")
+    if surface == "remote":
+        bind_remote_profile()
     if once:
         serve_once(surface)
     else:

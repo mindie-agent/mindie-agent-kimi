@@ -155,10 +155,37 @@ def _check_once(adapter: dict, deadline: float, *, force, build, idle, install, 
         from component_update import check as component_check
         components = component_check(adapter, deadline, force=force, idle=idle,
                                      install=install, lock_timeout=lock_timeout)
+        active = _h("read_current")(adapter)
+        repair = None
+        try:
+            repaired = _h("repair_host_package")(
+                adapter, active, deadline, install, idle, lock_timeout,
+            )
+        except _h("LockTimeout"):
+            repair = {"status": "deferred-busy"}
+        except _h("Deferred") as exc:
+            repair = {"status": "deferred", "reason": str(exc)[:300]}
+        except TimeoutError:
+            raise
+        except Exception as exc:
+            record = _h("_remember_failure")(adapter, active.get("sha"), exc)
+            diagnostic = _h("_update_diagnostic")("host_package_repair", exc)
+            status = _h("_record")(
+                adapter, current_sha=active.get("sha"), result="degraded",
+                error=record.get("error"), failure_class=record.get("failure_class"),
+                diagnostic=diagnostic, release_selection=selected,
+                components=components,
+            )
+            print(json.dumps(status))
+            return 1
+        else:
+            if repaired:
+                repair = "installed"
         result = "current" if selected["status"] == "up_to_date" else selected["status"]
         status = _h("_record")(
-            adapter, current_sha=current.get("sha"), result=result, error=None,
+            adapter, current_sha=active.get("sha"), result=result, error=None,
             release_selection=selected, components=components,
+            **({"host_package_repair": repair} if repair else {}),
         )
         print(json.dumps(status))
         return int(result == "no_compatible_release" or status["result"] == "degraded")
@@ -187,8 +214,45 @@ def _check_once(adapter: dict, deadline: float, *, force, build, idle, install, 
         from component_update import check as component_check
         components = component_check(adapter, deadline, force=force, idle=idle,
                                      install=install, lock_timeout=lock_timeout)
+        # A legacy 0.1.2/0.1.3 receipt proves that the package was built by the
+        # old builder, which dropped toolTimeoutMs and could drop the profile.
+        # Repair it once with this generation's builder and install readback.
+        try:
+            active = _h("read_current")(adapter)
+            repaired = (
+                _h("repair_host_package")(adapter, active, deadline, install, idle, lock_timeout)
+                if active.get("sha") == sha
+                and active.get("generation") == current.get("generation")
+                else None
+            )
+        except _h("LockTimeout"):
+            _h("_record")(adapter, current_sha=current.get("sha"), candidate_sha=sha,
+                          result="deferred-busy", error="operation lock stayed shared")
+            print(json.dumps({"result": "deferred-busy", "sha": sha}))
+            return 0
+        except _h("Deferred") as exc:
+            _h("_record")(adapter, current_sha=current.get("sha"), candidate_sha=sha,
+                          result="deferred", error=str(exc)[:500])
+            print(json.dumps({"result": "deferred", "sha": sha, "reason": str(exc)[:300]}))
+            return 0
+        except TimeoutError:
+            raise
+        except Exception as exc:
+            record = _h("_remember_failure")(adapter, sha, exc)
+            diagnostic = _h("_update_diagnostic")("host_package_repair", exc)
+            status = _h("_record")(
+                adapter, current_sha=sha, result="degraded",
+                error=record.get("error"), failure_class=record.get("failure_class"),
+                diagnostic=diagnostic, components=components,
+            )
+            print(json.dumps(status))
+            return 1
         _h("_clear_active_failure")(adapter, sha)
-        status = _h("_record")(adapter, current_sha=sha, result="current", error=None, components=components)
+        status = _h("_record")(
+            adapter, current_sha=sha, result="current", error=None,
+            components=components,
+            **({"host_package_repair": "installed"} if repaired else {}),
+        )
         print(json.dumps(status))
         return int(status["result"] == "degraded")
     try:
@@ -254,9 +318,12 @@ def _check_once(adapter: dict, deadline: float, *, force, build, idle, install, 
     status = _h("_record")(
         adapter, current_sha=sha, result="switched", needs_host_reload=True, error=None,
         note=(
-            "MCP/hook dispatch uses the new generation per call; "
-            "existing task authorization is preserved. Native "
-            "Skill/command/MCP/hook definitions refresh with the Kimi host."
+            "This receipt records the committed dispatch generation, not what "
+            "an already running host has loaded. New MCP processes/calls and "
+            "hooks dispatch to the new generation per call; existing tasks and "
+            "the previous generation tree stay usable. The host's loaded "
+            "Skill/command/MCP catalogs refresh only on host reload or a natural "
+            "new session."
         ),
     )
     print(json.dumps(status))

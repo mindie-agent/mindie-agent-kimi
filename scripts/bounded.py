@@ -13,7 +13,9 @@ transport error classification (`classify_transport_text`).
   child is killed on cleanup; otherwise POSIX uses `start_new_session=True` and
   `os.killpg`.
 - `classify_transport_text` inspects output in memory and returns only a static
-  category and optional `Retry-After` delay; raw stderr/URLs are never persisted.
+  category and optional `Retry-After` delay; raw stderr/URLs are never persisted
+  by shared diagnostics. Failed commands also expose one bounded, credential-
+  scrubbed stderr reason on the exception for the caller's local failure record.
 
 [Timeouts & Locks]
 - Requires positive `timeout`; reaps child trees with a `2.0s` wait grace in
@@ -41,6 +43,10 @@ if POSIX:
     import signal
 
 MAX_OUTPUT = 256 * 1024
+# Remote image/PDF/content responses are base64 JSON and may legitimately
+# exceed the local 256 KiB cap; multi-page PDFs can approach 32 MiB. Applied
+# only to the remote MCP surface.
+REMOTE_MAX_OUTPUT = 32 * 1024 * 1024
 _CHUNK = 8192
 _STREAM_EDGE = 4096
 
@@ -308,6 +314,56 @@ def _stream_edges(buf):
     return text if len(text) <= _STREAM_EDGE * 2 else text[:_STREAM_EDGE] + "\n" + text[-_STREAM_EDGE:]
 
 
+_REASON_LIMIT = 360
+_URL_USERINFO = re.compile(r"(?i)\b(https?://)[^/\s@]+@")
+_AUTH_HEADER = re.compile(r"(?i)\b(authorization|proxy-authorization)\s*:\s*[^\r\n]+")
+_AUTH_SCHEME = re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]+")
+_SECRET_FIELD = re.compile(
+    r"(?i)\b(access_token|refresh_token|id_token|token|password|passwd|secret|api[_-]?key)"
+    r"\s*[:=]\s*[^\s&,;]+"
+)
+_QUERY_SECRET = re.compile(
+    r"(?i)([?&](?:access_token|refresh_token|id_token|token|api[_-]?key|password|secret)=)[^&\s]+"
+)
+
+
+def _scrub_reason_line(line):
+    line = _AUTH_HEADER.sub(r"\1: <redacted>", line)
+    line = _AUTH_SCHEME.sub(r"\1 <redacted>", line)
+    line = _URL_USERINFO.sub(r"\1<redacted>@", line)
+    line = _QUERY_SECRET.sub(r"\1<redacted>", line)
+    return _SECRET_FIELD.sub(r"\1=<redacted>", line)
+
+
+def _failure_reason(buf):
+    """Return a bounded, credential-scrubbed stderr summary for local state.
+
+    The first line and any URLs are kept together with the last line so a
+    resolver conflict retains both dependency URLs instead of only the last.
+    Shared diagnostics still keep only static categories.
+    """
+    if not buf:
+        return None
+    text = bytes(buf).decode("utf-8", "replace")
+    lines = [_scrub_reason_line(line.strip()) for line in text.splitlines() if line.strip()]
+    if not lines:
+        return None
+    selected = []
+    for line in (lines[0], *[item for item in lines if "http" in item.lower()][:4], lines[-1]):
+        if line not in selected:
+            selected.append(line)
+    return " | ".join(selected)[:_REASON_LIMIT]
+
+
+def _failed_result(exc, output, errors, returncode):
+    exc.mindie_output = bytes(output).decode("utf-8", "replace")
+    exc.mindie_stderr = bytes(errors).decode("utf-8", "replace")
+    exc.returncode = returncode
+    if (reason := _failure_reason(errors)) is not None:
+        exc.reason = reason
+    return exc
+
+
 def _joined_output(stdout, stderr):
     return "\n".join(piece for buf in (stdout, stderr) if (piece := _stream_edges(buf)))
 
@@ -329,19 +385,23 @@ def _run_posix(process, timeout, max_output, pgid, check, cancel, transport=Fals
     selector.register(process.stderr, selectors.EVENT_READ, "err")
     deadline = time.monotonic() + timeout
     output = bytearray()
-    errors = bytearray() if transport else None
+    errors = bytearray()
     cap = _Cap(max_output)
 
     def timeout_error():
         err = TimeoutError("deadline exceeded")
+        err.mindie_stderr = bytes(errors).decode("utf-8", "replace")
+        if (reason := _failure_reason(errors)) is not None:
+            err.reason = reason
         if transport:
             _attach_transport(err, output, errors, timed_out=True)
         return err
 
     def failed_error():
-        err = RuntimeError(f"command failed ({process.returncode})")
-        err.mindie_output = bytes(output).decode("utf-8", "replace")
-        err.returncode = process.returncode
+        err = _failed_result(
+            RuntimeError(f"command failed ({process.returncode})"),
+            output, errors, process.returncode,
+        )
         if transport:
             _attach_transport(err, output, errors, timed_out=False)
         return err
@@ -365,7 +425,7 @@ def _run_posix(process, timeout, max_output, pgid, check, cancel, transport=Fals
                     cap.add(chunk)
                     if key.data == "out":
                         output.extend(chunk)
-                    elif errors is not None:
+                    else:
                         errors.extend(chunk)
                 continue
             try:
@@ -406,7 +466,7 @@ def _run_posix(process, timeout, max_output, pgid, check, cancel, transport=Fals
 def _run_windows(process, timeout, max_output, pgid, check, cancel, transport=False):
     deadline = time.monotonic() + timeout
     output = bytearray()
-    errors = bytearray() if transport else None
+    errors = bytearray()
     cap = _Cap(max_output)
     lock = threading.Lock()
     failure = []
@@ -419,8 +479,7 @@ def _run_windows(process, timeout, max_output, pgid, check, cancel, transport=Fa
                     return
                 with lock:
                     cap.add(chunk)
-                    if dest is not None:
-                        dest.extend(chunk)
+                    dest.extend(chunk)
         except (ValueError, OutputLimitExceeded) as exc:
             failure.append(exc)
 
@@ -436,6 +495,9 @@ def _run_windows(process, timeout, max_output, pgid, check, cancel, transport=Fa
                 raise CommandCancelled("command cancelled")
             if time.monotonic() >= deadline:
                 err = TimeoutError("deadline exceeded")
+                err.mindie_stderr = bytes(errors).decode("utf-8", "replace")
+                if (reason := _failure_reason(errors)) is not None:
+                    err.reason = reason
                 if transport:
                     _attach_transport(err, output, errors, timed_out=True)
                 raise err
@@ -451,9 +513,10 @@ def _run_windows(process, timeout, max_output, pgid, check, cancel, transport=Fa
         if _cancelled(cancel):
             raise CommandCancelled("command cancelled")
         if check and process.returncode:
-            err = RuntimeError(f"command failed ({process.returncode})")
-            err.mindie_output = bytes(output).decode("utf-8", "replace")
-            err.returncode = process.returncode
+            err = _failed_result(
+                RuntimeError(f"command failed ({process.returncode})"),
+                output, errors, process.returncode,
+            )
             if transport:
                 _attach_transport(err, output, errors, timed_out=False)
             raise err

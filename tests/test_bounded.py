@@ -250,3 +250,28 @@ class BoundedTests(unittest.TestCase):
             )
             self.assertEqual(out.strip(), "done")
             self.assertEqual((tmp / "here.txt").read_text(), "ok")
+
+    def test_failed_command_exposes_bounded_scrubbed_reason_with_both_urls(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            bounded.run(
+                [sys.executable, "-c",
+                 "import sys\n"
+                 "sys.stderr.write('Using Python 3.13.12 environment at: /tmp/venv\\n')\n"
+                 "sys.stderr.write('Authorization: Bearer AUTH-CANARY-9f3a\\n')\n"
+                 "sys.stderr.write('  - git+https://example.invalid/diagnostics@1c465a18\\n')\n"
+                 "sys.stderr.write('GET https://example.invalid/x?access_token=QUERY-CANARY-7b2c&x=1\\n')\n"
+                 "sys.stderr.write('  - git+https://example.invalid/diagnostics@801a01b2\\n')\n"
+                 "raise SystemExit(7)"],
+                "",
+                timeout=5,
+            )
+        error = ctx.exception
+        self.assertEqual(error.returncode, 7)
+        self.assertIn("1c465a18", error.reason)
+        self.assertIn("801a01b2", error.reason)
+        self.assertIn("Using Python", error.reason)
+        self.assertNotIn("AUTH-CANARY-9f3a", error.reason)
+        self.assertNotIn("QUERY-CANARY-7b2c", error.reason)
+        self.assertIn("<redacted>", error.reason)
+        self.assertLessEqual(len(error.reason), bounded._REASON_LIMIT)
+        self.assertIn("AUTH-CANARY-9f3a", error.mindie_stderr)

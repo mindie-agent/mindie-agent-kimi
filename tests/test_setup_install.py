@@ -633,6 +633,7 @@ class SetupInstallTests(unittest.TestCase):
             (source / "commands").mkdir()
             (source / "kimi.plugin.json").write_text("{}\n")
             (source / "runtime-requirements.txt").write_text("\n")
+            (source / "runtime-active-overrides.txt").write_text("\n")
             sys.path.insert(0, str(SCRIPTS))
             import setup
 

@@ -30,3 +30,24 @@ def test_resolver_failure_is_visible_and_only_product_fault_is_queued(tmp_path, 
     events = ''.join(path.read_text() for path in logs.glob('events/*/*.jsonl'))
     assert 'PRIVATE' not in events
     assert json.loads(events.splitlines()[-1])['reportable'] is bool(expected)
+
+
+def test_unclassified_command_failure_keeps_only_bounded_reason(tmp_path):
+    error = RuntimeError('command failed (1)')
+    error.returncode = 1
+    error.reason = 'fatal: https://<redacted>@example.invalid/repo failed; token=LOCAL-CANARY'
+    record = updater._remember_failure({'state_dir': str(tmp_path)}, 'a' * 40, error)
+    assert 'command failed (1)' in record['error']
+    assert 'fatal:' in record['error']
+    assert 'LOCAL-CANARY' not in json.dumps(record)
+    assert len(record['error']) <= 500
+
+
+def test_classified_failure_keeps_static_message_not_stderr(tmp_path):
+    error = RuntimeError('command failed (1)')
+    error.category = 'temporary_network'
+    error.reason = 'PRIVATE-SECRET'
+    record = updater._remember_failure({'state_dir': str(tmp_path)}, 'b' * 40, error)
+    assert record['error'] == 'temporary network failure'
+    assert record['failure_class'] == 'temporary_network'
+    assert 'PRIVATE-SECRET' not in json.dumps(record)

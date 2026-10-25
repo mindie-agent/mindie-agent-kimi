@@ -27,7 +27,8 @@ MANIFEST = {
     "version": f"{_MAJOR_MINOR}.{int(_PATCH) + 1}",
     "mcpServers": {
         "knowledge": {"command": "python3", "args": ["./old"]},
-        "remote": {"command": "python3", "args": ["./old"]},
+        "remote": {"command": "python3", "args": ["./old"],
+                   "env": {"REMOTE_DEV_HARNESS_PROFILE": "kimi"}},
     },
     "hooks": [
         {"event": "PreToolUse", "matcher": "mcp__plugin-mindie-agent_",
@@ -558,6 +559,13 @@ class UpdaterTests(unittest.TestCase):
         )
         command = manifest["mcpServers"]["knowledge"]["command"]
         self.assertTrue(updater.host_valid_mcp_command(command), command)
+        # The updater rebuilds mcpServers entries; the trusted remote profile
+        # must survive that rebuild, not only the source manifest.
+        self.assertEqual(
+            manifest["mcpServers"]["remote"]["env"].get(
+                "REMOTE_DEV_HARNESS_PROFILE"),
+            "kimi",
+        )
         if os.name == "nt":
             self.assertEqual(command, Path(sys.executable).name)
             wrapper = Path(sys.executable)

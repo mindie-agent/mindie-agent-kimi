@@ -34,10 +34,16 @@ def installed_commit(dist_name: str) -> str:
 
 
 def main() -> None:
-    found = _PIN.findall((REPO / "runtime-requirements.txt").read_text(encoding="utf-8"))
-    if not found:
-        fail("runtime-requirements.txt declares no exact commit pins")
-    for name, required in found:
+    pins: dict[str, str] = {}
+    for name in ("runtime-requirements.txt", "runtime-active-overrides.txt"):
+        text = (REPO / name).read_text(encoding="utf-8")
+        found = _PIN.findall(text)
+        if name == "runtime-requirements.txt" and not found:
+            fail("runtime-requirements.txt declares no exact commit pins")
+        pins.update(dict(found))
+    if not pins:
+        fail("candidate runtime declares no exact commit pins")
+    for name, required in pins.items():
         actual = installed_commit(name)
         if actual != required:
             fail(f"installed {name} commit {actual} != required {required}")

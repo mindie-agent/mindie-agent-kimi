@@ -55,6 +55,11 @@ RESERVE = 113.0
 SHA = r"[0-9a-f]{40}"
 COMPLETE = ".mindie-generation-complete"
 LAUNCHER = "mindie_launch.py"
+# Kimi's host schema names the per-server tool deadline `toolTimeoutMs`
+# (observed in the host's own mcp.json and plugin API). Legacy 0.1.2/0.1.3
+# manifests predate the field; the published 0.1.3+ value is 660s.
+REMOTE_TOOL_TIMEOUT_MS = 660000
+REMOTE_PROFILE = "kimi"
 
 _HOST = None
 
@@ -276,12 +281,29 @@ def build_host_package(
         front_env = None
     bound = ["--config", str(config_file)]
     for surface in ("knowledge", "remote"):
-        manifest["mcpServers"][surface] = {
-            "command": front,
-            "args": [str(launcher), *bound, "mcp", surface],
-        }
+        previous = manifest["mcpServers"].get(surface)
+        # Rebuild only the native launch fields; everything else the host
+        # accepts (cwd, toolTimeoutMs, future host fields) stays byte-for-byte
+        # as the candidate declared it. Dropping toolTimeoutMs silently
+        # reverted the 660s remote deadline to the host's shorter default.
+        entry = dict(previous) if isinstance(previous, dict) else {}
+        env = dict(entry.get("env") or {})
         if front_env is not None:
-            manifest["mcpServers"][surface]["env"] = dict(front_env)
+            env.update(front_env)
+        if surface == "remote":
+            # The profile is a trusted plugin property, never selected by a
+            # tool argument or inherited from an unrelated host process.
+            env["REMOTE_DEV_HARNESS_PROFILE"] = REMOTE_PROFILE
+            timeout = entry.get("toolTimeoutMs")
+            if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout <= 0:
+                entry["toolTimeoutMs"] = REMOTE_TOOL_TIMEOUT_MS
+        entry["command"] = front
+        entry["args"] = [str(launcher), *bound, "mcp", surface]
+        if env:
+            entry["env"] = env
+        else:
+            entry.pop("env", None)
+        manifest["mcpServers"][surface] = entry
     quoted = _h("_quote_front_command")(base_python, launcher, config_file)
     for hook in manifest.get("hooks", []):
         if op := {"PreToolUse": "pretool", "Stop": "stop"}.get(hook.get("event")):
