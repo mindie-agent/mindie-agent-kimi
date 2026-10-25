@@ -26,11 +26,11 @@
 
 ---
 
-**MindIE Agent for Kimi Code** (`mindie-agent-kimi`) is the native Kimi Code plugin adapter for [MindIE Agent](https://github.com/mindie-agent/mindie-agent), supporting the **Ascend NPU AI Infra design, development, and testing workflow**. In `v0.1.4` (paired with `mindie-agent 0.1.1`), it delivers **`vLLM-Ascend` feature development & testing**, **`AscendC` / `Triton` operator implementation & verification**, remote NPU execution, and sanitized public experience capture, while additional Ascend AI Infra domains continue expanding on the roadmap.
+**MindIE Agent for Kimi Code** (`mindie-agent-kimi`) is the native Kimi Code plugin adapter for [MindIE Agent](https://github.com/mindie-agent/mindie-agent), supporting the **Ascend NPU AI Infra design, development, and testing workflow**. In `v0.1.5` (paired with `mindie-agent 0.1.1`), it delivers **`vLLM-Ascend` feature development & testing**, **`AscendC` / `Triton` operator implementation & verification**, remote NPU execution, and sanitized public experience capture, while additional Ascend AI Infra domains continue expanding on the roadmap.
 
 Designed around the [MindIE Agent Engineering Design Principles](https://github.com/mindie-agent/mindie-agent/blob/main/docs/design-principles.en.md), this thin adapter handles Kimi session identity, `wire.jsonl` public transcript extraction, MCP dispatch, and atomic generation updates, while delegating core knowledge, remote execution, and diagnostics to shared components.
 
-> **Ecosystem & Release Note**: Currently `v0.1.4` (paired with `mindie-agent 0.1.1`) supports four hosts — Claude Code ([`mindie-agent-cc`](https://github.com/mindie-agent/mindie-agent-cc)), OpenAI Codex CLI ([`mindie-agent-codex`](https://github.com/mindie-agent/mindie-agent-codex)), Kimi Code (this repository), and DeepSeek Harness ([`mindie-agent-dsh`](https://github.com/mindie-agent/mindie-agent-dsh)) — all built on the same shared knowledge, remote-dev, and diagnostics components. See the [Documentation Index](#documentation-index) for per-host verification scope.
+> **Ecosystem & Release Note**: Currently `v0.1.5` (paired with `mindie-agent 0.1.1`) supports four hosts — Claude Code ([`mindie-agent-cc`](https://github.com/mindie-agent/mindie-agent-cc)), OpenAI Codex CLI ([`mindie-agent-codex`](https://github.com/mindie-agent/mindie-agent-codex)), Kimi Code (this repository), and DeepSeek Harness ([`mindie-agent-dsh`](https://github.com/mindie-agent/mindie-agent-dsh)) — all built on the same shared knowledge, remote-dev, and diagnostics components. See the [Documentation Index](#documentation-index) for per-host verification scope.
 
 ---
 
@@ -171,7 +171,7 @@ Everyday tasks use a single entry point—**`/mindie-agent`**—without requirin
 
 ### Automatic Updates & Safe Uninstall
 
-- **Scheduled Model-Free Updates**: On macOS, a `launchd` job checks for both compatible verified formal plugin Releases and formal GitHub Releases of shared runtime components from their official repositories, builds an immutable generation with its own pinned virtualenv, stops the old service when idle, and switches the generation pointer atomically with rollback receipts (component-only updates switch `current.json` without reinstalling native Kimi plugin definitions; see [Automatic Updates](docs/update.en.md) and [`docs/releases/mindie-agent-kimi-0.1.4.en.md`](docs/releases/mindie-agent-kimi-0.1.4.en.md)). Check update status at any time with:
+- **Scheduled Model-Free Updates**: On macOS, a `launchd` job checks for both compatible verified formal plugin Releases and formal GitHub Releases of shared runtime components from their official repositories, builds an immutable generation with its own pinned virtualenv, stops the old service when idle, and switches the generation pointer atomically with rollback receipts (component-only updates switch `current.json` without reinstalling native Kimi plugin definitions; see [Automatic Updates](docs/update.en.md) and [`docs/releases/mindie-agent-kimi-0.1.5.en.md`](docs/releases/mindie-agent-kimi-0.1.5.en.md)). Check update status at any time with:
   ```sh
   MINDIE_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/mindie-agent/kimi.json"
   MINDIE_LAUNCHER=$(python3 -c 'import json,sys,pathlib; cfg=json.loads(pathlib.Path(sys.argv[1]).read_text()); u=pathlib.Path(cfg["state_dir"])/"update"; cur=json.loads((u/"current.json").read_text()); print(u/"launch"/(cur["sha"] or "bootstrap")/"mindie_launch.py")' "$MINDIE_CONFIG")
