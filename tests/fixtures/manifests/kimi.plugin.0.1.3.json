@@ -1,0 +1,40 @@
+{
+  "name": "mindie-agent",
+  "version": "0.1.3",
+  "description": "MindIE Agent for Kimi Code: local knowledge retrieval, optional community contribution, and general remote-dev. No SessionStart auto-configuration.",
+  "keywords": ["mindie", "knowledge", "vllm-ascend", "remote-dev"],
+  "license": "MIT",
+  "skills": "./skills/",
+  "commands": "./commands/",
+  "mcpServers": {
+    "knowledge": {
+      "command": "python3",
+      "args": ["./scripts/with_runtime.py", "mcp_server.py", "knowledge"],
+      "cwd": "./"
+    },
+    "remote": {
+      "command": "python3",
+      "args": ["./scripts/with_runtime.py", "mcp_server.py", "remote"],
+      "cwd": "./"
+    }
+  },
+  "hooks": [
+    {
+      "event": "PreToolUse",
+      "matcher": "mcp__plugin-mindie-agent_",
+      "command": "python3 ./scripts/with_runtime.py bridge.py pretool",
+      "timeout": 20
+    },
+    {
+      "event": "Stop",
+      "command": "python3 ./scripts/with_runtime.py bridge.py stop",
+      "timeout": 20
+    }
+  ],
+  "systemPrompt": "Remote-dev tools use a fresh request_nonce bound by the native PreToolUse hook. Never pass or invent native session identity.",
+  "interface": {
+    "displayName": "MindIE Agent",
+    "shortDescription": "Domain knowledge, optional public contribution, and general remote-dev for Kimi Code",
+    "developerName": "MindIE Agent"
+  }
+}

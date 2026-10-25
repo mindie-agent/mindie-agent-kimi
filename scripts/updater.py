@@ -33,6 +33,7 @@ readback, and maintains diagnostic retention.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import random
@@ -50,7 +51,7 @@ if str(HERE) not in sys.path:
 import diagnostic_support
 
 try:
-    from bounded import CommandTimedOut
+    from bounded import CommandTimedOut, _scrub_reason_line
     from bounded import run as bounded_run
     from genstate import (
         LockTimeout,
@@ -347,6 +348,116 @@ def _verify_native_record(report: dict, manifest: dict, package: Path) -> None:
         raise CheckFailed("native readback mismatch: " + ", ".join(dict.fromkeys(problems)))
 
 
+def _host_package_metadata(package: Path) -> dict:
+    path = Path(package) / "kimi.plugin.json"
+    manifest = read_json(path) or {}
+    remote = ((manifest.get("mcpServers") or {}).get("remote") or {})
+    return {
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "version": manifest.get("version"),
+        "remote_timeout_ms": remote.get("toolTimeoutMs"),
+        "remote_profile": (remote.get("env") or {}).get("REMOTE_DEV_HARNESS_PROFILE"),
+    }
+
+
+def _mark_host_package(receipt_path: Path, package: Path) -> None:
+    receipt = read_json(receipt_path)
+    if not isinstance(receipt, dict):
+        receipt = {}
+    receipt["host_package"] = _host_package_metadata(package)
+    atomic_write(receipt_path, receipt)
+
+
+def _swap_host_package(staging: Path, destination: Path) -> Path | None:
+    """Publish a fully built repair package and return the previous backup."""
+    backup = destination.with_name(destination.name + ".repair-previous")
+    if backup.exists():
+        _remove_owned_tree(backup)
+    if destination.exists():
+        os.replace(destination, backup)
+    try:
+        os.replace(staging, destination)
+    except Exception:
+        if backup.exists() and not destination.exists():
+            os.replace(backup, destination)
+        raise
+    return backup if backup.exists() else None
+
+
+def _restore_host_package(destination: Path, backup: Path | None) -> None:
+    if backup is None or not backup.exists():
+        return
+    if destination.exists():
+        _remove_owned_tree(destination)
+    os.replace(backup, destination)
+
+
+def repair_host_package(adapter: dict, current: dict, deadline: float,
+                        install, idle=None, lock_timeout: float = 30.0):
+    """Rebuild and reinstall a package written by the legacy 0.1.2/0.1.3 updater.
+
+    Those updaters rebuilt `mcpServers` from only command/args, so their
+    receipt has no `host_package` marker and their installed manifest can lack
+    `toolTimeoutMs` and `REMOTE_DEV_HARNESS_PROFILE`. The replacement is built
+    in an inactive sibling first, then published under the same exclusive
+    switch lock after an idle check. If install fails, the previous package is
+    restored; the old generation tree and running host sessions are untouched.
+    """
+    sha = current.get("sha")
+    if not isinstance(sha, str) or re.fullmatch(SHA, sha) is None:
+        return None
+    receipt_path = receipts_dir(adapter) / f"{sha}.json"
+    receipt = read_json(receipt_path)
+    if (not isinstance(receipt, dict) or receipt.get("sha") != sha
+            or "host_package" in receipt):
+        return None
+    generation = Path(current["generation"])
+    if not (generation / "kimi.plugin.json").is_file():
+        return None
+    destination = generation / "host-package"
+    staging = generation / f".host-package-repair-{os.getpid()}"
+    if staging.exists():
+        _remove_owned_tree(staging)
+    stopped = False
+    try:
+        package = build_host_package(
+            generation, adapter, sha, package_dir=staging,
+            config_file=Path(current["adapter_config"]),
+        )
+        wait = min(lock_timeout, deadline - time.monotonic())
+        if wait <= 0:
+            raise LockTimeout("no time left for the native package repair")
+        with OperationLock(adapter).exclusive(timeout=wait):
+            active = read_json(current_path(adapter)) or {}
+            if (active.get("sha") != sha
+                    or active.get("generation") != str(generation)):
+                return None
+            if idle is not None:
+                idle_result = idle(adapter, current, deadline)
+                if (isinstance(idle_result, dict)
+                        and type(idle_result.get("idle")) is bool
+                        and idle_result["idle"] is False):
+                    raise Deferred("knowledge service is active; package repair deferred")
+                stopped = (isinstance(idle_result, dict)
+                           and idle_result.get("service") == "stopped")
+            backup = _swap_host_package(package, destination)
+            try:
+                install(adapter, destination, deadline,
+                        reserve=FEED_BUDGET + HANDOFF_BUDGET)
+            except Exception:
+                _restore_host_package(destination, backup)
+                raise
+            if backup is not None:
+                _remove_owned_tree(backup)
+            _mark_host_package(receipt_path, destination)
+    finally:
+        if staging.exists():
+            _remove_owned_tree(staging)
+        if stopped:
+            _restore_stopped_service(adapter, current, deadline)
+    return destination
+
+
 def native_install(adapter: dict, package: Path, deadline: float, reserve: float = RESERVE) -> dict:
     home = adapter.get("kimi_home") or os.environ.get("KIMI_CODE_HOME")
     if not isinstance(home, str) or not home:
@@ -422,6 +533,11 @@ def switch(
                 "sha": sha,
             }
             write_current(final, adapter)
+            if (generation / "host-package" / "kimi.plugin.json").is_file():
+                _mark_host_package(
+                    receipts_dir(adapter) / f"{sha}.json",
+                    generation / "host-package",
+                )
             _clear_switch_ghosts(adapter)
         except TimeoutError:
             raise
@@ -501,7 +617,8 @@ def _restore_stopped_service(adapter, final, deadline):
 
 def _update_diagnostic(stage, exc, revision=None):
     return diagnostic_support.failure(
-        "updater", stage, "update", exception=exc, revision=revision
+        "updater", stage, "update", exception=exc, revision=revision,
+        exit_code=getattr(exc, "returncode", None),
     )
 
 
@@ -527,6 +644,22 @@ _STATIC_FAILURE = {
     "resolver": "dependency resolver conflict",
     "bad_content": "package content rejected",
 }
+
+
+def _failure_detail(exc):
+    """Add the bounded command reason for an unclassified failure only.
+
+    Classified failures keep their static, non-secret display string. An
+    unknown child failure otherwise reduced to `command failed (1)`, which is
+    not enough to tell a repository, configuration or dependency fault apart.
+    """
+    detail = str(exc).replace("\n", " ")[:500]
+    reason = getattr(exc, "reason", None)
+    if isinstance(reason, str) and reason:
+        reason = _scrub_reason_line(reason)
+        if reason and reason not in detail:
+            detail = (detail + ": " + reason.replace("\n", " "))[:500]
+    return detail
 
 
 def _retry_delay(count, retry_after=None):
@@ -564,7 +697,7 @@ def _remember_failure(adapter, sha, exc):
     if not isinstance(first, (int, float)) or isinstance(first, bool):
         first = time.time()
     category = _failure_category(exc)
-    error = _STATIC_FAILURE[category] if category else str(exc).replace("\n", " ")[:500]
+    error = _STATIC_FAILURE[category] if category else _failure_detail(exc)
     record = {
         "sha": sha,
         "at": time.time(),
@@ -616,7 +749,7 @@ def _note_resolve_failure(adapter, exc, current_sha):
     if not isinstance(first, (int, float)) or isinstance(first, bool):
         first = time.time()
     category = _failure_category(exc)
-    error = _STATIC_FAILURE[category] if category else str(exc).replace("\n", " ")[:500]
+    error = _STATIC_FAILURE[category] if category else _failure_detail(exc)
     result = "action-required" if category in _ACTIONABLE else "check-failed"
     return _record(
         adapter,

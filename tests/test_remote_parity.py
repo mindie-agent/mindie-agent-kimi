@@ -4,6 +4,7 @@ import base64
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -52,11 +53,14 @@ def test_real_bounded_child_keeps_page_above_local_cap():
     import bounded
 
     page = ('kimi-bounded-' * 30000)[:300 * 1024]
-    script = 'import sys; sys.stdout.write(' + repr(page) + ')'
-    output = bounded.run(
-        [sys.executable, '-c', script], '', timeout=10,
-        max_output=bounded.REMOTE_MAX_OUTPUT,
-    )
+    script = "import sys; sys.stdout.write(('kimi-bounded-' * 30000)[:300 * 1024])"
+    with tempfile.TemporaryDirectory() as directory:
+        script_path = Path(directory) / 'generate_page.py'
+        script_path.write_text(script, encoding='utf-8')
+        output = bounded.run(
+            [sys.executable, str(script_path)], '', timeout=10,
+            max_output=bounded.REMOTE_MAX_OUTPUT,
+        )
     assert output == page
     assert len(output) > 256 * 1024
 

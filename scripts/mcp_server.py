@@ -59,6 +59,10 @@ import rsi_explore
 
 MAX_YIELD_TIME_MS = 30000
 KNOWLEDGE_RPC_TIMEOUT = 30.0
+# Trusted Kimi plugin binding for the remote surface. This must be in the
+# process environment before remote_dev is imported: its harness catalog reads
+# the profile during tools/list, not only during tools/call.
+REMOTE_PROFILE = "kimi"
 REMOTE_ERROR_CATEGORIES = frozenset({
     "internal", "caller", "validation", "permission", "remote_execution",
     "cancelled", "cancel_unconfirmed", "cleanup", "configuration",
@@ -637,7 +641,18 @@ def knowledge_call(name, args, session):
     return rpc(connection, method, payload, timeout=KNOWLEDGE_RPC_TIMEOUT)
 
 
+def bind_remote_profile() -> None:
+    """Bind the trusted Kimi native profile before any remote_dev lookup.
+
+    The launcher and host-package manifest also carry this value; this is the
+    last-resort boundary for an older package whose manifest predates the env
+    field. It never grants a caller-selectable profile.
+    """
+    os.environ["REMOTE_DEV_HARNESS_PROFILE"] = REMOTE_PROFILE
+
+
 def remote_tools():
+    bind_remote_profile()
     from remote_dev.mcp.tools import list_tools
 
     tools = []
@@ -663,7 +678,7 @@ def remote_call(name, args, session):
     diagnostic_support.bind_environment()
     # Trusted plugin binding for this MCP process. The launcher injects the
     # same literal value; tool arguments can never select or override it.
-    os.environ["REMOTE_DEV_HARNESS_PROFILE"] = "kimi"
+    bind_remote_profile()
     from remote_dev.mcp.schemas import ALIASES
     from remote_dev.mcp.tools import call_tool
 
@@ -827,6 +842,8 @@ def main(argv=None):
     surface = args[0] if args else "knowledge"
     if surface not in {"knowledge", "remote"}:
         raise SystemExit("surface must be knowledge or remote")
+    if surface == "remote":
+        bind_remote_profile()
     if once:
         serve_once(surface)
     else:

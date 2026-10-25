@@ -95,6 +95,7 @@ KIMI_REMOTE_INNER_SECONDS = {
     "remote_grep": 300.0,
     "remote_readmediafile": 300.0,
 }
+KIMI_REMOTE_PROFILE = "kimi"
 MAX_RPC_ID = 256
 WORK_LIMIT = 3
 CONTROL_LIMIT = 1
@@ -278,11 +279,16 @@ def _current(state: Path) -> dict:
     raise RuntimeError("no committed generation is available")
 
 
-def _child_env(current: dict) -> dict:
+def _child_env(current: dict, surface: str | None = None) -> dict:
     env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
     env["PYTHONIOENCODING"] = "utf-8"
     env["MINDIE_KIMI_CONFIG"] = current["adapter_config"]
     env["MINDIE_DIAGNOSTICS_CONFIG"] = str(diagnostic_support.reporting_config_path())
+    if surface == "remote":
+        # The installed manifest can predate the env field (0.1.2/0.1.3
+        # packages rebuilt by the old updater dropped it). Bind the trusted
+        # profile here, before the child imports remote_dev for tools/list.
+        env["REMOTE_DEV_HARNESS_PROFILE"] = KIMI_REMOTE_PROFILE
     return env
 
 
@@ -564,7 +570,7 @@ def _dispatch(surface: str, raw: bytes, ident, cancel=None):
         try:
             out = bounded.run(
                 [current["python"], str(script), surface, "--once"],
-                payload, timeout=_call_budget(surface, raw), env=_child_env(current),
+                payload, timeout=_call_budget(surface, raw), env=_child_env(current, surface),
                 cwd=str(Path(current["generation"])), cancel=cancel,
                 **({"max_output": KNOWLEDGE_MAX_OUTPUT} if surface == "knowledge"
                    else {"max_output": REMOTE_MAX_OUTPUT}),
