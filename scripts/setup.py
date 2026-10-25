@@ -61,6 +61,7 @@ BOOTSTRAP_ITEMS = (
     "commands",
     "kimi.plugin.json",
     "runtime-requirements.txt",
+    "runtime-active-overrides.txt",
 )
 BOOTSTRAP_COMPLETE = ".bootstrap-complete"
 
