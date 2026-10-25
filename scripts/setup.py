@@ -205,7 +205,7 @@ def build_bootstrap_runtime(domain_root: Path) -> str:
     run(
         [uv, "pip", "install", "--python", str(python),
          "-r", str(PLUGIN_ROOT / "runtime-requirements.txt"),
-         "--overrides", str(PLUGIN_ROOT / "runtime-requirements.txt")],
+         "--overrides", str(PLUGIN_ROOT / "runtime-active-overrides.txt")],
         "", timeout=600, max_output=512 * 1024, env=installer_environment(),
     )
     return str(python)

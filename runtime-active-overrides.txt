@@ -1,0 +1,5 @@
+# Active candidate runtime selection. The immutable 0.1.2 controller installs
+# the 0.5.2 bootstrap floor from runtime-requirements.txt; candidate setup and
+# CI explicitly select the released 0.5.3 baseline here. component_prepare
+# separately preserves an already installed 0.5.3 for old-controller migration.
+mindie-diagnostics @ git+https://github.com/mindie-agent/diagnostics@1c465a18e4db59a0889557971b59d6233d8ae726
