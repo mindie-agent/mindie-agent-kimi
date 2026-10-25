@@ -1,9 +1,9 @@
 # mindie-agent-kimi 0.1.4
 
-本版本 active 运行时固定 remote-dev `4c40cb5` 与 mindie-diagnostics 0.5.4（`5ae643e`），由 `runtime-active-overrides.txt` 选择。无 overrides 的不可变 0.1.2 首跳仍使用一致的 bootstrap 三元组：diagnostics 0.5.2 `801a01b`、remote-dev 0.10.6 `0463a13`、knowledge 0.13.3 `38a42f6`。core 相对实测 `1fefcc3` 的代码差异仅为发布说明/路径与依赖 pin；diagnostics 0.5.4 在 reader-registry/游标协调之前以 `O_EXCL` 分配首个/空闲日志槽，修复旧实现约 101ms setup 即触发的间歇 CI 失败，完整窗口/压力语义不变且未做异步改造。该 pin 未重跑 native 验收；下述历史证据保留其实际测量的 0.5.3 版本。大日志命令/TaskOutput 使用核心有界头尾与完整原始远端引用；增量页保持游标无损。自动更新包保留 `toolTimeoutMs=660000` 和 `REMOTE_DEV_HARNESS_PROFILE=kimi`，并在 discovery 前绑定 profile。
+运行时使用 remote-dev 0.10.7（`4c40cb5`）与 diagnostics 0.5.4（`5ae643e`）。远端原生工具保留参数语义和真实退出状态；大日志返回有界头尾及完整远端日志引用，增量输出不跳过未交付字节。diagnostics 首次分配日志文件不再等待读者注册表，修复初始化超过 100ms 时丢失首条记录的问题；已有日志回收与压力控制保持原语义。
 
-bootstrap 与 active 的分离复用现有 setup/component_prepare 边界：候选 setup/CI 用 overrides 构建 active runtime，旧控制器首跳只解析 bootstrap；component_prepare 随后保留已安装的较新组件或选择更新的正式 release，不降级。0.5.4/4c 是 active candidate pin，正式发布前不声称已被正式 feed 发现。父级旧控制器证据（`parent-kimi-upgrade-0.1.2-6a14d4faa2`、`parent-kimi-upgrade-0.1.3-c45df72748`）在隔离 Kimi home 中完成旧 0.1.2/0.1.3 build_runtime -> component_prepare -> build_host_package -> 实际 switch/native_install；随后候选正常 updater 修复旧包，已注册前端返回 29 个工具，timeout `660000`、profile `kimi`、diagnostics `0.5.3`（该证据测于 0.5.3，本次未重跑，不重标为 0.5.4）。实际源码验收为 Kimi `b8dbc14`/core `1fefcc3`；fresh setup 的 `build_bootstrap_runtime` 也经 `parent-kimi-fresh-runtime-077fc3046a` 实测得到 0.5.3/1c465a18、knowledge 0.13.3/38a、core 1fef。
+本版本兼容已发布的 0.1.2/0.1.3 更新器。不可变 0.1.2 更新器的无 overrides 首跳使用可共同解析的 bootstrap：diagnostics 0.5.2、remote-dev 0.10.6、knowledge 0.13.3；随后由既有组件准备流程保留已安装的较新组件或选择较新的正式 Release。新安装与候选构建通过 `runtime-active-overrides.txt` 选择 diagnostics 0.5.4 / remote-dev 0.10.7。发布顺序必须是 diagnostics → remote-dev → 插件。
 
-但是两次正常 updater check 均以 exit 1 结束，原因是正式 feed 返回 `no_compatible_release`/`skipped_undeclared_releases7`，同时 `host_package_repair` 已成功安装；未重放不确定写入。该证据证明候选迁移/修复/已加载前端，不等同于未发布 release 的正式发现在线或已分发。0.1.3 控制器带 overrides。
+隔离原生验收已使用真实 0.1.2 和 0.1.3 控制器，在当前组件已就绪的条件下完成构建、组件准备、原生安装与切换。实测 Kimi 源码为 `5282177`，core 为 `4c40cb5`，diagnostics 为 `5ae643e`；之后仅修订本发布说明。候选自动修复旧控制器生成的宿主包，已注册启动器回读到 29 个工具、`toolTimeoutMs=660000`、`REMOTE_DEV_HARNESS_PROFILE=kimi` 以及 diagnostics 0.5.4 / core 0.10.7。启动依赖的无 overrides 解析和三系统 CI 均通过。
 
-本地/候选 feed 验证不代表正式 GitHub 自动分发已完成。
+该验收保留发布前正式源检查的 exit 1 / `no_compatible_release`，不将隔离候选迁移当作正式分发证明。正式发布后还需检查正常后台发现、安装和激活。安装绑定可自动切换；已运行宿主缓存的 Skill、命令和 MCP 定义在宿主自然重载或新进程时生效，活动会话和既有授权保持不变。
