@@ -695,6 +695,57 @@ class RemoteObservationBoundTests(unittest.TestCase):
 
 
 class RemoteFailureProjectionTests(unittest.TestCase):
+    def _shared_call(self, name, args):
+        from remote_dev.core import endpoint
+        from remote_dev.mcp.tools import call_tool
+
+        with patch.object(endpoint, "_RESOLVERS", []), \
+                patch.object(endpoint, "_load_env_resolvers", lambda: None), \
+                patch.object(endpoint, "_read_endpoint_aliases_and_default",
+                             lambda: ({}, None)):
+            return call_tool(name, args, profile="canonical")
+
+    def test_missing_port_preserves_shared_input_repair(self):
+        import mcp_server
+        from remote_dev.core.errors import EndpointError
+
+        args = {"host": "PRIVATE_ENDPOINT_SENTINEL", "command": "true"}
+        with self.assertRaises(EndpointError) as caught:
+            self._shared_call("remote_bash", args)
+        result = mcp_server.remote_stage_failure(
+            args, "remote_bash", "helper_failed", caught.exception)
+        structured = result["structuredContent"]
+        self.assertTrue(result["isError"])
+        self.assertEqual(structured["category"], "caller")
+        self.assertEqual(structured["submission_state"], "not_sent")
+        self.assertEqual(structured["remote_outcome"], "not_sent")
+        self.assertFalse(structured["retryable"])
+        self.assertEqual(structured["input_repair"]["missing"], ["port"])
+        self.assertIn("host and port", structured["input_repair"]["action"])
+        text = result["content"][0]["text"]
+        self.assertIn("Missing required argument(s): port", text)
+        self.assertIn("host and port", text)
+        self.assertIn("category=caller", text)
+        self.assertIn("submission_state=not_sent", text)
+        rendered = json.dumps(result)
+        self.assertNotIn("PRIVATE_ENDPOINT_SENTINEL", rendered)
+        self.assertNotIn(str(caught.exception), rendered)
+
+    def test_missing_operation_argument_preserves_shared_input_repair(self):
+        import mcp_server
+
+        args = {"host": "192.0.2.10", "port": 22}
+        with self.assertRaises(ValueError) as caught:
+            self._shared_call("remote_bash", args)
+        result = mcp_server.remote_stage_failure(
+            args, "remote_bash", "helper_failed", caught.exception)
+        structured = result["structuredContent"]
+        self.assertEqual(structured["input_repair"]["missing"], ["command"])
+        self.assertIn("Retry with command", structured["input_repair"]["action"])
+        text = result["content"][0]["text"]
+        self.assertIn("Missing required argument(s): command", text)
+        self.assertIn("no remote effect occurred", text)
+
     def test_only_typed_fields_survive(self):
         import mcp_server
         from remote_dev.core.errors import RemoteExecutionError, caller_error
