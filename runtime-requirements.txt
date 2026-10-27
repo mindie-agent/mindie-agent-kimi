@@ -9,7 +9,7 @@
 # Knowledge 0.13.3 and remote-dev 0.10.6 both declare diagnostics 0.5.2
 # (801a01b), so the old controller's plain first hop resolves without
 # --overrides. Candidate setup/CI layer runtime-active-overrides.txt on top to
-# select the active diagnostics 0.5.4 and remote-dev 0.10.7 (4c40cb5). The
+# select the active diagnostics 0.5.4 and remote-dev 0.10.8 (4b1c5ca). The
 # existing component_prepare boundary reads this bootstrap baseline, preserves
 # already-installed newer components and advances only to newer formal
 # releases; a bootstrap install alone is not the active 0.5.4 runtime.
