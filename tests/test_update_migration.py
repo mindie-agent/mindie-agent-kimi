@@ -30,12 +30,17 @@ FIXTURES = ROOT / "tests" / "fixtures" / "manifests"
 CANDIDATE = json.loads((ROOT / "kimi.plugin.json").read_text(encoding="utf-8"))
 SHA = "c" * 40
 LEGACY_TIMEOUT_MS = 660000
-NATIVE_TOOL_COUNT = 29
 NATIVE_NAMES = {
     "remote_read", "remote_Read", "remote_Write", "remote_Edit",
     "remote_Bash", "remote_Glob", "remote_Grep", "remote_ReadMediaFile",
     "remote_TaskOutput", "remote_TaskStop", "remote_TaskList",
+    "remote_auth",
 }
+
+
+def runtime_tool_names():
+    from remote_dev.mcp.tools import list_tools
+    return {item["name"] for item in list_tools("kimi")}
 
 
 def make_generation(tmp: Path, manifest: dict) -> Path:
@@ -114,7 +119,7 @@ class HostPackageTests(unittest.TestCase):
         replies = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
         listing = next(row for row in replies if row.get("id") == 2)
         names = {tool["name"] for tool in listing["result"]["tools"]}
-        self.assertEqual(len(names), NATIVE_TOOL_COUNT)
+        self.assertEqual(names, runtime_tool_names())
         self.assertTrue(NATIVE_NAMES <= names, names)
         for tool in listing["result"]["tools"]:
             self.assertIn("request_nonce", tool["inputSchema"]["required"])
@@ -131,7 +136,7 @@ class ProfileLifecycleTests(unittest.TestCase):
             else:
                 os.environ.pop("REMOTE_DEV_HARNESS_PROFILE", None)
         names = {tool["name"] for tool in tools}
-        self.assertEqual(len(names), NATIVE_TOOL_COUNT)
+        self.assertEqual(names, runtime_tool_names())
         self.assertTrue(NATIVE_NAMES <= names, names)
         self.assertNotIn("remote_exec_command", names)
 
@@ -472,7 +477,7 @@ class OldControllerSourceTests(unittest.TestCase):
                 self.assertNotIn("env", remote)
                 self.assertNotIn("toolTimeoutMs", remote)
                 names = self._list_tools(package, remote)
-                self.assertEqual(len(names), NATIVE_TOOL_COUNT)
+                self.assertEqual(names, runtime_tool_names())
                 self.assertTrue(NATIVE_NAMES <= names, names)
         # The candidate updater repairs the old-built package once.
         write_json(
