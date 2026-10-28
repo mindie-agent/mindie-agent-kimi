@@ -51,7 +51,7 @@ class McpTests(unittest.TestCase):
                     names,
                     {
                         "mindie_entry", "knowledge_query", "knowledge_explain",
-                        "knowledge_feedback", "knowledge_distill",
+                        "knowledge_feedback", "knowledge_distill", "knowledge_sync",
                     },
                 )
                 missing = self.rpc(

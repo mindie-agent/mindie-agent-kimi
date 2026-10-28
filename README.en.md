@@ -122,7 +122,7 @@ If you are an AI Agent asked by the user to install this plugin, execute the fol
      --plugin-root "$NATIVE_PKG" \
      --readback
    ```
-   - Confirm `mindie-agent` shows `enabled: true`, `state: "ok"`, and both MCP servers (`knowledge` and `remote`) enabled. Report the verified GitHub account (`$GH_USER`) and installation completion to the user (the temporary clone `/tmp/mindie-agent-kimi` can be removed; the persistent runtime lives under `~/.local/share/mindie-agent/kimi`).
+   - Confirm `mindie-agent` shows `enabled: true`, `state: "ok"`, and all three MCP servers (`knowledge`, `remote`, and `components`) enabled. Report the verified GitHub account (`$GH_USER`) and installation completion to the user (the temporary clone `/tmp/mindie-agent-kimi` can be removed; the persistent runtime lives under `~/.local/share/mindie-agent/kimi`).
 
    Continue with step 4 after verification, then report the complete setup result.
 
@@ -158,8 +158,8 @@ After the commands, enter **`/mindie-agent help me finish first-time setup`** in
 
 Everyday tasks use a single entry point—**`/mindie-agent`**—without requiring separate internal subcommands:
 
-- **`remote-dev` remote NPU tools trigger automatically by default** in everyday conversation (no slash command required).
-- **All MindIE Agent interactions** (design, development, operator implementation, testing & tuning with domain knowledge, first-time setup, checking status, or updating the unified contribution choice) are handled through **`/mindie-agent` + natural language**, while the Agent progressively loads internal operational context only when needed:
+- **`remote-dev` and `components` tools are available by default**, without a slash command. `components` exposes `coordinator`, `profiler`, `sim`, `diagnostics_status`, `diagnostics_bundle`, and factual `mindie_status`. Device work still follows lease rules; local diagnostic bundles are never uploaded by these tools.
+- **Knowledge retrieval, experience capture and initial configuration** use **`/mindie-agent` + natural language**, with context and configuration loaded on demand:
 
 | What You Want to Do | How to Do It |
 |---|---|
@@ -168,6 +168,24 @@ Everyday tasks use a single entry point—**`/mindie-agent`**—without requirin
 | **First-time setup, check status, or toggle the unified contribution switch** | `/mindie-agent` (or `/mindie-agent check status / enable community sharing`) |
 
 > 💡 **Background Experience Capture**: Once you explicitly opt in to community contribution during setup, your saved consent persists across sessions; in any session where you have invoked `/mindie-agent`, turn end (`Stop`) extracts and sanitizes public user/assistant messages in the background (ordinary sessions where `/mindie-agent` was not invoked skip `Stop` capture). Local capture completion is distinct from external PR creation; inspect status receipts to verify remote publication.
+
+### Optional Component Executables
+
+MCP discovery neither starts knowledge services nor installs optional components. `coordinator`, `profiler`, and `sim` execute their installed CLIs, looking beside the configured Python interpreter before searching `PATH`. Missing components return an explicit tool error. Diagnostic tools use `mindie_diagnostics.cli` from the plugin Python environment.
+
+To select separate component environments, add executable argv arrays under `component_commands` in `~/.config/mindie-agent/kimi.json`, for example:
+
+```json
+{
+  "component_commands": {
+    "sim": ["/path/to/sim-env/bin/python", "-I", "-m", "mindie_sim"],
+    "profiler": ["/path/to/profiler-env/bin/mindie-profiler"],
+    "coordinator": ["/path/to/coordinator-env/bin/mindie-coordinator"]
+  }
+}
+```
+
+Calls use an `argv` array, such as `{"argv":["--help"],"request_nonce":"fresh-per-call-nonce"}`. Native `PreToolUse` binds the current session; the model must not supply a session ID. Relative inputs and outputs resolve against the verified session working directory; `cwd` can specify another absolute directory. `timeout_ms` defaults to 120000 (maximum 600000) and `max_output_tokens` to 16384. Responses preserve the CLI exit code, stdout and stderr. The human-facing `npu-top` dashboard is not registered as an MCP tool.
 
 ### Automatic Updates & Safe Uninstall
 

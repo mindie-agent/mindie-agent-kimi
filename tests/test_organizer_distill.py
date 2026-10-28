@@ -419,12 +419,9 @@ class SharedWorkerIntegrationTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def _scanner(self):
-        matches = list(
-            (Path.home() / ".cache/mindie-agent/gitleaks/8.30.1").glob("*/gitleaks")
-        )
-        if not matches:
-            self.skipTest("installed pinned scanner is not present; no download in component tests")
-        return str(matches[0])
+        from support import redactor_executable
+
+        return redactor_executable()
 
     def _native_stub(self):
         script = self.root / "native_stub.py"
@@ -612,7 +609,24 @@ class SharedWorkerIntegrationTests(unittest.TestCase):
                 ))
                 self.assertFalse(queried["result"]["isError"], queried)
                 found = queried["result"]["structuredContent"]
-                self.assertEqual([item["id"] for item in found["results"]], [UNIT_ID])
+                self.assertEqual(found["results"], [])
+                self.assertEqual(found["excluded_budget"], [UNIT_ID])
+                self.assertFalse(found["budget_met"])
+                self.assertGreater(found["minimum_tokens"], query_args["token_budget"])
+                query_args.update(token_budget=4096, request_nonce="nonce-e2e3")
+                identity.publish_nonce_bind(
+                    "ses_e2e", "nonce-e2e3",
+                    "mcp__plugin-mindie-agent_knowledge__knowledge_query",
+                    "tool-e2e3", query_args,
+                )
+                queried = mcp_server.handle("knowledge", dict(
+                    jsonrpc="2.0", id=42, method="tools/call",
+                    params=dict(name="knowledge_query", arguments=query_args),
+                ))
+                self.assertFalse(queried["result"]["isError"], queried)
+                found = queried["result"]["structuredContent"]
+                self.assertTrue(found["budget_met"], found)
+                self.assertEqual([item["id"] for item in found["results"]], [UNIT_ID], found)
             finally:
                 try:
                     service_handoff.stop(engine_path)

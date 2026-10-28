@@ -106,7 +106,7 @@ def make_remote(tmp: Path):
     import shutil
 
     for name in ("knowledge_service.py", "paths.py", "transcript.py",
-                 "diagnostic_support.py", "paths.py"):
+                 "diagnostic_support.py", "launch_budget.py"):
         shutil.copy2(SCRIPTS / name, src / "scripts" / name)
     (src / "marker.txt").write_text("one")
     git(["init", "-b", "main"], src)

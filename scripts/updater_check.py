@@ -50,7 +50,7 @@ DEFAULT_REMOTE = "https://github.com/mindie-agent/mindie-agent-kimi.git"
 
 _FEED_OK = frozenset({"synced", "unchanged"})
 _FEED_PENDING = frozenset({"busy", "deferred"})
-_FEED_ERROR = frozenset({"unavailable", "invalid", "exhausted"})
+_FEED_ERROR = frozenset({"unavailable", "invalid", "exhausted", "partial"})
 _FEED_KNOWN = _FEED_OK | _FEED_PENDING | _FEED_ERROR
 
 _HOST = None
@@ -71,11 +71,19 @@ def _h(name):
     return globals()[name]
 
 
+def _feed_late_failures(row):
+    return [field for field in ("cleanup_status", "receipt_status") if row.get(field) == "failed"]
+
+
 def _feed_error_summary(rows):
-    parts = [
-        f"{row['repository']}:{row['status']}:{str(row.get('detail') or row.get('cause') or '')[:80]}"
-        for row in rows if row["status"] not in _FEED_OK
-    ]
+    parts = []
+    for row in rows:
+        late = _feed_late_failures(row)
+        if row["status"] in _FEED_OK and not late:
+            continue
+        observed = row["status"] + ("+" + "+".join(late) + "=failed" if late else "")
+        detail = row.get("detail") or row.get("cause") or ""
+        parts.append(f"{row['repository']}:{observed}:{str(detail)[:80]}")
     return "; ".join(parts)[:240]
 
 
@@ -102,13 +110,16 @@ def fold_feed_results(output):
         if status_val not in _FEED_KNOWN:
             raise ValueError("knowledge sync unknown status: " + status_val)
         rows.append(item)
-    good = sum(1 for row in rows if row["status"] in _FEED_OK)
+    # A promoted snapshot stays committed when cleanup or receipt persistence
+    # fails. Preserve that row and report degraded completion, never "ok".
+    good = sum(1 for row in rows if row["status"] in _FEED_OK and not _feed_late_failures(row))
+    committed = any(row["status"] in _FEED_OK or row["status"] == "partial" for row in rows)
     pending = sum(1 for row in rows if row["status"] in _FEED_PENDING)
-    failed = sum(1 for row in rows if row["status"] in _FEED_ERROR)
+    failed = sum(1 for row in rows if row["status"] in _FEED_ERROR or _feed_late_failures(row))
     if not rows or good == len(rows):
         return "ok", rows, None
     summary = _feed_error_summary(rows)
-    if good and (pending or failed):
+    if committed and (pending or failed):
         return "degraded", rows, summary
     if failed:
         return "sync_failed", rows, summary

@@ -8,6 +8,8 @@ transport error classification (`classify_transport_text`).
 
 [Invariants]
 - Never retries failed or timed-out commands.
+- `capture_result=True` retains both streams and the exit code for CLI tools;
+  the existing string-returning contract remains the default.
 - When `MINDIE_MAINTENANCE_GROUP=1` is set and the current process leads its
   process group, POSIX children remain in the parent group and only the direct
   child is killed on cleanup; otherwise POSIX uses `start_new_session=True` and
@@ -379,13 +381,26 @@ def _attach_transport(exc, stdout, stderr, *, timed_out):
         exc.category = "temporary_network"
 
 
-def _run_posix(process, timeout, max_output, pgid, check, cancel, transport=False):
+def _cleanup_process(process, pgid, captured):
+    try:
+        _kill_tree(process, pgid)
+        process.wait(timeout=2.0)
+    except (OSError, subprocess.SubprocessError) as exc:
+        if captured is None:
+            raise
+        # The CLI has already exited and both streams were drained. A local
+        # cleanup failure must not invite replaying its completed operation.
+        captured.cleanup_error = f"{type(exc).__name__}: {exc}"[:400]
+
+
+def _run_posix(process, timeout, max_output, pgid, check, cancel, transport=False, capture_result=False):
     selector = selectors.DefaultSelector()
     selector.register(process.stdout, selectors.EVENT_READ, "out")
     selector.register(process.stderr, selectors.EVENT_READ, "err")
     deadline = time.monotonic() + timeout
     output = bytearray()
     errors = bytearray()
+    captured = None
     cap = _Cap(max_output)
 
     def timeout_error():
@@ -447,26 +462,27 @@ def _run_posix(process, timeout, max_output, pgid, check, cancel, transport=Fals
             raise CommandCancelled("command cancelled")
         if check and process.returncode:
             raise failed_error()
-        return output.decode("utf-8", "replace")
+        stdout = output.decode("utf-8", "replace")
+        if capture_result:
+            captured = subprocess.CompletedProcess(
+                process.args, process.returncode, stdout, errors.decode("utf-8", "replace")
+            )
+            return captured
+        return stdout
     finally:
-        _kill_tree(process, pgid)
         try:
-            process.wait(timeout=2.0)
-        except subprocess.TimeoutExpired:
-            _kill_tree(process, pgid)
-            try:
-                process.wait(timeout=2.0)
-            except subprocess.TimeoutExpired:
-                pass
-        selector.close()
-        process.stdout.close()
-        process.stderr.close()
+            _cleanup_process(process, pgid, captured)
+        finally:
+            selector.close()
+            process.stdout.close()
+            process.stderr.close()
 
 
-def _run_windows(process, timeout, max_output, pgid, check, cancel, transport=False):
+def _run_windows(process, timeout, max_output, pgid, check, cancel, transport=False, capture_result=False):
     deadline = time.monotonic() + timeout
     output = bytearray()
     errors = bytearray()
+    captured = None
     cap = _Cap(max_output)
     lock = threading.Lock()
     failure = []
@@ -520,17 +536,21 @@ def _run_windows(process, timeout, max_output, pgid, check, cancel, transport=Fa
             if transport:
                 _attach_transport(err, output, errors, timed_out=False)
             raise err
-        return bytes(output).decode("utf-8", "replace")
+        stdout = bytes(output).decode("utf-8", "replace")
+        if capture_result:
+            captured = subprocess.CompletedProcess(
+                process.args, process.returncode, stdout, bytes(errors).decode("utf-8", "replace")
+            )
+            return captured
+        return stdout
     finally:
-        _kill_tree(process, pgid)
         try:
-            process.wait(timeout=2.0)
-        except subprocess.TimeoutExpired:
-            pass
-        for thread in threads:
-            thread.join(timeout=2.0)
-        process.stdout.close()
-        process.stderr.close()
+            _cleanup_process(process, pgid, captured)
+        finally:
+            for thread in threads:
+                thread.join(timeout=0.1)
+            process.stdout.close()
+            process.stderr.close()
 
 
 def run(
@@ -544,6 +564,7 @@ def run(
     check=True,
     cancel=None,
     transport=False,
+    capture_result=False,
 ):
     if (
         not isinstance(argv, (list, tuple)) or not argv
@@ -576,9 +597,9 @@ def run(
         atexit.register(cleanup)
         try:
             if POSIX:
-                result = _run_posix(process, timeout, max_output, pgid, check, cancel, transport)
+                result = _run_posix(process, timeout, max_output, pgid, check, cancel, transport, capture_result)
             else:
-                result = _run_windows(process, timeout, max_output, pgid, check, cancel, transport)
+                result = _run_windows(process, timeout, max_output, pgid, check, cancel, transport, capture_result)
             if _cancelled(cancel):
                 raise CommandCancelled("command cancelled")
             return result

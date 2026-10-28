@@ -122,7 +122,7 @@ MindIE Agent 采用**「领域知识与 Skill 手动按需触发 + 远端开发�
      --plugin-root "$NATIVE_PKG" \
      --readback
    ```
-   - 确认返回的插件列表中 `mindie-agent` 处于 `enabled: true`、`state: "ok"`，且两个 MCP 服务（`knowledge` 与 `remote`）均已启用。随后向用户汇报已验证的 GitHub 交互通道账号（`$GH_USER`）与安装完成情况（临时克隆目录 `/tmp/mindie-agent-kimi` 可随时清理，持久化运行时保存在 `~/.local/share/mindie-agent/kimi`）。
+   - 确认返回的插件列表中 `mindie-agent` 处于 `enabled: true`、`state: "ok"`，且三个 MCP 服务（`knowledge`、`remote` 与 `components`）均已启用。随后向用户汇报已验证的 GitHub 交互通道账号（`$GH_USER`）与安装完成情况（临时克隆目录 `/tmp/mindie-agent-kimi` 可随时清理，持久化运行时保存在 `~/.local/share/mindie-agent/kimi`）。
 
    验证成功后继续第 4 步，完成首次配置后一起汇报安装结果。
 
@@ -158,8 +158,8 @@ python3 scripts/install_kimi_plugin.py --kimi-home "${KIMI_CODE_HOME:-$HOME/.kim
 
 日常使用只需通过 **`/mindie-agent`** 统一入口，无需记忆内部子命令：
 
-- **`remote-dev` 远端工具在日常对话中默认自动触发**（无需输入任何斜杠命令）。
-- **所有与 MindIE Agent 相关的功能**（调取经验与知识库开展设计/开发/测试、首次配置、查看状态、修改统一贡献开关等）均通过 **`/mindie-agent` + 自然语言** 完成，Agent 会在内部按需完成渐进式上下文加载与配置操作：
+- **`remote-dev` 与 `components` 工具在日常对话中默认可用**，无需斜杠命令。`components` 暴露 `coordinator`、`profiler`、`sim`、`diagnostics_status`、`diagnostics_bundle` 与事实状态查询 `mindie_status`；设备工作仍遵循租约规则，本地诊断打包不会上传。
+- **知识检索、经验采集与首次配置**通过 **`/mindie-agent` + 自然语言** 完成，Agent 按需加载上下文与配置：
 
 | 你想做的事 | 怎么用（直接输入即可） |
 |---|---|
@@ -168,6 +168,24 @@ python3 scripts/install_kimi_plugin.py --kimi-home "${KIMI_CODE_HOME:-$HOME/.kim
 | **首次初始化或调整偏好设置（如开启/关闭统一贡献开关、查看状态）** | `/mindie-agent`（或 `/mindie-agent 帮我看看当前状态 / 开启社区经验贡献`） |
 
 > 💡 **后台经验采集说明**：首次配置显式开启社区贡献后，保存的授权配置会跨会话持久生效；在已通过 `/mindie-agent` 启用知识系统的会话中，每次回合结束（`Stop`）时插件会在后台提取公开可见对话并完成本地脱敏与知识 PR 整理（未调用 `/mindie-agent` 的普通会话在 `Stop` 阶段直接跳过）。本地采集完成不代表远端 PR 已创建，具体发布回执可通过状态查询确认。
+
+### 可选组件的执行路径
+
+MCP 工具发现不启动知识服务，也不安装可选组件。`coordinator`、`profiler`、`sim` 调用各自已安装的 CLI，优先使用配置解释器同目录的 `mindie-*` 可执行文件，再查找 `PATH`；缺少组件会返回明确错误。诊断工具复用插件 Python 中的 `mindie_diagnostics.cli`。
+
+可在 `~/.config/mindie-agent/kimi.json` 的 `component_commands` 指定独立组件环境，值是可执行文件与固定参数的数组，例如：
+
+```json
+{
+  "component_commands": {
+    "sim": ["/path/to/sim-env/bin/python", "-I", "-m", "mindie_sim"],
+    "profiler": ["/path/to/profiler-env/bin/mindie-profiler"],
+    "coordinator": ["/path/to/coordinator-env/bin/mindie-coordinator"]
+  }
+}
+```
+
+调用使用 `argv` 数组，例如 `{"argv":["--help"],"request_nonce":"fresh-per-call-nonce"}`；原生 `PreToolUse` 绑定当前会话，模型不得传入会话 ID。相对输入和输出路径以可信会话工作目录为基准，也可用 `cwd` 指定绝对工作目录。`timeout_ms` 默认 120000、最大 600000，`max_output_tokens` 默认 16384；CLI 的退出码、标准输出和标准错误原样返回。`npu-top` 面向人的监控界面不注册为 MCP 工具。
 
 ### 自动更新与安全卸载
 

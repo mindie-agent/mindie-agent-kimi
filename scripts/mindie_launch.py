@@ -3,7 +3,7 @@
 
 [Role]
 Serves as the stable command entrypoint referenced by installed Kimi plugin
-manifests (`hook <pretool|stop>`, `mcp <knowledge|remote>`, `updater <op>`).
+manifests (`hook <pretool|stop>`, `mcp <knowledge|remote|components>`, `updater <op>`).
 Selects the active committed generation from `<state_dir>/update/current.json`
 under the shared `operation.lock` and dispatches one-shot children.
 
@@ -19,6 +19,7 @@ under the shared `operation.lock` and dispatches one-shot children.
 - `HOOK_TOTAL = 10.0s`, `HOOK_LOCK_BUDGET = 2.0s`, `BOOTSTRAP_TOTAL = 540.0s`,
   `CALL_LOCK_BUDGET = 5.0s`, `CALL_CHILD_BUDGET = 60.0s` (180s for explicit entry activation/configuration including reporter startup; remote calls derive native wait + 60s grace: Bash foreground/Read/Glob/Grep 360s, background launch 180s), `EOF_JOIN = 3.0s`,
   `OUTPUT_BUDGET = 1.0s`.
+- Components add 15s to their requested deadline; feed sync reserves 135s.
 - Acquires shared `operation.lock` (`fcntl.flock` / `msvcrt.locking`) before
   reading `current.json` and holds it across child execution.
 
@@ -31,7 +32,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import math
 import os
 import re
 import sys
@@ -42,17 +42,17 @@ from pathlib import Path
 
 def _load_diagnostic_support():
     directory = Path(__file__).resolve().parent
-    if not (directory / "diagnostic_support.py").is_file():
-        if (
-            directory.parent.name != "launch"
-            or directory.parent.parent.name != "update"
-            or not (directory.name == "bootstrap" or re.fullmatch(r"[0-9a-f]{40}", directory.name))
-        ):
-            raise ModuleNotFoundError("MindIE launcher diagnostics are missing")
-        directory = directory.parent.parent / "generations" / directory.name / "scripts"
 
     def load(name):
         path = directory / (name + ".py")
+        if not path.is_file() and (
+            directory.parent.name == "launch"
+            and directory.parent.parent.name == "update"
+            and (directory.name == "bootstrap" or re.fullmatch(r"[0-9a-f]{40}", directory.name))
+        ):
+            # Immutable older builders copy only their known support files.
+            # Resolve a new helper from this launcher's own generation.
+            path = directory.parent.parent / "generations" / directory.name / "scripts" / (name + ".py")
         if not path.is_file():
             raise ModuleNotFoundError("MindIE generation diagnostics are missing")
         existing = sys.modules.get(name)
@@ -69,6 +69,7 @@ def _load_diagnostic_support():
         return module
 
     load("paths")
+    load("launch_budget")
     return load("diagnostic_support")
 
 
@@ -82,19 +83,11 @@ BOOTSTRAP_TOTAL = float(os.environ.get("MINDIE_BOOTSTRAP_TOTAL_SECONDS") or 540.
 CALL_LOCK_BUDGET = 5.0
 CALL_CHILD_BUDGET = 60.0
 KNOWLEDGE_MAX_OUTPUT = 1024 * 1024
-# Remote child budget: native Kimi Bash foreground waits up to 300s, Read/
-# Glob/Grep up to 300s; SSH setup, framing, pipe drain and cleanup happen
-# outside that wait. A fixed 60s outer deadline would cut off a legal call.
-REMOTE_GRACE_SECONDS = 60.0
-REMOTE_MIN_BUDGET_SECONDS = 180.0
 REMOTE_MAX_OUTPUT = bounded.REMOTE_MAX_OUTPUT
-KIMI_REMOTE_INNER_SECONDS = {
-    "remote_bash": 300.0,
-    "remote_read": 300.0,
-    "remote_glob": 300.0,
-    "remote_grep": 300.0,
-    "remote_readmediafile": 300.0,
-}
+from launch_budget import (
+    REMOTE_GRACE_SECONDS, REMOTE_MIN_BUDGET_SECONDS,
+    kimi_remote_inner_seconds, remote_budget,
+)
 KIMI_REMOTE_PROFILE = "kimi"
 MAX_RPC_ID = 256
 WORK_LIMIT = 3
@@ -492,65 +485,38 @@ def _stage_error(ident, message, stage: str, surface: str):
     )
 
 
-def kimi_remote_inner_seconds(name, arguments):
-    """Largest legal native inner wait for this Kimi remote tool, in seconds.
-
-    Kimi Bash takes ``timeout`` in seconds; canonical aliases take
-    ``yield_time_ms``/``timeout_ms`` in milliseconds. A background launch
-    returns immediately, so only the minimum remote budget is needed.
-    """
-    key = name.rsplit("__", 1)[-1].lower() if isinstance(name, str) else ""
-    if isinstance(arguments, dict) and arguments.get("run_in_background") is True:
-        return 0.0
-    native = KIMI_REMOTE_INNER_SECONDS.get(key, 0.0)
-    explicit = 0.0
-    if isinstance(arguments, dict):
-        for field in ("timeout", "yield_time_ms", "timeout_ms"):
-            value = arguments.get(field)
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                continue
-            if not math.isfinite(value) or value <= 0:
-                continue
-            # Kimi Bash's native timeout is seconds; transport waits are ms.
-            seconds = float(value) if field == "timeout" and key in {
-                "remote_bash", "bash"} else float(value) / 1000.0
-            explicit = max(explicit, seconds)
-    return max(native, explicit)
-
-
-def remote_budget(name, arguments=None, *, native_wait_ms=None,
-                  grace=REMOTE_GRACE_SECONDS, minimum=REMOTE_MIN_BUDGET_SECONDS):
-    """Outer child budget: native wait + SSH/framing/drain/cleanup grace.
-
-    Pure and injectable so the arithmetic is proven without a 300s sleep.
-    """
-    if isinstance(grace, bool) or not isinstance(grace, (int, float)) \
-            or not math.isfinite(grace) or grace <= 0:
-        raise ValueError("remote grace must be a positive finite number")
-    if isinstance(minimum, bool) or not isinstance(minimum, (int, float)) \
-            or not math.isfinite(minimum) or minimum <= 0:
-        raise ValueError("remote minimum budget must be a positive finite number")
-    if native_wait_ms is None:
-        wait = kimi_remote_inner_seconds(name, arguments)
-    else:
-        if isinstance(native_wait_ms, bool) or not isinstance(native_wait_ms, (int, float)) \
-                or not math.isfinite(native_wait_ms) or native_wait_ms < 0:
-            raise ValueError("native wait must be a nonnegative finite number of milliseconds")
-        wait = float(native_wait_ms) / 1000.0
-    return max(float(minimum), wait + float(grace))
-
-
 def _call_budget(surface, raw):
     message = json.loads(raw)
     arguments = (message.get("params") or {}).get("arguments") or {}
     name = _local_tool_name(message)
     if surface == "remote":
         return remote_budget(name, arguments)
+    if name == "knowledge_sync":
+        return 135.0
     if name == "mindie_entry" and arguments.get("op") in {
         "init", "choose", "sharing-enable", "sharing-disable",
     }:
         return 180.0
+    if _local_tool_name(message) in {
+        "profiler", "sim", "coordinator", "diagnostics_status", "diagnostics_bundle",
+    }:
+        milliseconds = arguments.get("timeout_ms", 120000)
+        if type(milliseconds) is int and 1 <= milliseconds <= 600000:
+            # The component owns its deadline; leave room for tree cleanup and
+            # local nonce accounting before the outer helper is terminated.
+            return milliseconds / 1000 + 15.0
     return CALL_CHILD_BUDGET
+
+
+def _response_budget(surface, raw):
+    if surface == "components":
+        arguments = (json.loads(raw).get("params") or {}).get("arguments") or {}
+        tokens = arguments.get("max_output_tokens", 16384)
+        if type(tokens) is int and 1 <= tokens <= 262144:
+            # Each stream appears in structuredContent and serialized text;
+            # worst-case JSON escaping expands one byte into six characters.
+            return tokens * 4 * 16 + 65536
+    return KNOWLEDGE_MAX_OUTPUT if surface == "knowledge" else REMOTE_MAX_OUTPUT
 
 
 def _dispatch(surface: str, raw: bytes, ident, cancel=None):
@@ -572,8 +538,7 @@ def _dispatch(surface: str, raw: bytes, ident, cancel=None):
                 [current["python"], str(script), surface, "--once"],
                 payload, timeout=_call_budget(surface, raw), env=_child_env(current, surface),
                 cwd=str(Path(current["generation"])), cancel=cancel,
-                **({"max_output": KNOWLEDGE_MAX_OUTPUT} if surface == "knowledge"
-                   else {"max_output": REMOTE_MAX_OUTPUT}),
+                max_output=_response_budget(surface, raw),
             )
         except bounded.CommandCancelled:
             raise
@@ -816,7 +781,7 @@ def main(argv=None) -> int:
     name = argv[1] if len(argv) > 1 else ""
     if kind == "hook" and name in {"pretool", "stop"}:
         return _hook(name)
-    if kind == "mcp" and name in {"knowledge", "remote"}:
+    if kind == "mcp" and name in {"knowledge", "remote", "components"}:
         return _mcp(name)
     if kind == "updater":
         return _updater(argv[1:])
