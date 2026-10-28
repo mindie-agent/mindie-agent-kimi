@@ -19,7 +19,7 @@ under the shared `operation.lock` and dispatches one-shot children.
 - `HOOK_TOTAL = 10.0s`, `HOOK_LOCK_BUDGET = 2.0s`, `BOOTSTRAP_TOTAL = 540.0s`,
   `CALL_LOCK_BUDGET = 5.0s`, `CALL_CHILD_BUDGET = 60.0s` (180s for explicit entry activation/configuration including reporter startup; remote calls derive native wait + 60s grace: Bash foreground/Read/Glob/Grep 360s, background launch 180s), `EOF_JOIN = 3.0s`,
   `OUTPUT_BUDGET = 1.0s`.
-- Components add 15s to their requested deadline; feed sync reserves 150s.
+- Components add 30s to their requested deadline; feed sync reserves 150s.
 - Acquires shared `operation.lock` (`fcntl.flock` / `msvcrt.locking`) before
   reading `current.json` and holds it across child execution.
 
@@ -504,9 +504,9 @@ def _call_budget(surface, raw):
     }:
         milliseconds = arguments.get("timeout_ms", 120000)
         if type(milliseconds) is int and 1 <= milliseconds <= 600000:
-            # The component owns its deadline; leave room for tree cleanup and
-            # local nonce accounting before the outer helper is terminated.
-            return milliseconds / 1000 + 15.0
+            # Nonce claim/finish, a failed-receipt diagnostic write, and tree
+            # cleanup must fit after the component's execution deadline.
+            return milliseconds / 1000 + 30.0
     return CALL_CHILD_BUDGET
 
 

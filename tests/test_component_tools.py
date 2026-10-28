@@ -169,7 +169,7 @@ def test_launcher_allows_component_inner_deadline_and_serialized_output():
     arguments = {"argv": [], "timeout_ms": 600000, "max_output_tokens": 262144}
     request = json.dumps({"params": {"name": "sim", "arguments": arguments}}).encode()
     budget = mindie_launch._call_budget("components", request)
-    assert budget >= 600 + 5 + 5 + 2
+    assert budget >= 600 + 5 + 5 + 5 + 2.2
     native = json.loads((ROOT / "kimi.plugin.json").read_text())["mcpServers"]["components"]
     assert native["toolTimeoutMs"] / 1000 >= budget + mindie_launch.CALL_LOCK_BUDGET + mindie_launch.OUTPUT_BUDGET
     response = {"content": [{"type": "text", "text": "\0" * (262144 * 4)}],
