@@ -3,9 +3,9 @@
 # the immutable 0.1.2 controller's plain first hop does not.
 #
 # Selecting both direct components here keeps the active runtime at
-# diagnostics 0.5.4 (5ae643e) and remote-dev 0.11.0 (1538137), overriding the
+# diagnostics 0.5.4 (5ae643e) and remote-dev 0.11.1 (2a750ec), overriding the
 # older transitive declarations. component_prepare separately preserves an
 # already-installed newer component or advances to a newer formal release; it
 # never downgrades.
 mindie-diagnostics @ git+https://github.com/mindie-agent/diagnostics@5ae643e19223f2181ecdbaa3edaf464137c4805e
-remote-dev @ git+https://github.com/mindie-agent/remote-dev@153813703a3cc64c695dd8e5f19e8a173e144dda
+remote-dev @ git+https://github.com/mindie-agent/remote-dev@2a750ec8c74d7f053410d48dd820aeb542e7d3b1
