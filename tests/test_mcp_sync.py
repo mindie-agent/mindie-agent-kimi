@@ -65,7 +65,7 @@ def test_discovered_sync_uses_real_local_feed_without_a_service(local_feed, tmp_
     request = json.dumps({"params": {"name": "knowledge_sync", "arguments": {}}}).encode()
     child = mindie_launch._call_budget("knowledge", request)
     native = json.loads((SCRIPTS.parent / "kimi.plugin.json").read_text())["mcpServers"]["knowledge"]
-    assert child >= knowledge_sync.TIMEOUT + 5 + 5 + 2
+    assert child >= knowledge_sync.TIMEOUT + 5 + 5 + 5 + 2.2
     assert native["toolTimeoutMs"] / 1000 >= child + mindie_launch.CALL_LOCK_BUDGET + mindie_launch.OUTPUT_BUDGET
     listed = mcp_server.handle("knowledge", {"id": 1, "method": "tools/list"})
     schema = next(tool["inputSchema"] for tool in listed["result"]["tools"]

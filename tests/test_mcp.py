@@ -45,6 +45,8 @@ class McpTests(unittest.TestCase):
             try:
                 init = self.rpc(proc, dict(jsonrpc="2.0", id=1, method="initialize", params={}))
                 self.assertEqual(init["result"]["serverInfo"]["name"], "mindie-kimi-knowledge")
+                manifest = json.loads((SCRIPTS.parent / "kimi.plugin.json").read_text(encoding="utf-8"))
+                self.assertEqual(init["result"]["serverInfo"]["version"], manifest["version"])
                 listed = self.rpc(proc, dict(jsonrpc="2.0", id=2, method="tools/list"))
                 names = {item["name"] for item in listed["result"]["tools"]}
                 self.assertEqual(

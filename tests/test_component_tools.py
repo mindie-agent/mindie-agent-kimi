@@ -185,3 +185,39 @@ def test_missing_component_is_an_explicit_tool_error(adapter, tmp_path):
     result = call("sim", {"argv": ["--help"]})
     assert result["isError"]
     assert "missing" in result["content"][0]["text"]
+
+
+@pytest.mark.parametrize("mode", ["timeout", "output_limit"])
+def test_interrupted_component_keeps_partial_report_without_replay(adapter, tmp_path, mode):
+    child = tmp_path / "partial_report.py"
+    child.write_text(
+        "import json, sys, threading\n"
+        "with open('receipts.jsonl', 'a') as receipt:\n"
+        "    receipt.write(json.dumps({'phase': 'inventory'}) + '\\n')\n"
+        "print('inventory completed', flush=True)\n"
+        "print('analysis pending', file=sys.stderr, flush=True)\n"
+        "if sys.argv[1] == 'timeout':\n"
+        "    threading.Event().wait(30)\n"
+        "else:\n"
+        "    sys.stdout.write('x' * 131072)\n"
+        "    sys.stdout.flush()\n",
+        encoding="utf-8", newline="\n",
+    )
+    value = json.loads(adapter.read_text())
+    value["component_commands"] = {"profiler": [sys.executable, str(child)]}
+    adapter.write_text(json.dumps(value))
+    result = call("profiler", {
+        "argv": [mode], "timeout_ms": 800 if mode == "timeout" else 5000,
+        "max_output_tokens": 8192,
+    })
+    assert result["isError"], result
+    payload = result["structuredContent"]
+    assert payload["status"] == mode
+    assert payload["stdout"].startswith("inventory completed")
+    assert payload["output_truncated"] == (mode == "output_limit")
+    assert len((payload["stdout"] + payload["stderr"]).encode()) <= 8192 * 4
+    if mode == "timeout":
+        assert "analysis pending" in payload["stderr"]
+    assert [json.loads(line) for line in (tmp_path / "receipts.jsonl").read_text().splitlines()] == [
+        {"phase": "inventory"},
+    ]

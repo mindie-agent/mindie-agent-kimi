@@ -89,6 +89,8 @@ class NativeMcpLaunchTests(unittest.TestCase):
                     self.assertEqual(result["code"], 0, result)
                     self.assertIsNone(result["error"], result)
                     replies = [json.loads(line) for line in result["stdout"].splitlines()]
+                    initialized = next(row for row in replies if row.get("id") == 1)
+                    self.assertEqual(initialized["result"]["serverInfo"]["version"], manifest["version"])
                     listing = next((row for row in replies if row.get("id") == 2), {})
                     self.assertNotIn("error", listing, listing)
                     names = {tool["name"] for tool in listing.get("result", {}).get("tools", [])}

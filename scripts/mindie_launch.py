@@ -19,7 +19,7 @@ under the shared `operation.lock` and dispatches one-shot children.
 - `HOOK_TOTAL = 10.0s`, `HOOK_LOCK_BUDGET = 2.0s`, `BOOTSTRAP_TOTAL = 540.0s`,
   `CALL_LOCK_BUDGET = 5.0s`, `CALL_CHILD_BUDGET = 60.0s` (180s for explicit entry activation/configuration including reporter startup; remote calls derive native wait + 60s grace: Bash foreground/Read/Glob/Grep 360s, background launch 180s), `EOF_JOIN = 3.0s`,
   `OUTPUT_BUDGET = 1.0s`.
-- Components add 15s to their requested deadline; feed sync reserves 135s.
+- Components add 15s to their requested deadline; feed sync reserves 150s.
 - Acquires shared `operation.lock` (`fcntl.flock` / `msvcrt.locking`) before
   reading `current.json` and holds it across child execution.
 
@@ -430,7 +430,7 @@ def _local_answer(message: dict):
             result=dict(
                 protocolVersion="2025-11-25",
                 capabilities={"tools": {}},
-                serverInfo={"name": "mindie-kimi-front", "version": "0.1.2"},
+                serverInfo={"name": "mindie-kimi-front", "version": diagnostic_support.plugin_version()},
             ),
         )
     if method == "ping":
@@ -492,7 +492,9 @@ def _call_budget(surface, raw):
     if surface == "remote":
         return remote_budget(name, arguments)
     if name == "knowledge_sync":
-        return 135.0
+        # Native nonce claim/finish and target-domain admission each allow 5s;
+        # the 120s sync child also needs process cleanup and response encoding.
+        return 150.0
     if name == "mindie_entry" and arguments.get("op") in {
         "init", "choose", "sharing-enable", "sharing-disable",
     }:

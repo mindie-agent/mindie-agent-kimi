@@ -18,8 +18,10 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sys
+import sysconfig
 
-from bounded import run
+from bounded import CommandTimedOut, OutputLimitExceeded, run
 from paths import config_path, load_adapter_config
 
 
@@ -97,10 +99,11 @@ def command(adapter, component):
         return configured
     if component == "diagnostics":
         return [adapter["python"], "-I", "-m", "mindie_diagnostics.cli"]
-    search_path = os.pathsep.join([
-        str(Path(adapter["python"]).parent),
-        os.environ.get("PATH", ""),
-    ])
+    runtime = Path(adapter["python"])
+    runtime_paths = [str(runtime.parent)]
+    if runtime == Path(sys.executable):
+        runtime_paths.append(sysconfig.get_path("scripts"))
+    search_path = os.pathsep.join([*runtime_paths, os.environ.get("PATH", "")])
     executable = shutil.which("mindie-" + component, path=search_path)
     if executable is None:
         raise FileNotFoundError(
@@ -150,17 +153,30 @@ def execute(name, arguments, session, *, cancel=None, timeout=None):
     if not isinstance(cwd, str) or not Path(cwd).is_absolute():
         raise ValueError("cwd must be an absolute working directory")
     child = command(adapter, component) + argv
+    interrupted = None
     try:
         output = run(child, "", timeout=bound,
                      max_output=budget * 4, cancel=cancel, env=environment,
                      cwd=cwd, check=False, capture_result=True)
     except FileNotFoundError as exc:
         raise FileNotFoundError(f"Could not start {child[0]} in {cwd}: {exc}") from exc
-    stdout = output.stdout
-    value = dict(component=component, exit_code=output.returncode,
-                 stdout=stdout, stderr=output.stderr)
-    if getattr(output, "cleanup_error", None):
-        value.update(cleanup_status="failed", cleanup_error=output.cleanup_error)
+    except (CommandTimedOut, OutputLimitExceeded) as exc:
+        interrupted = exc
+    if interrupted is None:
+        stdout = output.stdout
+        value = dict(component=component, exit_code=output.returncode,
+                     stdout=stdout, stderr=output.stderr, status="completed")
+    else:
+        stdout = interrupted.mindie_output
+        value = dict(
+            component=component, exit_code=interrupted.returncode,
+            stdout=stdout, stderr=interrupted.mindie_stderr,
+            status="timeout" if isinstance(interrupted, CommandTimedOut) else "output_limit",
+            error=str(interrupted), output_truncated=isinstance(interrupted, OutputLimitExceeded),
+        )
+    cleanup_error = getattr(interrupted or output, "cleanup_error", None)
+    if cleanup_error:
+        value.update(cleanup_status="failed", cleanup_error=cleanup_error)
     # JSON output is additive: keep the exact stdout and exit status even when
     # a component emits help text or a non-JSON failure.
     try:
@@ -168,4 +184,4 @@ def execute(name, arguments, session, *, cancel=None, timeout=None):
     except json.JSONDecodeError:
         pass
     return dict(content=[dict(type="text", text=json.dumps(value, ensure_ascii=False))],
-                structuredContent=value, isError=output.returncode != 0)
+                structuredContent=value, isError=interrupted is not None or output.returncode != 0)

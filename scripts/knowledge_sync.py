@@ -6,7 +6,8 @@
 - Feed failures and deferred rows remain visible even when the CLI exits zero.
 
 [Timeouts & Locks]
-- One bounded 120s child, plus process cleanup; the launcher reserves 135s.
+- One bounded 120s child, plus process cleanup; the launcher reserves 150s
+  including native nonce claim/finish and target-domain admission reads.
 - The shared core owns feed locking and publication validation.
 
 [Side-Effect Policy]

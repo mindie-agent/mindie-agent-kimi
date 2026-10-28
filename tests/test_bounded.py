@@ -77,6 +77,7 @@ class BoundedTests(unittest.TestCase):
         self.assertIn("output exceeds the bound", str(ctx.exception))
         self.assertIsInstance(ctx.exception, ValueError)
         self.assertIsInstance(ctx.exception, RuntimeError)
+        self.assertEqual(ctx.exception.mindie_output, "x" * (128 * 1024))
         self.assertLess(time.monotonic() - started, 10)
 
     @unittest.skipUnless(os.name == "posix", "POSIX maintenance group contract")
