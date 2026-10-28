@@ -1,28 +1,48 @@
 # mindie-agent-kimi 0.1.7
 
-Release preparation is in progress. The remote-dev 0.11.0 formal dependency
-revision and final platform evidence must be recorded before this candidate is
-published.
+This release integrates persistent SSH authentication from remote-dev 0.11.0.
+After a user supplies a password once, remote-dev verifies access and attempts
+to install and verify a managed public key. Password-only endpoints reuse the
+saved credential across new chats and independent plugin runtimes. A rejected
+key alone is not treated as proof that the server has disabled public keys.
 
-The active runtime integrates remote-dev's shared SSH authentication. One
-password entry verifies access and attempts to install and verify a managed
-public key. Password-only endpoints can reuse their saved credential across new
-Kimi chats, separate runtimes, coordinator access, and monitor probes under the
-same local user.
+Remote-dev owns the shared `~/.mindie/ssh/credentials.json` file and profiles
+scoped by host, port, and SSH user. The plugin adds no password store or OS
+keychain access and does not request the computer-account password. Key repair
+happens before business submission; uncertain business operations are not
+automatically replayed. Authentication failures preserve safe recovery hints,
+submission state, and separate key-maintenance facts.
 
-Credentials belong to remote-dev, with the default file at
-`~/.mindie/ssh/credentials.json`. References are scoped by SSH host, port, and
-user. The Kimi adapter keeps its native nonce binding and adds no password store,
-OS keychain access, or computer-account password prompt.
+The Kimi adapter retains native nonce binding. The immutable 0.1.2 controller bootstrap trio remains knowledge 0.13.3, remote-dev 0.10.6, and diagnostics 0.5.2; `runtime-active-overrides.txt` selects the active versions listed below. Bootstrap installation and active-runtime cutover remain distinct.
 
-The old 0.1.2 controller's bootstrap trio in `runtime-requirements.txt` remains
-knowledge 0.13.3, remote-dev 0.10.6, and diagnostics 0.5.2. The active candidate
-selects its new remote-dev revision and diagnostics 0.5.4 through
-`runtime-active-overrides.txt`. Bootstrap completion and active-runtime cutover
-are distinct states; an existing newer component must not be downgraded.
+The active runtime pins are:
 
-Authentication acceptance includes the actual Kimi nonce/MCP adapter in two
-fresh chat processes with installed runtime packages. This is adapter coverage,
-not a claim of an LLM-driven Kimi host update. The exact source revisions and
-platform results must accompany the final evidence. Formal release assets must
-include the final tag's test and benchmark reports and checksums.
+| Component | Version / tag | Source commit |
+| --- | --- | --- |
+| remote-dev | 0.11.0 / v0.11.0 | `153813703a3cc64c695dd8e5f19e8a173e144dda` |
+| knowledge | 0.13.3 / v0.13.3 | `38a42f6f778cfa555d8918fdcacd12cee4a181f5` |
+| diagnostics | 0.5.4 / v0.5.4 | `5ae643e19223f2181ecdbaa3edaf464137c4805e` |
+
+Existing resolver overrides select diagnostics 0.5.4 over older transitive
+pins. Normal resolver installation was verified in a separate virtual
+environment, including installed `direct_url.json` identities and actual MCP
+`tools/list` discovery of `remote_auth` with `password_env` and no plaintext
+`password` field. Coordinator and npu-top remain independently installed
+components; manual knowledge activation stays scoped to the native session.
+
+Real SSH acceptance passed on macOS (7 tests, 34.58 seconds), Windows Server
+2025 with PowerShell 7.6.7, Python 3.12.10 and Git OpenSSH 10.5p1 (4 tests,
+14.186 seconds), and WSL2 Ubuntu 24.04 with OpenSSH 9.6p1 (4 tests, 12.694
+seconds). [Platform run 40774308378](https://github.com/mindie-agent/remote-dev/actions/runs/40774308378)
+tested remote-dev candidate `a7564f49b1ff106e59f72961c851b7b11eb81130`;
+the final pinned commit changes only its release notes.
+
+Coverage includes managed-key installation, reuse across independent virtual
+environments, password-only authentication, revoked-key repair before one
+business execution, and one shared credential used by coordinator, two Kimi
+chat processes, and npu-top after reopening its database. Kimi uses its actual
+nonce/MCP adapter; Codex, Claude Code and DSH use their shared endpoint profiles.
+These checks do not claim complete native-host end-to-end runs or that an
+existing host has loaded this release. All acceptance uses isolated state and
+the default credential-file provider. Formal tag workflows attach test and
+benchmark reports plus checksums from the exact released source.
