@@ -40,8 +40,8 @@ MindIE Agent 采用**「领域知识与 Skill 手动按需触发 + 远端开发�
 
 | 能力模块 | 触发方式 | 什么时候用？ | 怎么触发？ |
 | :--- | :--- | :--- | :--- |
-| **经验、知识库与 Skill 系统**<br/>（`mindie-knowledge` + `mindie-agent` Skill） | **🎯 当前会话手动触发** | 开展昇腾 AI Infra 架构设计、`vLLM-Ascend` 特性开发、`AscendC` / `Triton` 算子实现、单测/精度测试构建、性能调优或问题定位时 | 在当前会话中显式输入一次 **`/mindie-agent` + 你的需求描述**，即可在本会话后续轮次持续启用知识检索、反馈、蒸馏与同步（输入 `/mindie-agent:deactivate` 可在当前会话关闭） |
-| **远端昇腾 NPU 开发与测试**<br/>（`remote-dev` MCP 工具集 + 事实状态查询） | **⚡ 默认自动触发** | 日常需要将本地代码或测试同步到远端昇腾服务器/容器、在 NPU 上跑编译/测试、查看 `npu-smi` 或实时轮询长日志时 | **无需输入任何斜杠命令**，直接用自然语言描述远端操作即可 |
+| **经验、知识库与 Skill 系统**<br/>（`mindie-knowledge` + `mindie-agent` Skill） | **🎯 当前会话手动触发** | 开展昇腾 AI Infra 架构设计、`vLLM-Ascend` 特性开发、`AscendC` / `Triton` 算子实现、单测/精度测试构建、性能调优或问题定位时 | 在当前会话中显式输入一次 **`/mindie-agent` + 你的需求描述**，即可在本会话后续轮次持续启用知识检索（`knowledge_query` / `knowledge_explain`）、反馈（`knowledge_feedback`）、蒸馏（`knowledge_distill`）与同步（`knowledge_sync`）；输入 `/mindie-agent:deactivate` 可在当前会话关闭 |
+| **远端昇腾 NPU 开发与本地组件工具**<br/>（`remote` + `components` MCP 服务） | **⚡ 默认自动触发** | 同步本地代码到远端昇腾服务器/容器、运行 NPU 编译与单测、查看 `npu-smi`，或调用本地诊断、状态查询、性能剖析、仿真测算与设备协调工具时 | **无需输入 `/mindie-agent`**，直接用自然语言描述远端操作或组件调用需求即可 |
 | **研发经验沉淀与统一贡献开关**<br/>（`Stop` 后台采集 + Gitleaks 脱敏 + 故障上报） | **🔄 已启用会话后台运行** | 希望将有价值的架构设计、算子开发、测试验证或调优经验脱敏沉淀回开源知识库，或自动上报经筛选的工具故障时 | **授权一次配置，按会话生效**——首次配置显式开启社区贡献后，在已通过 `/mindie-agent` 启用知识系统的会话中，每次回合结束自动在后台完成本地脱敏与知识 PR 整理；未调用 `/mindie-agent` 的普通会话不触发后台采集 |
 
 ### 场景 1：输入 `/mindie-agent` 唤醒知识库与 Skill 辅助设计、开发与测试（手动触发）
@@ -156,40 +156,46 @@ python3 scripts/install_kimi_plugin.py --kimi-home "${KIMI_CODE_HOME:-$HOME/.kim
 
 ## 日常使用与交互方式
 
-日常使用只需通过 **`/mindie-agent`** 统一入口，无需记忆内部子命令：
+日常使用通过 **`/mindie-agent`** 按需启用知识能力，远端开发与本地组件工具则在所有会话中默认常驻：
 
-- **`remote-dev` 与 `components` 工具在日常对话中默认可用**，无需斜杠命令。`components` 暴露 `coordinator`、`profiler`、`sim`、`diagnostics_status`、`diagnostics_bundle` 与事实状态查询 `mindie_status`；设备工作仍遵循租约规则，本地诊断打包不会上传。
-- **知识检索、经验采集与首次配置**通过 **`/mindie-agent` + 自然语言** 完成，Agent 按需加载上下文与配置：
+- **`remote` 与 `components` MCP 工具默认可用（无需输入 `/mindie-agent`）**：`remote` 提供远端昇腾服务器文件读写、命令执行与后台作业管理；`components` 提供状态查询 `mindie_status`、本地诊断工具 `diagnostics_status` / `diagnostics_bundle`，以及 `coordinator`、`profiler`、`sim` 三个可选组件的命令行入口。物理 NPU 执行与计时仍需先持有设备租约，本地诊断打包仅保存在本地、不会自动上传。
+- **知识检索、同步、经验沉淀与首次配置需显式输入 `/mindie-agent`**：`knowledge_query`、`knowledge_explain`、`knowledge_feedback`、`knowledge_distill`、`knowledge_sync` 以及回合结束（`Stop`）后台采集仅在当前会话手动调用 `/mindie-agent` 后启用：
 
 | 你想做的事 | 怎么用（直接输入即可） |
 |---|---|
 | **开展昇腾 AI Infra 设计、开发（`vLLM-Ascend` / `AscendC` / `Triton`）、测试与调优** | `/mindie-agent <直接描述你的设计、开发、测试或调优需求>` |
-| **操作远端昇腾服务器 / 容器（同步代码、跑单测、看 `npu-smi`）** | **无需斜杠命令**，直接用自然语言描述远端操作需求（`remote-dev` 默认自动触发） |
+| **操作远端昇腾服务器 / 容器（同步代码、跑单测、看 `npu-smi`）** | **无需斜杠命令**，直接用自然语言描述远端操作需求（`remote` MCP 默认自动触发） |
+| **查询本地插件状态、导出诊断包，或运行 `profiler` / `sim` / `coordinator`** | **无需斜杠命令**，直接用自然语言描述或调用 `components` MCP 工具 |
 | **首次初始化或调整偏好设置（如开启/关闭统一贡献开关、查看状态）** | `/mindie-agent`（或 `/mindie-agent 帮我看看当前状态 / 开启社区经验贡献`） |
 
 > 💡 **后台经验采集说明**：首次配置显式开启社区贡献后，保存的授权配置会跨会话持久生效；在已通过 `/mindie-agent` 启用知识系统的会话中，每次回合结束（`Stop`）时插件会在后台提取公开可见对话并完成本地脱敏与知识 PR 整理（未调用 `/mindie-agent` 的普通会话在 `Stop` 阶段直接跳过）。本地采集完成不代表远端 PR 已创建，具体发布回执可通过状态查询确认。
 
-### 可选组件的执行路径
+### `components` 本地诊断与分析组件工具
 
-MCP 工具发现不启动知识服务，也不安装可选组件。`coordinator`、`profiler`、`sim` 调用各自已安装的 CLI，优先使用配置解释器同目录的 `mindie-*` 可执行文件，再查找 `PATH`；缺少组件会返回明确错误。诊断工具复用插件 Python 中的 `mindie_diagnostics.cli`。
+插件注册完成后，`components` MCP 服务在所有 Kimi 会话中默认可用，无需先输入 `/mindie-agent`。列出工具不会启动知识服务，也不会自动下载可选组件（终端交互看板 `npu-top` 仅供人工在终端使用，不注册为 MCP 工具）：
 
-可在 `~/.config/mindie-agent/kimi.json` 的 `component_commands` 指定独立组件环境，值是可执行文件与固定参数的数组，例如：
+| 工具名 | 用途 | 安装要求 | 调用参数与返回结果 |
+| :--- | :--- | :--- | :--- |
+| `mindie_status`<br/>`diagnostics_status`<br/>`diagnostics_bundle` | 查看会话、插件与本地诊断状态，或导出脱敏后的本地诊断包（仅保存在本地，不自动上传） | **内置可用**（使用插件的 Python 环境） | 传入单次 `request_nonce`；`diagnostics_status` 可选传 `config`，`diagnostics_bundle` 必传 `root`（可选 `operation_id`、`output`） |
+| `coordinator`<br/>`profiler`<br/>`sim` | 调用 `mindie-coordinator`（设备探测与租约）、`mindie-profiler`（采集剖析）、`mindie-sim`（性能仿真）命令行工具 | **按需独立安装**（插件默认不自带）。先查找配置的 Python 环境，再查 `PATH`，也可用 `component_commands` 指定；未安装时直接返回缺失提示 | 传入参数数组 `argv`（如 `{"argv":["--help"],"request_nonce":"..."}`），可选绝对路径 `cwd`；返回 `component`、`status`、`exit_code`、`stdout`、`stderr`（仅在 `stdout` 为 JSON 时附带 `result`） |
+
+如果 `coordinator`、`profiler`、`sim` 安装在独立环境中，可在 `~/.config/mindie-agent/kimi.json` 的 `component_commands` 中指定可执行文件及固定前置参数：
 
 ```json
 {
   "component_commands": {
-    "sim": ["/path/to/sim-env/bin/python", "-I", "-m", "mindie_sim"],
-    "profiler": ["/path/to/profiler-env/bin/mindie-profiler"],
-    "coordinator": ["/path/to/coordinator-env/bin/mindie-coordinator"]
+    "sim": ["/path/to/sim-python", "-I", "-m", "mindie_sim"],
+    "profiler": ["/path/to/mindie-profiler"],
+    "coordinator": ["/path/to/mindie-coordinator"]
   }
 }
 ```
 
-调用使用 `argv` 数组，例如 `{"argv":["--help"],"request_nonce":"fresh-per-call-nonce"}`；原生 `PreToolUse` 绑定当前会话，模型不得传入会话 ID。相对输入和输出路径以可信会话工作目录为基准，也可用 `cwd` 指定绝对工作目录。`timeout_ms` 默认 120000、最大 600000，`max_output_tokens` 默认 16384；CLI 的退出码、标准输出和标准错误原样返回。`npu-top` 面向人的监控界面不注册为 MCP 工具。
+每次调用由 Kimi 原生 `PreToolUse` Hook 通过 `request_nonce` 绑定当前会话与工作目录（模型不得传入会话 ID），相对输入/输出路径默认基于当前会话工作目录解析。单次调用超时默认 120 秒（`timeout_ms=120000`）、最多可设 10 分钟（`600000`）；输出默认最多 64 KiB（`max_output_tokens=16384`）、最多可设 1 MiB（`262144`），两路输出合计按每 token 4 字节计，大报告建议保存到文件。
 
 ### 自动更新与安全卸载
 
-- **后台自动更新**：在 macOS 上通过 `launchd` 定时检查远端兼容正式插件 Release 以及各官方组件仓库的正式 GitHub Release，在独立代数（Generation）目录中构建锁定虚拟环境，确认核心空闲后完成切换并保留回滚回执（纯组件更新无需重装 Kimi 原生插件定义；详见 [自动更新机制](docs/update.md) 与 [`docs/releases/mindie-agent-kimi-0.1.6.md`](docs/releases/mindie-agent-kimi-0.1.6.md)）。可通过以下命令随时查看更新状态：
+- **后台自动更新**：macOS 上的 `launchd` 定时检查插件和共享组件的兼容正式版本。更新器先准备独立环境，待当前任务空闲后切换，并保留回滚记录。新增或调整 MCP 服务时会重新注册 Kimi 插件；仅更新组件版本时无需重装插件。详见 [自动更新机制](docs/update.md) 与 [`0.1.6` 发布说明](docs/releases/mindie-agent-kimi-0.1.6.md)。可随时查看更新状态：
   ```sh
   MINDIE_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/mindie-agent/kimi.json"
   MINDIE_LAUNCHER=$(python3 -c 'import json,sys,pathlib; cfg=json.loads(pathlib.Path(sys.argv[1]).read_text()); u=pathlib.Path(cfg["state_dir"])/"update"; cur=json.loads((u/"current.json").read_text()); print(u/"launch"/(cur["sha"] or "bootstrap")/"mindie_launch.py")' "$MINDIE_CONFIG")
@@ -236,9 +242,9 @@ python3 -m unittest discover -s tests/native -v
 python3 -m unittest discover -s tests
 ```
 
-### `0.1.2` 发布基准测试（Release Benchmark）
+### `0.1.6` 发布基准测试（Release Benchmark）
 
-本仓库在 [`benchmarks/release.json`](benchmarks/release.json)（由 `benchmarks/release.py` 执行）中定义了面向 `0.1.2` 发布的可复现 CPU 微基准测试（用例 `public-transcript-parsing`，指标 `public_transcript_parse`，单位 `us/op`），用于测量本地 `wire.jsonl` 公开可见消息提取与非公开推理字段过滤的单次解析耗时。每个正式版 GitHub Release 均随附 `benchmark-results.json`、`benchmark-results.md`；该微基准仅验证本地解析组件的性能基线，与常备昇腾 A2/A3 NPU 真机集成验收及端到端 Agent 研发任务评估相互独立。
+本仓库在 [`benchmarks/release.json`](benchmarks/release.json)（由 `benchmarks/release.py` 执行）中定义了面向 `0.1.6` 发布的可复现 CPU 微基准测试（用例 `public-transcript-parsing`，指标 `public_transcript_parse`，单位 `us/op`），用于测量本地 `wire.jsonl` 公开可见消息提取与非公开推理字段过滤的单次解析耗时。每个正式版 GitHub Release 均随附 `benchmark-results.json`、`benchmark-results.md`；该微基准仅验证本地解析组件的性能基线，与常备昇腾 A2/A3 NPU 真机集成验收及端到端 Agent 研发任务评估相互独立。
 
 ---
 
