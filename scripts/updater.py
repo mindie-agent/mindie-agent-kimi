@@ -33,7 +33,6 @@ readback, and maintains diagnostic retention.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import random
@@ -211,6 +210,11 @@ from updater_schedule import (
     uninstall_schedule,
 )
 from updater_staging import (
+    _host_package_metadata,
+    _mark_host_package,
+    _swap_host_package,
+    _restore_host_package,
+    repair_host_package,
     _profile_authority_sources,
     _quote_front_command,
     _remove_owned_tree,
@@ -348,129 +352,6 @@ def _verify_native_record(report: dict, manifest: dict, package: Path) -> None:
         raise CheckFailed("native readback mismatch: " + ", ".join(dict.fromkeys(problems)))
 
 
-def _host_package_metadata(package: Path) -> dict:
-    path = Path(package) / "kimi.plugin.json"
-    manifest = read_json(path) or {}
-    remote = ((manifest.get("mcpServers") or {}).get("remote") or {})
-    return {
-        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-        "version": manifest.get("version"),
-        "remote_timeout_ms": remote.get("toolTimeoutMs"),
-        "remote_profile": (remote.get("env") or {}).get("REMOTE_DEV_HARNESS_PROFILE"),
-    }
-
-
-def _mark_host_package(receipt_path: Path, package: Path) -> None:
-    receipt = read_json(receipt_path)
-    if not isinstance(receipt, dict):
-        receipt = {}
-    receipt["host_package"] = _host_package_metadata(package)
-    atomic_write(receipt_path, receipt)
-
-
-def _swap_host_package(staging: Path, destination: Path) -> Path | None:
-    """Publish a fully built repair package and return the previous backup."""
-    backup = destination.with_name(destination.name + ".repair-previous")
-    if backup.exists():
-        _remove_owned_tree(backup)
-    if destination.exists():
-        os.replace(destination, backup)
-    try:
-        os.replace(staging, destination)
-    except Exception:
-        if backup.exists() and not destination.exists():
-            os.replace(backup, destination)
-        raise
-    return backup if backup.exists() else None
-
-
-def _restore_host_package(destination: Path, backup: Path | None) -> None:
-    if backup is None or not backup.exists():
-        return
-    if destination.exists():
-        _remove_owned_tree(destination)
-    os.replace(backup, destination)
-
-
-def repair_host_package(adapter: dict, current: dict, deadline: float,
-                        install, idle=None, lock_timeout: float = 30.0):
-    """Rebuild and reinstall a package written by the legacy 0.1.2/0.1.3 updater.
-
-    Those updaters rebuilt `mcpServers` from only command/args, so their
-    receipt has no `host_package` marker and their installed manifest can lack
-    `toolTimeoutMs` and `REMOTE_DEV_HARNESS_PROFILE`. The replacement is built
-    in an inactive sibling first, then published under the same exclusive
-    switch lock after an idle check. If install fails, the previous package is
-    restored; the old generation tree and running host sessions are untouched.
-    """
-    sha = current.get("sha")
-    if not isinstance(sha, str) or re.fullmatch(SHA, sha) is None:
-        return None
-    receipt_path = receipts_dir(adapter) / f"{sha}.json"
-    receipt = read_json(receipt_path)
-    if (not isinstance(receipt, dict) or receipt.get("sha") != sha
-            or "host_package" in receipt):
-        return None
-    generation = Path(current["generation"])
-    if not (generation / "kimi.plugin.json").is_file():
-        return None
-    destination = generation / "host-package"
-    staging = generation / f".host-package-repair-{os.getpid()}"
-    if staging.exists():
-        _remove_owned_tree(staging)
-    stopped = False
-    try:
-        package = build_host_package(
-            generation, adapter, sha, package_dir=staging,
-            config_file=Path(current["adapter_config"]),
-        )
-        wait = min(lock_timeout, deadline - time.monotonic())
-        if wait <= 0:
-            raise LockTimeout("no time left for the native package repair")
-        with OperationLock(adapter).exclusive(timeout=wait):
-            active = read_json(current_path(adapter)) or {}
-            if (active.get("sha") != sha
-                    or active.get("generation") != str(generation)):
-                return None
-            if idle is not None:
-                idle_result = idle(adapter, current, deadline)
-                if (isinstance(idle_result, dict)
-                        and type(idle_result.get("idle")) is bool
-                        and idle_result["idle"] is False):
-                    raise Deferred("knowledge service is active; package repair deferred")
-                stopped = (isinstance(idle_result, dict)
-                           and idle_result.get("service") == "stopped")
-            backup = _swap_host_package(package, destination)
-            try:
-                install(adapter, destination, deadline,
-                        reserve=FEED_BUDGET + HANDOFF_BUDGET)
-            except Exception:
-                _restore_host_package(destination, backup)
-                # Restoring source JSON is not enough: Kimi registers parsed
-                # MCP/hook definitions. Re-apply the previous package through
-                # the existing native install/readback and only then permit
-                # stopped-service restoration. If rollback is unproven, keep
-                # the explicit failure and do not claim the old service is
-                # safely restored.
-                restored = _rollback_native(adapter, current, install, deadline)
-                if stopped:
-                    _restore_stopped_service(
-                        adapter, current if restored else None, deadline,
-                    )
-                    stopped = False
-                raise
-            if backup is not None:
-                _remove_owned_tree(backup)
-            _mark_host_package(receipt_path, destination)
-            if stopped:
-                _restore_stopped_service(adapter, current, deadline)
-                stopped = False
-    finally:
-        if staging.exists():
-            _remove_owned_tree(staging)
-    return destination
-
-
 def native_install(adapter: dict, package: Path, deadline: float, reserve: float = RESERVE) -> dict:
     home = adapter.get("kimi_home") or os.environ.get("KIMI_CODE_HOME")
     if not isinstance(home, str) or not home:
@@ -509,9 +390,15 @@ def switch(
     idle, install, lock_timeout, *, update_native=True,
 ) -> None:
     receipts_dir(adapter).mkdir(parents=True, exist_ok=True)
+    prior_receipt = read_json(receipts_dir(adapter) / f"{sha}.json") or {}
+    receipt = {"sha": sha, "at": time.time(), "previous": current, "generation": str(generation)}
+    if not update_native and "host_package" in prior_receipt:
+        # A runtime-only switch does not register the newly generated package.
+        # Preserve evidence about the definitions the native host still uses.
+        receipt["host_package"] = prior_receipt["host_package"]
     atomic_write(
         receipts_dir(adapter) / f"{sha}.json",
-        {"sha": sha, "at": time.time(), "previous": current, "generation": str(generation)},
+        receipt,
     )
     native_attempted = False
     stopped = False
@@ -546,7 +433,7 @@ def switch(
                 "sha": sha,
             }
             write_current(final, adapter)
-            if (generation / "host-package" / "kimi.plugin.json").is_file():
+            if update_native and (generation / "host-package" / "kimi.plugin.json").is_file():
                 _mark_host_package(
                     receipts_dir(adapter) / f"{sha}.json",
                     generation / "host-package",

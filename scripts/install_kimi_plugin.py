@@ -36,7 +36,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 PLUGIN_ROOT = HERE.parent
 KIMI = os.environ.get("MINDIE_KIMI_BIN") or "kimi"
-EXPECTED_MCP_SURFACES = ("knowledge", "remote")
+EXPECTED_MCP_SURFACES = ("knowledge", "remote", "components")
 
 
 def _command_files(package: Path) -> int:

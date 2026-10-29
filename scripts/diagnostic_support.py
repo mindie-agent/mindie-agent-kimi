@@ -129,6 +129,15 @@ def build_metadata():
     return result
 
 
+def plugin_version():
+    """Report the built package identity, or the checkout's declared version."""
+    metadata = build_metadata()
+    if "version" in metadata:
+        return metadata["version"]
+    manifest = Path(_own_generation()) / "kimi.plugin.json"
+    return json.loads(manifest.read_text(encoding="utf-8"))["version"]
+
+
 def _warn():
     global _warned
     if _warned:

@@ -36,7 +36,7 @@ jobs:
       - name: Install pinned runtime
         run: |
           pip install uv
-          uv pip install --system -r runtime-requirements.txt --overrides runtime-active-overrides.txt pytest==9.1.1
+          uv pip install --system -r runtime-requirements.txt -r test-requirements.txt --overrides runtime-active-overrides.txt
       - name: Compile all committed Python
         run: python -m compileall -q scripts tests
       - name: Pin preflight

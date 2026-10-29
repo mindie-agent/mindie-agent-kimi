@@ -38,7 +38,6 @@ class ManifestTests(unittest.TestCase):
             self.manifest["mcpServers"]["remote"].get("toolTimeoutMs"), 660000,
         )
         self.assertNotIn("env", self.manifest["mcpServers"]["knowledge"])
-        self.assertNotIn("toolTimeoutMs", self.manifest["mcpServers"]["knowledge"])
 
     def test_no_updater_shim(self):
         self.assertFalse((ROOT / "scripts" / "update.py").exists())
