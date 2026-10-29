@@ -34,5 +34,16 @@ Windows 任务使用同一 Python 安装中的 `pythonw.exe` 启动 UTF-8 包装
 
 ## 3. 容错退避与宿主重载边界
 
-- **失败退避与防死循环**：单次检查内部不做循环重试。若遇到临时网络波动或限流，保留当前完好版本并记录 `next_retry_at`，交由后续定时检查按退避时间重试（全程保持 TLS 证书校验开启）。内容、版本、tag 或兼容声明不一致时不会安装，错误会显示在状态中。没有兼容正式版本时报告 `no_compatible_release`；当前代数与用户授权保持不变。未分类的命令失败只在本地 `failed.json` 保留一条去凭据、长度受限的 stderr 原因；共享诊断仍只写静态分类与退出码。Kimi 的 `runtime-requirements.txt` 保持与 knowledge 0.13.3、remote-dev 0.10.6 一致的无 overrides bootstrap 三元组（diagnostics 0.5.2 / `801a01b...`），因此不可变 0.1.2 控制器首跳可解析；候选 setup/CI 再通过 `runtime-active-overrides.txt` 同时选择 diagnostics 0.5.4（`5ae643e...`）与 remote-dev 0.10.7（`4c40cb5...`），fresh active runtime 因此得到修复。component_prepare 只在已安装组件与正式 release 之间保留或前进，不降级；0.5.4/4c 是 active candidate pin，未发布前不声称正式 feed 已发现。若已有缓存运行时仍不一致，保留一次性恢复路径：从候选发布包或源码直接运行现有的 `scripts/updater.py recover --config <现有配置>`（候选构建带 `--overrides`，并走同一原生安装/回滚事务），或在新配置目录运行 `scripts/setup.py`，之后自动更新恢复。
+- **失败退避与防死循环**：临时网络或证书信任故障保留当前安装，记录 `next_retry_at` 并交由后续正常定时检查重试；TLS 校验始终开启。内容、版本、tag 或兼容性不匹配在安装前明确失败。`failed.json` 只保留去凭据、有界的错误摘要，共享诊断只记录静态类别和退出码。
+- **旧更新器首跳与实际运行时下界**：`runtime-requirements.txt` 的 bootstrap 依赖保持 knowledge 0.13.3、remote-dev 0.10.6、diagnostics 0.5.2；0.1.10 的活动组件要求移到 `runtime/active-overrides.txt`。旧更新器只能把 bootstrap 文件当作它实际安装的基线，新更新器显式读取活动要求，并比较候选解释器的真实组件 inventory，不能因目标 SHA 等于源码声明就跳过构建。已安装的更新版本仍作为下界保留。
+- **0.1.9 已知问题与恢复**：0.1.8 旧更新器运行 knowledge 0.13.6 时，可能把 0.1.9 切换到 bootstrap 组件，而后续定时检查因缺少新 API 退出。此时不能宣称自动自愈；从已校验的 0.1.10 正式发布源码目录建立独立恢复环境，执行现有产品恢复入口（Windows 使用 `.venv\Scripts\python.exe`）：
+
+  ```sh
+  uv venv --python 3.13 .venv
+  uv pip install --python .venv/bin/python -r runtime-requirements.txt --overrides runtime/active-overrides.txt
+  .venv/bin/python scripts/updater.py recover --config "$HOME/.config/mindie-agent/kimi.json"
+  ```
+
+  自定义 profile 使用其原有配置路径。恢复沿用正式 Release 校验、原生安装、空闲切换与回滚机制；不手写 `current.json`、不删除旧代数，也不重新选择用户授权。恢复后再次核对实际解释器与组件版本，并观察后续正常定时检查。
+
 - **宿主重载说明（`needs_host_reload`）**：更新回执中的 `current.json` 只表示已提交的**调度代数**，不代表已经在内存中加载旧插件的宿主进程已经切换。指针切换后，稳定启动器仍按调用读取 `current.json`，因此下一次 `tools/list`/`tools/call` 与 Hook 子进程会使用新代数的启动器、解释器和脚本；已有任务授权、旧代数目录与旧启动器继续保留，正在运行的宿主/任务不会被杀死或强制重载。Kimi 宿主在启动时加载的 Skill/命令/MCP 清单与工具缓存，只会在宿主自然重启或新会话/新进程时刷新，故状态如实保留 `needs_host_reload: true`，不声称旧会话内存中的定义已变成新版本。旧 0.1.2/0.1.3 更新器生成的宿主包可能缺少 `toolTimeoutMs` 或 profile 环境变量；新代数的启动器会在发现前补上 profile，并在下一次检查时依据旧回执一次性重建/重装该宿主包，期间不触碰运行中的宿主。

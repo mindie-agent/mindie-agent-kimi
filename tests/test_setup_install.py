@@ -633,7 +633,9 @@ class SetupInstallTests(unittest.TestCase):
             (source / "commands").mkdir()
             (source / "kimi.plugin.json").write_text("{}\n")
             (source / "runtime-requirements.txt").write_text("\n")
-            (source / "runtime-active-overrides.txt").write_text("\n")
+            (source / "runtime").mkdir()
+            (source / "runtime/active-overrides.txt").write_text(
+                (SCRIPTS.parent / "runtime/active-overrides.txt").read_text())
             sys.path.insert(0, str(SCRIPTS))
             import setup
 
@@ -641,6 +643,10 @@ class SetupInstallTests(unittest.TestCase):
             self.assertEqual(
                 (dest / "scripts" / "organizer_distill.py").read_text(),
                 "# c6 helper\n",
+            )
+            self.assertEqual(
+                (dest / "runtime/active-overrides.txt").read_text(),
+                (source / "runtime/active-overrides.txt").read_text(),
             )
 
     def test_partial_retained_bootstrap_is_rejected(self):

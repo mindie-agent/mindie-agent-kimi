@@ -149,7 +149,8 @@ def test_plugin_candidate_rebinds_a_baseline_component_even_when_pins_do_not_cha
     python = Path(candidate["generation"]) / "candidate-python"
     with patch("mindie_knowledge.component_runtime.source_baseline", return_value=baseline), \
             patch("mindie_knowledge.component_runtime.discover", return_value={
-                "changed": False, "runtime": inventory}), \
+                "changed": False, "installed": inventory, "runtime": inventory}), \
+            patch("mindie_knowledge.component_runtime.read_inventory", return_value=inventory), \
             patch("mindie_knowledge.component_runtime.build") as build, \
             patch.object(updater, "probe_runtime"), \
             patch.object(updater, "write_generation_configs",
@@ -159,3 +160,39 @@ def test_plugin_candidate_rebinds_a_baseline_component_even_when_pins_do_not_cha
     assert prepared[1] == python
     assert configure.call_args.args[1] == python
     build.assert_not_called()
+
+
+@pytest.mark.parametrize("already_active", [False, True])
+def test_bootstrap_interpreter_is_rebuilt_even_when_targets_equal_source_pins(tmp_path, already_active):
+    import component_update
+    from mindie_knowledge.component_runtime import read_inventory
+
+    adapter, (old, candidate) = generations(tmp_path)
+    target = read_inventory(sys.executable)
+    # Actual bootstrap inventory observed after the 0.1.8 -> 0.1.9 native hop.
+    bootstrap = {
+        "mindie-knowledge": {"repository": "mindie-agent/knowledge", "version": "0.13.3",
+                             "revision": "38a42f6f778cfa555d8918fdcacd12cee4a181f5"},
+        "remote-dev": {"repository": "mindie-agent/remote-dev", "version": "0.10.6",
+                       "revision": "0463a13fce9618ec9a51904869d61acb0cdb8538"},
+        "mindie-diagnostics": {"repository": "mindie-agent/diagnostics", "version": "0.5.2",
+                               "revision": "801a01b2789aed7f58e971a909205a7d40b61077"},
+    }
+    baseline = {"runtime": {name: row["revision"] for name, row in target.items()}}
+    source = Path(old["generation"] if already_active else candidate["generation"])
+    python = old["python"] if already_active else str(source / "candidate-python")
+    artifact = {"source": str(tmp_path / "rebuilt/source"),
+                "python": str(tmp_path / "rebuilt/runtime/python")}
+    with patch("mindie_knowledge.component_runtime.source_baseline", return_value=baseline), \
+            patch("mindie_knowledge.component_runtime.discover", return_value={
+                "changed": already_active, "installed": bootstrap if already_active else target,
+                "runtime": target}), \
+            patch("mindie_knowledge.component_runtime.read_inventory", return_value=bootstrap), \
+            patch("mindie_knowledge.component_runtime.build", return_value=artifact) as build, \
+            patch.object(updater, "probe_runtime"), \
+            patch.object(updater, "write_generation_configs",
+                         return_value=Path(candidate["adapter_config"])) as configure:
+        prepared = component_update.prepare(adapter, source, python, time.monotonic() + 600)
+    assert prepared[:2] == (Path(artifact["source"]), Path(artifact["python"]))
+    assert build.call_args.args[3] == target
+    assert configure.call_args.kwargs["components"] == target

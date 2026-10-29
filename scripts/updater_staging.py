@@ -94,7 +94,7 @@ def build_runtime(generation: Path, deadline: float) -> Path:
     if sys.version_info < _h("MIN_PYTHON"):
         raise _h("CheckFailed")(f"Python {_h('MIN_PYTHON')[0]}.{_h('MIN_PYTHON')[1]}+ is required")
     requirements = generation / "runtime-requirements.txt"
-    overrides = generation / "runtime-active-overrides.txt"
+    overrides = generation / "runtime/active-overrides.txt"
     if not overrides.is_file():
         overrides = requirements
     if re.search(r"@main\b", requirements.read_text(encoding="utf-8")):
