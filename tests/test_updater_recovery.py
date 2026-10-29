@@ -429,6 +429,8 @@ class BuildRuntimeAndFailureClassTests(unittest.TestCase):
     def test_build_runtime_prefers_uv_when_available(self):
         with tempfile.TemporaryDirectory() as raw:
             generation = self._generation(Path(raw))
+            overrides = generation / "runtime-active-overrides.txt"
+            overrides.write_text((SCRIPTS.parent / "runtime-active-overrides.txt").read_text())
             found_uv = "/usr/local/bin/uv"
             which, run, calls = self._build_calls(
                 lambda name: found_uv if name == "uv" else None)
@@ -437,6 +439,7 @@ class BuildRuntimeAndFailureClassTests(unittest.TestCase):
             install = next(argv for argv, _kw in calls if "install" in argv)
             self.assertEqual(install[0], found_uv)
             self.assertEqual(install[1:3], ["pip", "install"])
+            self.assertEqual(install[install.index("--overrides") + 1], str(overrides))
             for argv, options in calls:
                 self.assertEqual(options["env"]["UV_NATIVE_TLS"], "true")
             self.assertIn("--python", install)
