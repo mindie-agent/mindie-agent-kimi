@@ -346,16 +346,21 @@ def _validated_job_ref(args):
 def remote_stage_failure(args, name, stage, exc=None):
     structured = {"stage": stage, "remote_outcome": "unconfirmed"}
     if exc is not None:
-        from remote_dev.core.errors import error_details
+        from remote_dev.core.errors import AUTH_ERROR_HINTS, error_details, safe_auth_error_details
 
         details = error_details(exc)
         category = details.get("category")
-        structured["category"] = category if isinstance(category, str) and category in REMOTE_ERROR_CATEGORIES else "internal"
+        structured["category"] = category if isinstance(category, str) and category in REMOTE_ERROR_CATEGORIES | AUTH_ERROR_HINTS.keys() else "internal"
         certainty = details.get("submission_state")
         if isinstance(certainty, str) and certainty in {"not_sent", "uncertain", "acknowledged"}:
             structured["submission_state"] = certainty
         if type(details.get("retryable")) is bool:
             structured["retryable"] = details["retryable"]
+        auth = safe_auth_error_details(details)
+        if auth is not None:
+            structured.update(auth)
+        if structured.get("submission_state") == "not_sent":
+            structured["remote_outcome"] = "not_sent"
         repair = details.get("input_repair")
         # Only the shared caller classification is trusted to describe a local
         # pre-dispatch correction. Transport and uncertain outcomes never gain
@@ -378,6 +383,13 @@ def remote_stage_failure(args, name, stage, exc=None):
             text += f" Missing required argument(s): {', '.join(missing)}."
         if action:
             text += f" {action}"
+    elif structured.get("hint"):
+        text = (
+            f"Remote request was not sent ({stage})."
+            if structured.get("submission_state") == "not_sent"
+            else f"Remote outcome unconfirmed ({stage}); inspect the original operation before repeating it."
+        )
+        text += " " + structured["hint"]
     elif key:
         text = f"Remote outcome unconfirmed ({stage}). Inspect or stop original {key} {value} before a deliberate repeat."
     elif name == "remote_bash":
