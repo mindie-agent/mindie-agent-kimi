@@ -631,12 +631,12 @@ class SharedWorkerIntegrationTests(unittest.TestCase):
                 try:
                     service_handoff.stop(engine_path)
                     process.wait(timeout=5)
-                except Exception:
+                finally:
                     if process.poll() is None:
                         process.kill()
                         process.wait(timeout=3)
-                if process.stderr is not None:
-                    process.stderr.close()
+                    if process.stderr is not None:
+                        process.stderr.close()
 
 
 if __name__ == "__main__":

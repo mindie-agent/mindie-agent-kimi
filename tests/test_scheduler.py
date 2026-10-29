@@ -15,6 +15,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 import genstate  # noqa: E402
 import updater  # noqa: E402
+import updater_schedule  # noqa: E402
 
 SHA = "421e22bf1fbf524a074d84ae3e95c3323860becd"
 STALE = "# stale bootstrap launcher\n"
@@ -65,7 +66,7 @@ class SchedulerLauncherTests(unittest.TestCase):
         home = self.tmp / "fake-home"
         home.mkdir(exist_ok=True)
         with mock.patch.object(updater, "bounded_run", side_effect=fake_run), \
-             mock.patch.object(updater.sys, "platform", "darwin"), \
+             mock.patch.object(updater_schedule.shutil, "which", side_effect=lambda name: "/bin/launchctl" if name == "launchctl" else None), \
              mock.patch.object(updater.os, "getuid", return_value=1000, create=True), \
              mock.patch("pathlib.Path.home", return_value=home):
             code = updater.install_schedule(self.config_path)

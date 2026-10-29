@@ -216,6 +216,8 @@ def main():
         if not args.readback:
             report["install"] = call(port, token, "POST", "/api/v1/plugins", {"source": source})
         report["after"] = call(port, token, "GET", "/api/v1/plugins")
+    except TimeoutError:
+        raise
     except Exception as exc:
         from diagnostic_support import failure
 
@@ -250,6 +252,8 @@ def main():
     manifest = json.loads((args.plugin_root.expanduser().resolve() / "kimi.plugin.json").read_text(encoding="utf-8"))
     try:
         verify_install_report(report, Path(source), manifest)
+    except TimeoutError:
+        raise
     except Exception as exc:
         from diagnostic_support import failure
 

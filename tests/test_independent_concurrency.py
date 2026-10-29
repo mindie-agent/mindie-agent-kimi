@@ -464,6 +464,7 @@ class EntryBoundaryTests(LaneIsolation):
             "real_lock = store._lock_file_nb\n"
             "def observe_lock(fd):\n"
             "    try: return real_lock(fd)\n"
+            "    except TimeoutError: raise\n"
             "    except OSError:\n"
             "        open(sys.argv[3], 'w').close()\n"
             "        raise\n"

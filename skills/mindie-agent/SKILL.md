@@ -35,6 +35,25 @@ knowledge query.
   acceptance checks; no skip-feedback call or new task state is needed. The
   existing binding and authorized background capture remain in force.
 
+## Finish the verified task
+
+Identify the requested behavior and its acceptance checks from the task and
+relevant callers. Once the change satisfies those invariants and the affected
+behavior checks pass, give the final response with the result, validation and
+any remaining limitation. Let the host emit its normal completion event.
+
+Extend the implementation or repeat validation only for a concrete failing
+case, a required acceptance check, or new evidence that challenges the result.
+Do not add optional parameter combinations, speculative compatibility paths or
+defensive fallbacks after success without that evidence. An offline parser or
+code repair does not require an invented hardware condition or an unrelated
+live NPU run. Keep any hardware checks the actual task requires.
+
+Knowledge feedback and background capture must not prolong a finished task.
+A passing check alone does not fabricate native completion or C6 admission;
+report unfinished requirements honestly if a budget or external dependency
+prevents completion.
+
 1. **Bind & Initialize on Invocation (`request_nonce` on Every Call)**:
    - When `/mindie-agent` is invoked in the current native Kimi task, call `mindie_entry` **exactly once** with `op=init` (plus optional `domain="<domain>"` when explicitly activating a registered target domain for distillation/writes under its own consent and scope) and a fresh `request_nonce`. Never pass or fabricate a session ID (`${KIMI_SESSION_ID}` in text is not a capability).
    - Every subsequent `knowledge` (`knowledge_query`, `knowledge_explain`, `knowledge_feedback`, `knowledge_distill`, `knowledge_sync`), `remote`, and `components` MCP call MUST also include a fresh `request_nonce`.

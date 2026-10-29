@@ -764,6 +764,8 @@ if __name__ == "__main__":
         raise SystemExit(main())
     except (SystemExit, KeyboardInterrupt):
         raise
+    except TimeoutError:
+        raise
     except Exception as exc:
         diagnostic = diagnostic_support.failure("updater", "entry", "update", exception=exc)
         print(json.dumps({"result": "failed", "error_type": type(exc).__name__, "diagnostic": diagnostic}))

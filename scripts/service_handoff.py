@@ -35,6 +35,8 @@ def stop(engine):
         raise RuntimeError("service endpoint is not loopback")
     try:
         result = rpc(connection, "stop_if_idle", timeout=1)
+    except TimeoutError:
+        raise
     except OSError as exc:
         if refused(exc) and lock_held(consumer) is False:
             return {"idle": True, "service": "absent"}

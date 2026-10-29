@@ -162,7 +162,8 @@ def _spawn(command, stdin, env, cwd):
         try:
             _own_windows_tree(process)
             _resume_windows_process(process)
-        except OSError:
+        except BaseException:
+            # A suspended child is still owned when startup is interrupted.
             _kill_tree(process)
             process.wait(timeout=5)
             process.stdout.close()
@@ -387,6 +388,10 @@ def _cleanup_process(process, pgid, captured):
     try:
         _kill_tree(process, pgid)
         process.wait(timeout=2.0)
+    except TimeoutError as exc:
+        if captured is None:
+            raise
+        captured.cleanup_error = f"{type(exc).__name__}: {exc}"[:400]
     except (OSError, subprocess.SubprocessError) as exc:
         if captured is None:
             raise

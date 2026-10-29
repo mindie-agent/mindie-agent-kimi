@@ -12,6 +12,7 @@ and binds itself so monkeypatches keep resolving through it.
   exact wrapper action.
 - Uninstall reports success only after the scheduler state is observed absent.
 - The generated wrapper covers the 1210s launcher budget plus 10s cleanup.
+- Scheduler dispatch requires the actual native commands, independent of OS labels.
 
 [Timeouts & Locks]
 - `subprocess.run(..., timeout=1220)` in the generated wrapper; `_native_run`
@@ -28,8 +29,8 @@ from datetime import datetime, timedelta
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
-import sys
 import time
 import xml.etree.ElementTree as ET
 
@@ -59,6 +60,15 @@ def _h(name):
         except AttributeError:
             pass
     return globals()[name]
+
+
+def _scheduler_backend():
+    """Select only schedulers whose registration and readback commands exist."""
+    if shutil.which("launchctl") and callable(getattr(os, "getuid", None)):
+        return "launchd"
+    if shutil.which("schtasks") and shutil.which("powershell"):
+        return "task-scheduler"
+    return None
 
 
 def _wrapper_body(command) -> str:
@@ -174,7 +184,8 @@ def install_schedule(config_file=None) -> int:
     command = _h("schedule_command")(launcher, config_file)
     from mindie_diagnostics.service_environment import prepare
     prepare(_h("update_dir")(adapter))
-    if sys.platform == "darwin":
+    backend = _scheduler_backend()
+    if backend == "launchd":
         import plistlib
 
         plist = Path.home() / "Library" / "LaunchAgents" / "agent.mindie.kimi-update.plist"
@@ -202,7 +213,7 @@ def install_schedule(config_file=None) -> int:
         _h("bounded_run")(["launchctl", "bootstrap", f"gui/{uid}", str(plist)], "", timeout=15)
         print(json.dumps({"result": "scheduled", "agent": str(plist), "interval_seconds": _h("INTERVAL_SECONDS")}))
         return 0
-    if os.name == "nt":
+    if backend == "task-scheduler":
         print(json.dumps(_h("_register_windows_schedule")(adapter, command)))
         return 0
     print(
@@ -344,7 +355,8 @@ def _uninstall_task(task):
 
 
 def uninstall_schedule(*, label=None, plist_path=None, schedule_root=None, task=None) -> int:
-    if sys.platform == "darwin":
+    backend = _scheduler_backend()
+    if backend == "launchd":
         label = label or "agent.mindie.kimi-update"
         if plist_path is not None:
             plist = Path(plist_path).expanduser().absolute()
@@ -352,7 +364,7 @@ def uninstall_schedule(*, label=None, plist_path=None, schedule_root=None, task=
             root = Path(schedule_root).expanduser().absolute() if schedule_root else Path.home() / "Library" / "LaunchAgents"
             plist = root / (label + ".plist")
         return _h("_uninstall_launchd")(label, plist)
-    if os.name == "nt":
+    if backend == "task-scheduler":
         return _h("_uninstall_task")(task or "MindIEKimiUpdate")
     print(
         json.dumps({

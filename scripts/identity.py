@@ -373,6 +373,8 @@ def _current_skill_activation(origin, command):
     expected = (plugin_root_from_env() / "skills" / PLUGIN_ID / "SKILL.md").resolve()
     try:
         actual = Path(skill_path).resolve()
+    except TimeoutError:
+        raise
     except (OSError, ValueError):
         raise ValueError("skill activation path is not usable") from None
     if actual != expected:

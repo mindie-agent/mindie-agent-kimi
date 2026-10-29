@@ -2,10 +2,9 @@
 """Stable MindIE launcher outside committed generations for Kimi Hook/MCP/Updater.
 
 [Role]
-Serves as the stable command entrypoint referenced by installed Kimi plugin
-manifests (`hook <pretool|stop>`, `mcp <knowledge|remote|components>`, `updater <op>`).
-Selects the active committed generation from `<state_dir>/update/current.json`
-under the shared `operation.lock` and dispatches one-shot children.
+Launches native hooks, MCP calls, and updater commands from the committed
+generation selected by `<state_dir>/update/current.json` under the shared
+`operation.lock`; installed manifests point only to this stable entrypoint.
 
 [Invariants]
 - `current.json` holds the atomic generation tuple `{generation, python,
@@ -231,6 +230,8 @@ def _shared_lock(state: Path, deadline: float, cancel=None):
                 _try_lock_shared(descriptor)
                 acquired = True
                 return descriptor
+            except TimeoutError:
+                raise
             except OSError:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -546,6 +547,8 @@ def _dispatch(surface: str, raw: bytes, ident, cancel=None):
             raise
         except bounded.CommandTimedOut as exc:
             raise _dispatch_failure(current, "helper_deadline", "child_deadline", exc, started) from None
+        except TimeoutError:
+            raise
         except Exception as exc:
             raise _dispatch_failure(current, "helper_failed", "child_failure", exc, started) from None
         if cancel is not None and cancel.is_set():

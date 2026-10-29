@@ -63,6 +63,10 @@ def test_manifest_launch_discovers_schema_and_executes_real_profiler(adapter):
     inventory = result["structuredContent"]["result"]
     assert inventory["rank_count"] == 1
     assert inventory["ranks"][0]["files"]
+    invalid = call("profiler", {"argv": ["invalid-component-operation"]})
+    assert invalid["isError"]
+    assert invalid["structuredContent"]["exit_code"] == 2
+    assert "unknown command 'invalid-component-operation'" in invalid["structuredContent"]["stderr"]
     assert not Path(json.loads(config.read_text())["engine_config"]).exists()
 
 
@@ -89,22 +93,21 @@ def test_real_coordinator_and_local_diagnostics_need_no_knowledge(adapter, tmp_p
     assert output.is_file()
 
 
-def test_real_sim_preserves_output_file_and_failure_details(adapter, tmp_path, monkeypatch):
+def test_real_profiler_preserves_output_file_and_failure_details(adapter, tmp_path, monkeypatch):
     # Native hosts need not inherit the virtualenv's PATH; the adapter resolves
     # its installed sibling CLI from the configured interpreter.
     monkeypatch.setenv("PATH", str(tmp_path / "no-path"))
-    output = tmp_path / "models.json"
-    result = call("sim", {"argv": ["models", "--output", output.name],
+    output = tmp_path / "inventory.json"
+    result = call("profiler", {"argv": ["inventory", "--root", str(ROOT / "tests/fixtures/profiler/rank_0"), "--output", output.name],
                           "max_output_tokens": 65536})
     assert not result["isError"], result
-    models = json.loads(output.read_text())["models"]
-    assert models and all(model["layers"] > 0 for model in models)
-    result = call("sim", {"argv": ["model-info"]})
+    assert json.loads(output.read_text())["rank_count"] == 1
+    result = call("profiler", {"argv": ["inventory"]})
     assert result["isError"]
     payload = result["structuredContent"]
     assert payload["exit_code"] == 2
     assert payload["stdout"] == ""
-    assert "--key" in payload["stderr"]
+    assert "--root" in payload["stderr"]
 
 
 def test_completed_cli_keeps_receipt_when_local_cleanup_times_out(adapter, tmp_path, monkeypatch):
@@ -118,10 +121,10 @@ def test_completed_cli_keeps_receipt_when_local_cleanup_times_out(adapter, tmp_p
 
     monkeypatch.setattr(bounded, "_kill_tree", delayed_cleanup)
     output = tmp_path / "completed.json"
-    result = call("sim", {"argv": ["models", "--output", output.name],
+    result = call("profiler", {"argv": ["inventory", "--root", str(ROOT / "tests/fixtures/profiler/rank_0"), "--output", output.name],
                           "max_output_tokens": 65536})
     assert not result["isError"], result
-    assert json.loads(output.read_text())["models"]
+    assert json.loads(output.read_text())["rank_count"] == 1
     payload = result["structuredContent"]
     assert payload["exit_code"] == 0
     assert payload["cleanup_status"] == "failed"
@@ -135,20 +138,20 @@ def test_native_working_directory_and_profile_component_override(adapter, tmp_pa
     value = json.loads(config.read_text())
     profile = tmp_path / "profile.json"
     profile.write_text(json.dumps({"component_commands": {
-        "sim": [sys.executable, "-I", "-m", "mindie_sim"],
+        "profiler": [sys.executable, "-I", "-m", "mindie_profiler"],
     }}))
-    value["component_commands"] = {"sim": [str(tmp_path / "stale-generation-cli")]}
+    value["component_commands"] = {"profiler": [str(tmp_path / "stale-generation-cli")]}
     value["profile_config"] = str(profile)
     config.write_text(json.dumps(value))
     project = tmp_path / "project"
     project.mkdir()
     write_session(Path(os.environ["KIMI_CODE_HOME"]), "ordinary-session", [], cwd=project)
-    arguments = {"argv": ["models", "--output", "native-models.json"],
+    arguments = {"argv": ["inventory", "--root", str(ROOT / "tests/fixtures/profiler/rank_0"), "--output", "native-inventory.json"],
                  "max_output_tokens": 65536}
-    result = component_tools.execute("sim", arguments, "ordinary-session")
+    result = component_tools.execute("profiler", arguments, "ordinary-session")
     assert not result["isError"], result
-    assert json.loads((project / "native-models.json").read_text())["models"]
-    assert not (tmp_path / "native-models.json").exists()
+    assert json.loads((project / "native-inventory.json").read_text())["rank_count"] == 1
+    assert not (tmp_path / "native-inventory.json").exists()
 
 
 def test_factual_status_nonce_requires_no_manual_entry(adapter, tmp_path):
@@ -221,3 +224,110 @@ def test_interrupted_component_keeps_partial_report_without_replay(adapter, tmp_
     assert [json.loads(line) for line in (tmp_path / "receipts.jsonl").read_text().splitlines()] == [
         {"phase": "inventory"},
     ]
+
+
+@pytest.fixture
+def sim_gate(adapter):
+    # The new model contract may be tested before its independent release;
+    # an explicit installed interpreter never replaces the plugin runtime.
+    runtime = os.environ.get("MINDIE_SIM_CONTRACT_PYTHON")
+    if runtime is None:
+        import importlib.metadata
+        from packaging.version import Version
+        if Version(importlib.metadata.version("mindie-sim")) < Version("0.8.0"):
+            pytest.skip("new sim contract requires MINDIE_SIM_CONTRACT_PYTHON (sim >= 0.8)")
+        runtime = sys.executable
+    value = json.loads(adapter.read_text())
+    value.setdefault("component_commands", {})["sim"] = [runtime, "-I", "-m", "mindie_sim"]
+    adapter.write_text(json.dumps(value))
+    return call
+
+
+@pytest.fixture
+def sim_case(tmp_path):
+    path = tmp_path / "case.json"
+    path.write_text(json.dumps({
+        "machine": {
+            "name": "synthetic-cli-control", "num_devices": 1,
+            "device": {"memory_bytes": 1024**3, "compute_units": 4,
+                       "compute_peaks": {"bf16": 16e9, "fp32": 8e9},
+                       "rates": {"memory": 8e9, "vector": 4e9}},
+        },
+        "model": {"name": "control", "layers": 1, "hidden_size": 32,
+                  "num_heads": 4, "num_kv_heads": 2, "head_dim": 8,
+                  "intermediate_size": 64, "vocab_size": 128},
+        "workload": {"requests": [{"id": "r", "prompt_tokens": 4, "output_tokens": 2}]},
+        "runtime": {"max_num_batched_tokens": 8, "max_model_len": 128, "graph_mode": "none"},
+    }))
+    return path
+
+
+def test_sim_installed_cli_keeps_operator_graph_and_serving_boundaries(sim_gate, sim_case, tmp_path):
+    operators = sim_gate("sim", {"argv": [
+        "operators", str(sim_case), "--phase", "prefill", "--tokens", "4", "--scope", "model",
+    ]})
+    assert not operators["isError"], operators
+    isolated = operators["structuredContent"]["result"]
+    assert isolated["boundary"] == "sum_of_isolated_device_programs"
+    graph_path = tmp_path / "graph.json"
+    graph = sim_gate("sim", {"argv": [
+        "graph", str(sim_case), "--phase", "prefill", "--tokens", "4",
+        "--scope", "model", "--output", str(graph_path),
+    ]})
+    assert not graph["isError"], graph
+    assert graph["structuredContent"]["stdout"] == ""
+    result = json.loads(graph_path.read_text())
+    assert result["boundary"] == "device_graph"
+    assert result["operator_occurrences"] == isolated["operator_occurrences"]
+    assert result["isolated"]["operator_sum_ms"] == pytest.approx(isolated["operator_sum_ms"])
+    prediction_path = tmp_path / "prediction.json"
+    serving = sim_gate("sim", {"argv": [
+        "predict", str(sim_case), "--output", str(prediction_path),
+    ]})
+    assert not serving["isError"], serving
+    prediction = json.loads(prediction_path.read_text())
+    assert prediction["metric_boundary"] == "device_token_commit"
+    assert prediction["requests"][0]["generated_tokens"] == 2
+
+
+def test_sim_preserves_real_cli_error_and_exit_status(sim_gate, tmp_path):
+    bad = sim_gate("sim", {"argv": [
+        "graph", str(tmp_path / "absent.json"), "--phase", "prefill", "--tokens", "4",
+    ]})
+    assert bad["isError"]
+    value = bad["structuredContent"]
+    assert value["exit_code"] == 2
+    assert value["stdout"] == ""
+    error = json.loads(value["stderr"])
+    assert error["status"] == "failed"
+    assert str(tmp_path / "absent.json") in error["error"]
+
+
+def test_sim_partial_study_keeps_success_and_failure_in_the_nonzero_cli_result(
+    sim_gate, sim_case, tmp_path,
+):
+    manifest = tmp_path / "study.json"
+    manifest.write_text(json.dumps({
+        "candidates": [
+            {"id": "ordinary", "case": sim_case.name},
+            {"id": "unavailable", "case": sim_case.name, "overrides": {
+                "runtime": {"kernels": {"lowerings": {
+                    "gqa_attention": "unavailable_source_implementation",
+                }}},
+            }},
+        ],
+        "probes": [{"id": "prefill", "phase": "prefill", "tokens": 4}],
+    }))
+    response = sim_gate("sim", {"argv": ["study", str(manifest)]})
+    assert response["isError"]
+    value = response["structuredContent"]
+    assert value["exit_code"] == 2
+    report = value["result"]
+    assert report["status"] == "partial"
+    evaluations = {row["candidate"]: row for row in report["evaluations"]}
+    assert evaluations["ordinary"]["status"] == "modeled"
+    assert evaluations["ordinary"]["operators"]["operator_sum_ms"] > 0
+    assert evaluations["unavailable"]["status"] == "failed"
+    assert "unavailable_source_implementation" in evaluations["unavailable"]["error"]
+    assert {row["candidate"] for ranking in report["rankings"]
+            for row in ranking["candidates"]} == {"ordinary"}

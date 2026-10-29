@@ -66,5 +66,7 @@ def _close_failure_recorders():
     for recorder in recorders:
         try:
             recorder.close()
+        except TimeoutError:
+            raise
         except Exception:
             pass

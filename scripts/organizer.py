@@ -119,6 +119,8 @@ def _profile():
         raise ProfileUnavailableError(
             "native Kimi config.toml is missing; the summary worker cannot resolve a model"
         ) from exc
+    except TimeoutError:
+        raise
     except (OSError, ValueError) as exc:
         raise ProfileUnavailableError("native provider settings are unavailable") from exc
     providers = parsed.get("providers") if isinstance(parsed.get("providers"), dict) else {}
@@ -286,6 +288,8 @@ def _invoke_native(prompt, receipt, *, instruction=INSTRUCTION, agent_text=None,
                 cwd=str(isolated), max_output=max_output,
             )
             receipt["native_started"] = True
+        except TimeoutError:
+            raise
         except OSError as exc:
             raise NativeStartError("native executable could not start") from exc
         except (CommandTimedOut, OutputLimitExceeded):

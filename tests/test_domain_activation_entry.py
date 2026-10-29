@@ -227,6 +227,8 @@ class DomainActivationEntryTests(unittest.TestCase):
                 try:
                     shared_rpc(service.connection, "status", timeout=0.5)
                     break
+                except TimeoutError:
+                    raise
                 except Exception:
                     if not thread.is_alive():
                         self.fail("in-process knowledge service exited during startup")
