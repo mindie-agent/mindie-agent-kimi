@@ -8,6 +8,9 @@ transport error classification (`classify_transport_text`).
 
 [Invariants]
 - Never retries failed or timed-out commands.
+- `capture_result=True` retains both streams and the exit code for CLI tools;
+  interrupted attempts expose the bounded output prefix on their exception.
+  The existing string-returning contract remains the default.
 - When `MINDIE_MAINTENANCE_GROUP=1` is set and the current process leads its
   process group, POSIX children remain in the parent group and only the direct
   child is killed on cleanup; otherwise POSIX uses `start_new_session=True` and
@@ -213,7 +216,8 @@ class _Cap:
         self.max_output = max_output
         self.size = 0
 
-    def add(self, chunk):
+    def add(self, dest, chunk):
+        dest.extend(chunk[:max(0, self.max_output - self.size)])
         self.size += len(chunk)
         if self.size > self.max_output:
             raise OutputLimitExceeded("output exceeds the bound")
@@ -379,13 +383,26 @@ def _attach_transport(exc, stdout, stderr, *, timed_out):
         exc.category = "temporary_network"
 
 
-def _run_posix(process, timeout, max_output, pgid, check, cancel, transport=False):
+def _cleanup_process(process, pgid, captured):
+    try:
+        _kill_tree(process, pgid)
+        process.wait(timeout=2.0)
+    except (OSError, subprocess.SubprocessError) as exc:
+        if captured is None:
+            raise
+        # Preserve the observed command outcome, including partial output.
+        # A separate local cleanup failure is never a reason to replay it.
+        captured.cleanup_error = f"{type(exc).__name__}: {exc}"[:400]
+
+
+def _run_posix(process, timeout, max_output, pgid, check, cancel, transport=False, capture_result=False):
     selector = selectors.DefaultSelector()
     selector.register(process.stdout, selectors.EVENT_READ, "out")
     selector.register(process.stderr, selectors.EVENT_READ, "err")
     deadline = time.monotonic() + timeout
     output = bytearray()
     errors = bytearray()
+    captured = None
     cap = _Cap(max_output)
 
     def timeout_error():
@@ -422,11 +439,7 @@ def _run_posix(process, timeout, max_output, pgid, check, cancel, transport=Fals
                     if not chunk:
                         selector.unregister(key.fileobj)
                         continue
-                    cap.add(chunk)
-                    if key.data == "out":
-                        output.extend(chunk)
-                    else:
-                        errors.extend(chunk)
+                    cap.add(output if key.data == "out" else errors, chunk)
                 continue
             try:
                 process.wait(timeout=min(0.05, remaining))
@@ -447,26 +460,32 @@ def _run_posix(process, timeout, max_output, pgid, check, cancel, transport=Fals
             raise CommandCancelled("command cancelled")
         if check and process.returncode:
             raise failed_error()
-        return output.decode("utf-8", "replace")
+        stdout = output.decode("utf-8", "replace")
+        if capture_result:
+            captured = subprocess.CompletedProcess(
+                process.args, process.returncode, stdout, errors.decode("utf-8", "replace")
+            )
+            return captured
+        return stdout
+    except (CommandCancelled, TimeoutError, subprocess.TimeoutExpired, OutputLimitExceeded) as exc:
+        _failed_result(exc, output, errors, process.poll())
+        if capture_result:
+            captured = exc
+        raise
     finally:
-        _kill_tree(process, pgid)
         try:
-            process.wait(timeout=2.0)
-        except subprocess.TimeoutExpired:
-            _kill_tree(process, pgid)
-            try:
-                process.wait(timeout=2.0)
-            except subprocess.TimeoutExpired:
-                pass
-        selector.close()
-        process.stdout.close()
-        process.stderr.close()
+            _cleanup_process(process, pgid, captured)
+        finally:
+            selector.close()
+            process.stdout.close()
+            process.stderr.close()
 
 
-def _run_windows(process, timeout, max_output, pgid, check, cancel, transport=False):
+def _run_windows(process, timeout, max_output, pgid, check, cancel, transport=False, capture_result=False):
     deadline = time.monotonic() + timeout
     output = bytearray()
     errors = bytearray()
+    captured = None
     cap = _Cap(max_output)
     lock = threading.Lock()
     failure = []
@@ -474,12 +493,11 @@ def _run_windows(process, timeout, max_output, pgid, check, cancel, transport=Fa
     def reader(stream, dest):
         try:
             while True:
-                chunk = stream.read(_CHUNK)
+                chunk = stream.read1(_CHUNK)
                 if not chunk:
                     return
                 with lock:
-                    cap.add(chunk)
-                    dest.extend(chunk)
+                    cap.add(dest, chunk)
         except (ValueError, OutputLimitExceeded) as exc:
             failure.append(exc)
 
@@ -520,17 +538,27 @@ def _run_windows(process, timeout, max_output, pgid, check, cancel, transport=Fa
             if transport:
                 _attach_transport(err, output, errors, timed_out=False)
             raise err
-        return bytes(output).decode("utf-8", "replace")
+        stdout = bytes(output).decode("utf-8", "replace")
+        if capture_result:
+            captured = subprocess.CompletedProcess(
+                process.args, process.returncode, stdout, bytes(errors).decode("utf-8", "replace")
+            )
+            return captured
+        return stdout
+    except (CommandCancelled, TimeoutError, subprocess.TimeoutExpired, OutputLimitExceeded) as exc:
+        with lock:
+            _failed_result(exc, output, errors, process.poll())
+        if capture_result:
+            captured = exc
+        raise
     finally:
-        _kill_tree(process, pgid)
         try:
-            process.wait(timeout=2.0)
-        except subprocess.TimeoutExpired:
-            pass
-        for thread in threads:
-            thread.join(timeout=2.0)
-        process.stdout.close()
-        process.stderr.close()
+            _cleanup_process(process, pgid, captured)
+        finally:
+            for thread in threads:
+                thread.join(timeout=0.1)
+            process.stdout.close()
+            process.stderr.close()
 
 
 def run(
@@ -544,6 +572,7 @@ def run(
     check=True,
     cancel=None,
     transport=False,
+    capture_result=False,
 ):
     if (
         not isinstance(argv, (list, tuple)) or not argv
@@ -576,9 +605,9 @@ def run(
         atexit.register(cleanup)
         try:
             if POSIX:
-                result = _run_posix(process, timeout, max_output, pgid, check, cancel, transport)
+                result = _run_posix(process, timeout, max_output, pgid, check, cancel, transport, capture_result)
             else:
-                result = _run_windows(process, timeout, max_output, pgid, check, cancel, transport)
+                result = _run_windows(process, timeout, max_output, pgid, check, cancel, transport, capture_result)
             if _cancelled(cancel):
                 raise CommandCancelled("command cancelled")
             return result
@@ -590,8 +619,10 @@ def run(
             retry_after = getattr(exc, "retry_after", None)
             if transport and category is None:
                 category = "temporary_network"
-            if category:
-                raise CommandTimedOut(message, category=category, retry_after=retry_after) from None
-            raise CommandTimedOut(message) from exc
+            error = CommandTimedOut(message, category=category, retry_after=retry_after)
+            for name in ("mindie_output", "mindie_stderr", "returncode", "reason", "cleanup_error"):
+                if hasattr(exc, name):
+                    setattr(error, name, getattr(exc, name))
+            raise error from exc
         finally:
             atexit.unregister(cleanup)

@@ -6,20 +6,17 @@ disableModelInvocation: true
 
 # MindIE Agent (Unified Entry)
 
-Use `/mindie-agent` to enable knowledge and experience for the current session.
-Never invoke this skill from topic matching. The entire knowledge flywheel,
-including sync and Stop capture, requires the user's explicit entry in this
-task. New chats, forks and subagents do not inherit activation. Contribution
-consent and project scope are additional capture conditions, never activation.
+Use `/mindie-agent` to enable domain knowledge and experience capture for the current Kimi session.
+Never invoke this skill from topic matching. The entire knowledge flywheel—including `knowledge_query`, `knowledge_explain`, `knowledge_feedback`, `knowledge_distill`, `knowledge_sync`, and `Stop` background capture—requires the user's explicit `/mindie-agent` entry in this task. New chats, forks, and subagents do not inherit activation. Contribution consent and project scope are additional capture conditions, never activation.
 
-Configured deterministic tools (resource probes/leases, monitoring, profiling,
-simulation calculations, local diagnostics and factual status checks) remain
-available without this entry, just like remote-dev. Their normal interfaces
-do not require loading knowledge or experience context.
+Remote and component tools remain available by default without `/mindie-agent`:
+
+- `remote` MCP tools for remote file read/write, command execution, and background job management over SSH.
+- `components` MCP tools: `mindie_status`, `diagnostics_status`, and `diagnostics_bundle` (included in the plugin runtime; local-only without uploading bundles), plus `coordinator`, `profiler`, and `sim` (which run the optional `mindie-coordinator`, `mindie-profiler`, and `mindie-sim` CLIs with an `argv` array when installed or configured in `component_commands`, returning `status`, `exit_code`, `stdout`, `stderr`, and parsed `result` only when `stdout` is JSON). `npu-top` is for human terminal use and is not an MCP tool.
 
 1. **Bind & Initialize on Invocation (`request_nonce` on Every Call)**:
    - When `/mindie-agent` is invoked in the current native Kimi task, call `mindie_entry` **exactly once** with `op=init` (plus optional `domain="<domain>"` when explicitly activating a registered target domain for distillation/writes under its own consent and scope) and a fresh `request_nonce`. Never pass or fabricate a session ID (`${KIMI_SESSION_ID}` in text is not a capability).
-   - Every subsequent knowledge (`knowledge_query`, `knowledge_explain`, `knowledge_feedback`, `knowledge_distill`, `knowledge_sync`) and remote MCP call MUST also include a fresh `request_nonce`.
+   - Every subsequent `knowledge` (`knowledge_query`, `knowledge_explain`, `knowledge_feedback`, `knowledge_distill`, `knowledge_sync`), `remote`, and `components` MCP call MUST also include a fresh `request_nonce`.
 2. **Experience Loop After Manual Session Entry**:
    - In this explicitly enabled session, when the unified contribution choice and approved project scope allow capture, eligible `Stop` events run **automatically in the background**. Later turns retain the grant; reuse the saved contribution choice without asking again.
    - Inspect `first_use` and `reporting_activation` from the entry response. Preserve saved `disabled`, `later`, and `read-only` choices without prompting. If no choice exists, present the [contribution notice](references/user-notice.md) once and accept `contribute` or `disabled`. For a first conversational contribution choice, call `op=choose` only with the public `owner/repo` and GitHub account the user supplied in that reply.

@@ -7,9 +7,10 @@ Bridges native Kimi Hook/MCP/Skill surfaces to shared first-party runtime compon
 
 | Module | Responsibility | Key Entrypoints / State |
 | :--- | :--- | :--- |
-| `mindie_launch.py` | Stable front launcher outside committed generations (`hook`, `mcp`, `updater`) | `<state_dir>/update/current.json`, `operation.lock` |
+| `mindie_launch.py` & `launch_budget.py` | Stable front launcher outside committed generations (`hook`, `mcp`, `updater`) and pure deadline arithmetic | `<state_dir>/update/current.json`, `operation.lock` |
 | `bridge.py` | Native Kimi `PreToolUse` (`pretool`) and `Stop` (`stop`) hook bridge | `handle_pretool()`, `handle_stop()`, `capture_hook` |
-| `mcp_server.py` | JSON-RPC 2.0 MCP server for `knowledge` (requires `Admission.knowledge_lease(session)`) and `remote` surfaces (available without `/mindie-agent`) | `handle()`, `serve()`, `serve_once()` |
+| `mcp_server.py` & `mcp_catalog.py` | JSON-RPC 2.0 MCP dispatch/catalog for manually enabled `knowledge` and default-on `remote`/`components` | `handle()`, `serve()`, `serve_once()` |
+| `component_tools.py` & `knowledge_sync.py` | Thin bounded CLI calls for optional deterministic components and explicitly authorized feed sync | `component_commands`, installed CLI beside configured Python or on `PATH` |
 | `identity.py` | Session directory lookup, turn-origin verification, and one-shot nonce binds | `require_current_entry()`, `publish_nonce_bind()`, `claim_nonce()`, `mcp-binds.sqlite3` |
 | `entry.py` & `entry_state.py` | `/mindie-agent` unified entry and slash command operations (`init`, `choose`, `status`, `recover`); `op_status` returns factual `status_facts` without command-origin gating or onboarding prompts | `dispatch()`, `status_facts()`, `status_payload()`, `consume_activation_id()` |
 | `admission.py` & `sharing.py` | Task admission lease helpers (`knowledge_lease`, `entry_enabled=1`) and community sharing status/configuration | `admission.sqlite3`, `mindie-community.json` |
@@ -44,6 +45,9 @@ Bridges native Kimi Hook/MCP/Skill surfaces to shared first-party runtime compon
 ## 4. Fast Verification Commands
 
 ```bash
-# Run the full test suite with the pinned verification environment:
-/Volumes/data/code/mindie-release-20261014/codex-interrupt-final-env-20261016/bin/python -m pytest
+# Create the same installed dependency environment used by checks and releases:
+uv venv --python 3.13
+uv pip install -r runtime-requirements.txt -r test-requirements.txt --overrides runtime-active-overrides.txt
+.venv/bin/python tests/preflight.py
+.venv/bin/python -m pytest -q -o "pythonpath=tests scripts" tests
 ```

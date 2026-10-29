@@ -4,7 +4,7 @@
 [Role]
 Pins and probes a candidate generation's runtime, materializes generation
 adapter/engine configs, builds the native host package with the versioned
-launcher, and stages or removes owned generation trees. `updater.py` re-exports
+launcher, repairs incomplete native packages, and stages owned generation trees. `updater.py` re-exports
 these helpers and binds itself so monkeypatches keep resolving through it.
 
 [Invariants]
@@ -16,15 +16,17 @@ these helpers and binds itself so monkeypatches keep resolving through it.
 
 [Timeouts & Locks]
 - All subprocess work is bounded by the caller deadline with `RESERVE` held
-  back; no module-level lock is acquired here.
+  back; package repair holds the existing exclusive operation lock after idle.
 
 [Side-Effect Policy]
 - Writes only under `update/generations/<sha>`, `update/launch/<sha>`, and the
   caller-provided host-package directory; removal only targets owned trees.
+- Repair reuses native install/readback and rollback before recording completion.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -32,6 +34,7 @@ import shlex
 import shutil
 import stat
 import sys
+import time
 from pathlib import Path
 
 try:
@@ -258,8 +261,8 @@ def build_host_package(
     launcher_dir = _h("launch_dir")(adapter) / sha
     launcher_dir.mkdir(parents=True, exist_ok=True)
     launcher = launcher_dir / _h("LAUNCHER")
-    if not launcher.is_file():
-        for name in (_h("LAUNCHER"), "bounded.py", "diagnostic_support.py", "paths.py"):
+    for name in (_h("LAUNCHER"), "bounded.py", "diagnostic_support.py", "paths.py", "launch_budget.py"):
+        if not (launcher_dir / name).is_file():
             shutil.copy2(generation / "scripts" / name, launcher_dir / name)
     for name in ("updater.py", "updater_check.py", "updater_schedule.py", "updater_staging.py"):
         source = generation / "scripts" / name
@@ -280,7 +283,7 @@ def build_host_package(
         front = _h("_write_front_wrapper")(package, Path(base_python))
         front_env = None
     bound = ["--config", str(config_file)]
-    for surface in ("knowledge", "remote"):
+    for surface in manifest["mcpServers"]:
         previous = manifest["mcpServers"].get(surface)
         # Rebuild only the native launch fields; everything else the host
         # accepts (cwd, toolTimeoutMs, future host fields) stays byte-for-byte
@@ -321,6 +324,138 @@ def build_host_package(
         if not path.exists():
             _h("atomic_write")(path, metadata)
     return package
+
+
+def _host_package_metadata(package: Path) -> dict:
+    path = Path(package) / "kimi.plugin.json"
+    manifest = _h("read_json")(path) or {}
+    servers = manifest.get("mcpServers") or {}
+    remote = servers.get("remote") or {}
+    return {
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "version": manifest.get("version"),
+        "remote_timeout_ms": remote.get("toolTimeoutMs"),
+        "remote_profile": (remote.get("env") or {}).get("REMOTE_DEV_HARNESS_PROFILE"),
+        "bound_mcp_surfaces": sorted(
+            name for name, server in servers.items()
+            if server.get("args", [])[-2:] == ["mcp", name]
+        ),
+    }
+
+
+def _mark_host_package(receipt_path: Path, package: Path) -> None:
+    receipt = _h("read_json")(receipt_path)
+    if not isinstance(receipt, dict):
+        receipt = {}
+    receipt["host_package"] = _h("_host_package_metadata")(package)
+    _h("atomic_write")(receipt_path, receipt)
+
+
+def _swap_host_package(staging: Path, destination: Path) -> Path | None:
+    """Publish a fully built repair package and return the previous backup."""
+    backup = destination.with_name(destination.name + ".repair-previous")
+    if backup.exists():
+        _h("_remove_owned_tree")(backup)
+    if destination.exists():
+        os.replace(destination, backup)
+    try:
+        os.replace(staging, destination)
+    except Exception:
+        if backup.exists() and not destination.exists():
+            os.replace(backup, destination)
+        raise
+    return backup if backup.exists() else None
+
+
+def _restore_host_package(destination: Path, backup: Path | None) -> None:
+    if backup is None or not backup.exists():
+        return
+    if destination.exists():
+        _h("_remove_owned_tree")(destination)
+    os.replace(backup, destination)
+
+
+def repair_host_package(adapter: dict, current: dict, deadline: float,
+                        install, idle=None, lock_timeout: float = 30.0):
+    """Rebuild and reinstall incomplete packages written by older updaters.
+
+    0.1.2/0.1.3 receipts lack a `host_package` marker; later builders only bound
+    knowledge/remote and left newly declared surfaces pointing at absent
+    package scripts. A verified receipt records the surfaces actually bound
+    to the stable launcher. The replacement is built
+    in an inactive sibling first, then published under the same exclusive
+    switch lock after an idle check. If install fails, the previous package is
+    restored; the old generation tree and running host sessions are untouched.
+    """
+    sha = current.get("sha")
+    if not isinstance(sha, str) or re.fullmatch(_h("SHA"), sha) is None:
+        return None
+    receipt_path = _h("receipts_dir")(adapter) / f"{sha}.json"
+    receipt = _h("read_json")(receipt_path)
+    if not isinstance(receipt, dict) or receipt.get("sha") != sha:
+        return None
+    generation = Path(current["generation"])
+    if not (generation / "kimi.plugin.json").is_file():
+        return None
+    source_manifest = _h("read_json")(generation / "kimi.plugin.json")
+    marker = receipt.get("host_package") or {}
+    if marker.get("bound_mcp_surfaces") == sorted(source_manifest["mcpServers"]):
+        return None
+    destination = generation / "host-package"
+    staging = generation / f".host-package-repair-{os.getpid()}"
+    if staging.exists():
+        _h("_remove_owned_tree")(staging)
+    stopped = False
+    try:
+        package = _h("build_host_package")(
+            generation, adapter, sha, package_dir=staging,
+            config_file=Path(current["adapter_config"]),
+        )
+        wait = min(lock_timeout, deadline - time.monotonic())
+        if wait <= 0:
+            raise _h("LockTimeout")("no time left for the native package repair")
+        with _h("OperationLock")(adapter).exclusive(timeout=wait):
+            active = _h("read_json")(_h("current_path")(adapter)) or {}
+            if (active.get("sha") != sha
+                    or active.get("generation") != str(generation)):
+                return None
+            if idle is not None:
+                idle_result = idle(adapter, current, deadline)
+                if (isinstance(idle_result, dict)
+                        and type(idle_result.get("idle")) is bool
+                        and idle_result["idle"] is False):
+                    raise _h("Deferred")("knowledge service is active; package repair deferred")
+                stopped = (isinstance(idle_result, dict)
+                           and idle_result.get("service") == "stopped")
+            backup = _h("_swap_host_package")(package, destination)
+            try:
+                install(adapter, destination, deadline,
+                        reserve=_h("FEED_BUDGET") + _h("HANDOFF_BUDGET"))
+            except Exception:
+                _h("_restore_host_package")(destination, backup)
+                # Restoring source JSON is not enough: Kimi registers parsed
+                # MCP/hook definitions. Re-apply the previous package through
+                # the existing native install/readback and only then permit
+                # stopped-service restoration. If rollback is unproven, keep
+                # the explicit failure and do not claim the old service is
+                # safely restored.
+                restored = _h("_rollback_native")(adapter, current, install, deadline)
+                if stopped:
+                    _h("_restore_stopped_service")(
+                        adapter, current if restored else None, deadline,
+                    )
+                    stopped = False
+                raise
+            if backup is not None:
+                _h("_remove_owned_tree")(backup)
+            _h("_mark_host_package")(receipt_path, destination)
+            if stopped:
+                _h("_restore_stopped_service")(adapter, current, deadline)
+                stopped = False
+    finally:
+        if staging.exists():
+            _h("_remove_owned_tree")(staging)
+    return destination
 
 
 def _remove_owned_tree(path):

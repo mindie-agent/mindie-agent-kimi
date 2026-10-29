@@ -40,8 +40,8 @@ MindIE Agent combines **manual on-demand activation for domain knowledge & skill
 
 | Capability | Trigger Mode | When to Use | How to Trigger |
 | :--- | :--- | :--- | :--- |
-| **Experience, Knowledge & Skill System**<br/>(`mindie-knowledge` + `mindie-agent` Skill) | **🎯 Manual Per-Session Trigger** | When designing Ascend AI Infra features, developing in `vLLM-Ascend`, writing `AscendC` / `Triton` kernels, authoring unit/accuracy tests, or tuning performance | Explicitly type **`/mindie-agent` + your task description** once in the current session to enable knowledge search, feedback, distillation, and sync across subsequent turns (`/mindie-agent:deactivate` turns it off for the session) |
-| **Remote Ascend NPU Dev & Testing**<br/>(`remote-dev` MCP toolset + factual status) | **⚡ Default Auto-Trigger** | When syncing local code/tests to a remote Ascend server/container, running NPU builds/tests, checking `npu-smi`, or tailing long job logs | **No slash command needed**—just describe the remote task in natural language |
+| **Experience, Knowledge & Skill System**<br/>(`mindie-knowledge` + `mindie-agent` Skill) | **🎯 Manual Per-Session Trigger** | When designing Ascend AI Infra features, developing in `vLLM-Ascend`, writing `AscendC` / `Triton` kernels, authoring unit/accuracy tests, or tuning performance | Explicitly type **`/mindie-agent` + your task description** once in the current session to enable knowledge search (`knowledge_query` / `knowledge_explain`), feedback (`knowledge_feedback`), distillation (`knowledge_distill`), and sync (`knowledge_sync`) across subsequent turns (`/mindie-agent:deactivate` turns it off for the session) |
+| **Remote Ascend NPU Dev & Component Tools**<br/>(`remote` + `components` MCP servers) | **⚡ Default Auto-Trigger** | When syncing local code/tests to a remote Ascend server/container, running NPU builds/tests, checking `npu-smi`, or calling local diagnostics, status checks, profiling, simulation, and device coordination tools | **No `/mindie-agent` required**—just describe the remote task or component invocation in natural language |
 | **Experience Capture & Unified Contribution Switch**<br/>(`Stop` Auto-Capture + Gitleaks Redaction + Fault Reporting) | **🔄 Background Run in Enabled Sessions** | When contributing sanitized design, kernel development, testing, or tuning takeaways back to the open-source knowledge base, or reporting sanitized tool faults | **Configure Consent Once, Active in `/mindie-agent` Sessions**—once explicitly enabled in setup, every `/mindie-agent`-enabled session is redacted locally and packaged into a knowledge PR in the background; unactivated sessions perform zero `Stop` capture |
 
 ### Scenario 1: Type `/mindie-agent` for Feature Design, Kernel Development & Test Authoring (Manual Trigger)
@@ -122,7 +122,7 @@ If you are an AI Agent asked by the user to install this plugin, execute the fol
      --plugin-root "$NATIVE_PKG" \
      --readback
    ```
-   - Confirm `mindie-agent` shows `enabled: true`, `state: "ok"`, and both MCP servers (`knowledge` and `remote`) enabled. Report the verified GitHub account (`$GH_USER`) and installation completion to the user (the temporary clone `/tmp/mindie-agent-kimi` can be removed; the persistent runtime lives under `~/.local/share/mindie-agent/kimi`).
+   - Confirm `mindie-agent` shows `enabled: true`, `state: "ok"`, and all three MCP servers (`knowledge`, `remote`, and `components`) enabled. Report the verified GitHub account (`$GH_USER`) and installation completion to the user (the temporary clone `/tmp/mindie-agent-kimi` can be removed; the persistent runtime lives under `~/.local/share/mindie-agent/kimi`).
 
    Continue with step 4 after verification, then report the complete setup result.
 
@@ -156,22 +156,46 @@ After the commands, enter **`/mindie-agent help me finish first-time setup`** in
 
 ## Everyday Usage & Interaction
 
-Everyday tasks use a single entry point—**`/mindie-agent`**—without requiring separate internal subcommands:
+Use **`/mindie-agent`** to activate domain knowledge on demand, while remote development and local component tools remain available by default across all sessions:
 
-- **`remote-dev` remote NPU tools trigger automatically by default** in everyday conversation (no slash command required).
-- **All MindIE Agent interactions** (design, development, operator implementation, testing & tuning with domain knowledge, first-time setup, checking status, or updating the unified contribution choice) are handled through **`/mindie-agent` + natural language**, while the Agent progressively loads internal operational context only when needed:
+- **`remote` and `components` MCP tools are available by default (no `/mindie-agent` needed)**: `remote` handles remote file reads/writes, command execution, and background job management on Ascend servers; `components` provides status checks (`mindie_status`), local diagnostic tools (`diagnostics_status` and `diagnostics_bundle`), and CLI wrappers for `coordinator`, `profiler`, and `sim`. Physical NPU execution and timing still require holding a device lease, and local diagnostic bundles are saved locally without automatic upload.
+- **Knowledge retrieval, sync, experience capture, and initial configuration require `/mindie-agent`**: `knowledge_query`, `knowledge_explain`, `knowledge_feedback`, `knowledge_distill`, `knowledge_sync`, and turn-end (`Stop`) capture are active only in sessions where you explicitly invoke `/mindie-agent`:
 
 | What You Want to Do | How to Do It |
 |---|---|
 | **Ascend AI Infra Design, Dev (`vLLM-Ascend` / `AscendC` / `Triton`), Testing & Tuning** | `/mindie-agent <describe your design, development, testing, or tuning goal>` |
-| **Work on a remote Ascend server / container (sync files, run tests, check `npu-smi`)** | **No slash command needed**—just describe the remote task in natural language (`remote-dev` triggers automatically) |
+| **Work on a remote Ascend server / container (sync files, run tests, check `npu-smi`)** | **No slash command needed**—just describe the remote task in natural language (`remote` MCP triggers automatically) |
+| **Check local plugin status, export diagnostic bundles, or run `profiler` / `sim` / `coordinator`** | **No slash command needed**—ask in natural language or invoke the `components` MCP tools directly |
 | **First-time setup, check status, or toggle the unified contribution switch** | `/mindie-agent` (or `/mindie-agent check status / enable community sharing`) |
 
 > 💡 **Background Experience Capture**: Once you explicitly opt in to community contribution during setup, your saved consent persists across sessions; in any session where you have invoked `/mindie-agent`, turn end (`Stop`) extracts and sanitizes public user/assistant messages in the background (ordinary sessions where `/mindie-agent` was not invoked skip `Stop` capture). Local capture completion is distinct from external PR creation; inspect status receipts to verify remote publication.
 
+### `components` Local Diagnostics & Analysis Tools
+
+Once the plugin is registered, the `components` MCP server is available by default in every Kimi session without typing `/mindie-agent`. Listing tools neither starts the knowledge service nor installs optional components (the interactive `npu-top` terminal viewer is for human terminal use only and is not registered as an MCP tool):
+
+| Tool | Purpose | Installation | Arguments & Output |
+| :--- | :--- | :--- | :--- |
+| `mindie_status`<br/>`diagnostics_status`<br/>`diagnostics_bundle` | Check session, plugin, and local diagnostic status, or export a sanitized local support bundle (saved locally only, never uploaded automatically) | **Built in** (uses the plugin's Python environment) | Pass a single-use `request_nonce`; `diagnostics_status` accepts optional `config`, and `diagnostics_bundle` requires `root` (optional `operation_id`, `output`) |
+| `coordinator`<br/>`profiler`<br/>`sim` | Run `mindie-coordinator` (device probing and leases), `mindie-profiler` (trace analysis), and `mindie-sim` (performance simulation) CLIs | **Optional separate install** (not preinstalled). Searched in the configured Python environment first, then `PATH`, or specified via `component_commands`; returns a clear error if missing | Pass argument array `argv` (e.g. `{"argv":["--help"],"request_nonce":"..."}`) and optional absolute `cwd`; returns `component`, `status`, `exit_code`, `stdout`, `stderr` (plus parsed `result` only when `stdout` is JSON) |
+
+If `coordinator`, `profiler`, or `sim` are installed in separate environments, specify their executable and fixed prefix arguments under `component_commands` in `~/.config/mindie-agent/kimi.json`:
+
+```json
+{
+  "component_commands": {
+    "sim": ["/path/to/sim-python", "-I", "-m", "mindie_sim"],
+    "profiler": ["/path/to/mindie-profiler"],
+    "coordinator": ["/path/to/mindie-coordinator"]
+  }
+}
+```
+
+Each call is bound to the current session and working directory by Kimi's native `PreToolUse` hook via `request_nonce` (the model must never supply a session ID), and relative input/output paths resolve against the session working directory by default. Timeout defaults to 120 seconds (`timeout_ms=120000`) up to 10 minutes (`600000`). Combined output defaults to at most 64 KiB (`max_output_tokens=16384`) and can be set up to 1 MiB (`262144`), counted at 4 bytes per token across `stdout` and `stderr`; save large reports to a file.
+
 ### Automatic Updates & Safe Uninstall
 
-- **Scheduled Model-Free Updates**: On macOS, a `launchd` job checks for both compatible verified formal plugin Releases and formal GitHub Releases of shared runtime components from their official repositories, builds an immutable generation with its own pinned virtualenv, stops the old service when idle, and switches the generation pointer atomically with rollback receipts (component-only updates switch `current.json` without reinstalling native Kimi plugin definitions; see [Automatic Updates](docs/update.en.md) and [`docs/releases/mindie-agent-kimi-0.1.6.en.md`](docs/releases/mindie-agent-kimi-0.1.6.en.md)). Check update status at any time with:
+- **Scheduled Model-Free Updates**: On macOS, a `launchd` job checks for compatible formal releases of the plugin and shared components. The updater prepares a separate environment, switches when current tasks are idle, and keeps rollback records. Adding or changing MCP services re-registers the Kimi plugin; component-only updates do not require reinstalling it. See [Automatic Updates](docs/update.en.md) and the [`0.1.6` release notes](docs/releases/mindie-agent-kimi-0.1.6.en.md). Check update status at any time with:
   ```sh
   MINDIE_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/mindie-agent/kimi.json"
   MINDIE_LAUNCHER=$(python3 -c 'import json,sys,pathlib; cfg=json.loads(pathlib.Path(sys.argv[1]).read_text()); u=pathlib.Path(cfg["state_dir"])/"update"; cur=json.loads((u/"current.json").read_text()); print(u/"launch"/(cur["sha"] or "bootstrap")/"mindie_launch.py")' "$MINDIE_CONFIG")
@@ -218,9 +242,9 @@ python3 -m unittest discover -s tests/native -v
 python3 -m unittest discover -s tests
 ```
 
-### `0.1.2` Release Benchmark
+### `0.1.6` Release Benchmark
 
-[`benchmarks/release.json`](benchmarks/release.json) (driven by `benchmarks/release.py`) defines the reproducible `0.1.2` CPU microbenchmark (`public-transcript-parsing`, metric `public_transcript_parse` in `us/op`), measuring per-operation latency for extracting public user/assistant messages and filtering non-public reasoning fields from `wire.jsonl`. Every formal GitHub Release publishes `benchmark-results.json`, `benchmark-results.md`. These deterministic CPU microbenchmarks verify local parser latency only and are distinct from live Ascend A2/A3 NPU integration acceptance and end-to-end Agent productivity evaluation.
+[`benchmarks/release.json`](benchmarks/release.json) (driven by `benchmarks/release.py`) defines the reproducible `0.1.6` CPU microbenchmark (`public-transcript-parsing`, metric `public_transcript_parse` in `us/op`), measuring per-operation latency for extracting public user/assistant messages and filtering non-public reasoning fields from `wire.jsonl`. Every formal GitHub Release publishes `benchmark-results.json`, `benchmark-results.md`. These deterministic CPU microbenchmarks verify local parser latency only and are distinct from live Ascend A2/A3 NPU integration acceptance and end-to-end Agent productivity evaluation.
 
 ---
 

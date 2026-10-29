@@ -46,7 +46,7 @@ def runtime_tool_names():
 def make_generation(tmp: Path, manifest: dict) -> Path:
     generation = tmp / "generation"
     (generation / "scripts").mkdir(parents=True)
-    for name in ("mindie_launch.py", "bounded.py", "diagnostic_support.py", "paths.py"):
+    for name in ("mindie_launch.py", "bounded.py", "diagnostic_support.py", "paths.py", "launch_budget.py"):
         shutil.copy2(SCRIPTS / name, generation / "scripts" / name)
     write_json(generation / "kimi.plugin.json", manifest)
     return generation
@@ -405,7 +405,7 @@ class OldControllerSourceTests(unittest.TestCase):
         return destination
 
     def _candidate_generation(self) -> Path:
-        generation = self.tmp / "candidate"
+        generation = genstate.generations_dir(self.adapter) / SHA
         shutil.copytree(SCRIPTS, generation / "scripts")
         for name in ("skills", "commands"):
             shutil.copytree(ROOT / name, generation / name)
@@ -425,13 +425,20 @@ class OldControllerSourceTests(unittest.TestCase):
         wrapper.chmod(0o755)
         return wrapper
 
-    def _build_with(self, old_root: Path, generation: Path) -> Path:
+    def _build_with(self, old_root: Path, generation: Path, *, mark=False) -> Path:
         code = (
             "import json,sys;from pathlib import Path;"
             "sys.path.insert(0,sys.argv[1]);import updater;"
-            "print(updater.build_host_package(Path(sys.argv[2]),json.loads(sys.argv[3]),"
-            "sys.argv[4],config_file=Path(sys.argv[5])))"
+            "adapter=json.loads(sys.argv[3]);"
+            "package=updater.build_host_package(Path(sys.argv[2]),adapter,"
+            "sys.argv[4],config_file=Path(sys.argv[5]));"
         )
+        if mark:
+            code += (
+                "updater._mark_host_package(updater.receipts_dir(adapter)/"
+                "(sys.argv[4]+'.json'),package);"
+            )
+        code += "print(package)"
         result = subprocess.run(
             [sys.executable, "-c", code, str(old_root / "scripts"),
              str(generation), json.dumps(self.adapter), SHA, str(self.config)],
@@ -494,6 +501,38 @@ class OldControllerSourceTests(unittest.TestCase):
         remote = package_manifest(repaired)["mcpServers"]["remote"]
         self.assertEqual(remote["toolTimeoutMs"], LEGACY_TIMEOUT_MS)
         self.assertEqual(remote["env"]["REMOTE_DEV_HARNESS_PROFILE"], "kimi")
+        self.assertEqual(len(installed), 1)
+
+    def test_marked_two_surface_builder_repairs_components_once(self):
+        old = self._extract("3813383c6b100294cb5ea4e9bd9d97a6ecfc1cae", self.tmp / "old-marked")
+        receipt = genstate.receipts_dir(self.adapter) / f"{SHA}.json"
+        write_json(receipt, {"sha": SHA, "generation": str(self.generation)})
+        package = self._build_with(old, self.generation, mark=True)
+        marker = genstate.read_json(receipt)["host_package"]
+        self.assertNotIn("bound_mcp_surfaces", marker)
+        raw = package_manifest(package)["mcpServers"]["components"]
+        self.assertEqual(raw["args"][0], "./scripts/with_runtime.py")
+        self.assertFalse((package / "scripts/with_runtime.py").exists())
+        installed = []
+        updater.switch(
+            self.adapter, self.current, self.generation, Path(sys.executable),
+            self.config, SHA, time.monotonic() + 180,
+            lambda *_: {"idle": True, "service": "absent"},
+            lambda *a, **k: installed.append(a), 1, update_native=False,
+        )
+        self.assertEqual(genstate.read_json(receipt)["host_package"], marker)
+        self.assertEqual(installed, [])
+        repaired = updater.repair_host_package(
+            self.adapter, self.current, time.monotonic() + 30,
+            lambda *a, **k: installed.append(a),
+            lambda *_: {"idle": True, "service": "absent"},
+        )
+        names = self._list_tools(repaired, package_manifest(repaired)["mcpServers"]["components"])
+        self.assertTrue({"profiler", "sim", "coordinator"} <= names, names)
+        self.assertIsNone(updater.repair_host_package(
+            self.adapter, self.current, time.monotonic() + 30,
+            lambda *a, **k: installed.append(a),
+        ))
         self.assertEqual(len(installed), 1)
 
     def test_old_build_runtime_override_gap_is_real(self):
