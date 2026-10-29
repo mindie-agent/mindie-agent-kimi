@@ -403,6 +403,8 @@ def switch(
     native_attempted = False
     stopped = False
     final = None
+    profile_path = None
+    published_commands = None
     wait = min(lock_timeout, deadline - RESERVE - time.monotonic())
     if wait <= 0:
         raise LockTimeout("no time left for the exclusive switch lock")
@@ -413,6 +415,11 @@ def switch(
             if ('domain_source_configs' in next_adapter
                     and (prior.get('domain_configs') or {}) != next_adapter['domain_source_configs']):
                 raise Deferred('domain routes changed during preparation; switch deferred')
+            if "component_source_commands" in next_adapter:
+                profile_path = Path(next_adapter["profile_config"])
+                profile = read_json(profile_path)
+                if profile.get("component_commands", {}) != next_adapter["component_source_commands"]:
+                    raise Deferred("component commands changed during preparation; switch deferred")
             idle_result = idle(adapter, current, deadline)
             stopped = idle_result.get("service") == "stopped"
             for domain, path in (prior.get('domain_configs') or {}).items():
@@ -432,6 +439,12 @@ def switch(
                 "adapter_config": str(gen_adapter),
                 "sha": sha,
             }
+            if profile_path is not None:
+                profile = read_json(profile_path)
+                if profile.get("component_commands", {}) != next_adapter["component_source_commands"]:
+                    raise Deferred("component commands changed during idle handoff; switch deferred")
+                atomic_write(profile_path, dict(profile, component_commands=next_adapter["component_commands"]))
+                published_commands = next_adapter["component_commands"]
             write_current(final, adapter)
             if update_native and (generation / "host-package" / "kimi.plugin.json").is_file():
                 _mark_host_package(
@@ -450,6 +463,15 @@ def switch(
                 raise
             except Exception as exc:
                 pointer_error = f"pointer restore FAILED: {str(exc)[:200]}"
+            if published_commands is not None:
+                try:
+                    profile = read_json(profile_path)
+                    if profile.get("component_commands", {}) == published_commands:
+                        atomic_write(profile_path, dict(profile, component_commands=next_adapter["component_source_commands"]))
+                except TimeoutError:
+                    raise
+                except Exception as exc:
+                    pointer_error = f"{pointer_error or ''} component binding restore FAILED: {str(exc)[:200]}"
             native_restored = not native_attempted or _rollback_native(adapter, current, install, deadline)
             if not pointer_error and native_restored:
                 final = current

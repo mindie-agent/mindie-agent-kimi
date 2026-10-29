@@ -94,6 +94,9 @@ def build_runtime(generation: Path, deadline: float) -> Path:
     if sys.version_info < _h("MIN_PYTHON"):
         raise _h("CheckFailed")(f"Python {_h('MIN_PYTHON')[0]}.{_h('MIN_PYTHON')[1]}+ is required")
     requirements = generation / "runtime-requirements.txt"
+    overrides = generation / "runtime-active-overrides.txt"
+    if not overrides.is_file():
+        overrides = requirements
     if re.search(r"@main\b", requirements.read_text(encoding="utf-8")):
         raise _h("CheckFailed")("runtime-requirements.txt must pin full commit SHAs, not @main")
     venv = generation / ".venv"
@@ -108,7 +111,7 @@ def build_runtime(generation: Path, deadline: float) -> Path:
                       timeout=min(180, _h("_remaining")(deadline, _h("RESERVE"))), env=env)
     _h("bounded_run")(
         [uv, "pip", "install", "--python", str(python), "-r", str(requirements),
-         "--overrides", str(requirements)],
+         "--overrides", str(overrides)],
         "", timeout=min(600, _h("_remaining")(deadline, _h("RESERVE"))),
         max_output=512 * 1024, env=env, transport=True,
     )
@@ -155,7 +158,7 @@ def _profile_authority_sources(adapter: dict):
     return padapter, pengine
 
 
-def write_generation_configs(generation: Path, python: Path, adapter: dict) -> Path:
+def write_generation_configs(generation: Path, python: Path, adapter: dict, *, components=None) -> Path:
     current = _h("read_current")(adapter)
     active = _h("read_json")(Path(current['adapter_config']))
     if active is not None:
@@ -169,6 +172,12 @@ def write_generation_configs(generation: Path, python: Path, adapter: dict) -> P
             if isinstance(value, str) and os.path.isabs(value):
                 engine[key] = value
     config_dir = generation / "config"
+    commands = dict((padapter or adapter).get("component_commands", {}))
+    if components is not None:
+        from mindie_knowledge.component_bindings import rebind_commands, validate_command_floor
+        validate_command_floor(padapter or adapter, components)
+        # A binding-only update must not rewrite the active generation's config.
+        config_dir /= hashlib.sha256(json.dumps(commands, sort_keys=True).encode()).hexdigest()[:16]
     gen_engine = config_dir / "kimi.engine.json"
     gen_adapter = config_dir / "kimi.adapter.json"
     _h("atomic_write")(
@@ -190,6 +199,9 @@ def write_generation_configs(generation: Path, python: Path, adapter: dict) -> P
         engine_config=str(gen_engine),
         profile_config=profile,
     )
+    if components is not None:
+        gen_adapter_value["component_source_commands"] = commands
+        gen_adapter_value["component_commands"] = rebind_commands(padapter or adapter, python, components)
     if padapter is not None and isinstance(padapter.get("community_config"), str):
         gen_adapter_value["community_config"] = padapter["community_config"]
     kimi_bin = adapter.get("kimi_bin")
