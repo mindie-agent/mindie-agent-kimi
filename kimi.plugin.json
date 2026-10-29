@@ -1,6 +1,6 @@
 {
   "name": "mindie-agent",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "MindIE Agent for Kimi Code: local knowledge retrieval, optional community contribution, and general remote-dev. No SessionStart auto-configuration.",
   "keywords": [
     "mindie",
