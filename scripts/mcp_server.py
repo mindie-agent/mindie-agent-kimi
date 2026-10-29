@@ -131,6 +131,9 @@ KNOWLEDGE_TOOLS = [
     dict(
         name="knowledge_query",
         description=(
+            "Use when a missing contract, mechanism or method could change the next action. "
+            "Skip retrieval when code and current evidence support a fix and verification; "
+            "probe missing environment facts first. "
             "Search graded rules and task material in the selected domain. Returns bounded navigation "
             "cards plus foundation_cards (compatible results also follow); each card has a readable ref "
             "and feedback_ref for its observed revision. Pass known task conditions to filter graded rules. "
@@ -241,10 +244,11 @@ KNOWLEDGE_TOOLS = [
     dict(
         name="knowledge_explain",
         description=(
-            "Read one reference or a batch of graded references. Use the cards returned by "
-            "knowledge_query for navigation, then load only the selected units. Pass ref or "
-            "refs with observed conditions, known_refs that are already fully visible, and an "
-            "optional token_budget. Shared prerequisites expand once in requires; primary units "
+            "Read only knowledge needed for the next action; an exact returned ref needs no new query. "
+            "For graded units, prefer refs even for one unit, with observed conditions, fully visible "
+            "known_refs and an explicit token_budget. Copy revision references exactly. Stop reading "
+            "once the next action and required premises are clear; new evidence can reopen retrieval. "
+            "Shared prerequisites expand once in requires; primary units "
             "return complete units. A single ref keeps the exact current revision and legacy "
             "task/block navigation; a block ref returns that immutable block with "
             "previous_block_ref/next_block_ref for walking the task. Pass run_id to record delivery "
