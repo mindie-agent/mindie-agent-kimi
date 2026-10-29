@@ -36,7 +36,7 @@ def installed_commit(dist_name: str) -> str:
 def main() -> None:
     pins: dict[str, str] = {}
     for name in ("runtime-requirements.txt", "test-requirements.txt",
-                 "runtime-active-overrides.txt"):
+                 "runtime/active-overrides.txt"):
         text = (REPO / name).read_text(encoding="utf-8")
         found = _PIN.findall(text)
         if name == "runtime-requirements.txt" and not found:

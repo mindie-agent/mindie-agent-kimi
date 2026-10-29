@@ -12,11 +12,11 @@ jobs:
     uses: mindie-agent/mindie-bench/.github/workflows/publish-release.yml@484b80621aaf9293c559786d0ef2174c79a0dbb4
     with:
       benchmark-ref: 484b80621aaf9293c559786d0ef2174c79a0dbb4
-      release-notes-path: docs/releases/mindie-agent-kimi-0.1.9.md
+      release-notes-path: docs/releases/mindie-agent-kimi-0.1.10.md
       version-files: |
         kimi.plugin.json
       setup-command: |
-        uv venv --python 3.13 && uv pip install -r runtime-requirements.txt -r test-requirements.txt --overrides runtime-active-overrides.txt
+        uv venv --python 3.13 && uv pip install -r runtime-requirements.txt -r test-requirements.txt --overrides runtime/active-overrides.txt
       test-command: |
         git fetch --no-tags --depth=1 origin 7aecfd22857c313b52d6fe5923292f297884fec0 faf199fb7c76a63e9ff5f94cb1362ebdf203f5a3 3813383c6b100294cb5ea4e9bd9d97a6ecfc1cae
         .venv/bin/python tests/preflight.py

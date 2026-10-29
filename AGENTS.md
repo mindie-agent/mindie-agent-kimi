@@ -47,7 +47,7 @@ Bridges native Kimi Hook/MCP/Skill surfaces to shared first-party runtime compon
 ```bash
 # Create the same installed dependency environment used by checks and releases:
 uv venv --python 3.13
-uv pip install -r runtime-requirements.txt -r test-requirements.txt --overrides runtime-active-overrides.txt
+uv pip install -r runtime-requirements.txt -r test-requirements.txt --overrides runtime/active-overrides.txt
 .venv/bin/python tests/preflight.py
 .venv/bin/python -m pytest -q -o "pythonpath=tests scripts" tests
 ```

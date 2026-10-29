@@ -429,8 +429,9 @@ class BuildRuntimeAndFailureClassTests(unittest.TestCase):
     def test_build_runtime_prefers_uv_when_available(self):
         with tempfile.TemporaryDirectory() as raw:
             generation = self._generation(Path(raw))
-            overrides = generation / "runtime-active-overrides.txt"
-            overrides.write_text((SCRIPTS.parent / "runtime-active-overrides.txt").read_text())
+            overrides = generation / "runtime/active-overrides.txt"
+            overrides.parent.mkdir(exist_ok=True)
+            overrides.write_text((SCRIPTS.parent / "runtime/active-overrides.txt").read_text())
             found_uv = "/usr/local/bin/uv"
             which, run, calls = self._build_calls(
                 lambda name: found_uv if name == "uv" else None)
