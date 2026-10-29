@@ -44,6 +44,8 @@ def stop_real_services(engine_config, *, timeout=8.0, sleep=time.sleep):
         return
     try:
         core_cli.rpc(connection, "stop", timeout=2.0)
+    except TimeoutError:
+        raise
     except Exception as exc:
         raise AssertionError(
             f"knowledge service stop was not confirmed: {type(exc).__name__}"

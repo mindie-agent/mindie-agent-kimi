@@ -69,6 +69,8 @@ BOOTSTRAP_COMPLETE = ".bootstrap-complete"
 def probe_runtime(python):
     try:
         output = run([python, "-c", PROBE_SCRIPT], "", timeout=15)
+    except TimeoutError:
+        raise
     except Exception as exc:
         raise SystemExit(
             f"knowledge runtime probe failed in {python}: {type(exc).__name__}: {str(exc)[:200]}"
@@ -396,6 +398,8 @@ def main():
         if warnings:
             result["warnings"] = warnings
         print(json.dumps(result, indent=2))
+    except TimeoutError:
+        raise
     except Exception as exc:
         from bounded import run
 

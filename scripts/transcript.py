@@ -169,6 +169,8 @@ def _fork_boundary(path) -> float | None:
     try:
         state_path = Path(path).resolve().parents[2] / "state.json"
         data = json.loads(state_path.read_text(encoding="utf-8"))
+    except TimeoutError:
+        raise
     except (OSError, ValueError, IndexError):
         raise OSError("native session state unavailable; inherited material not read") from None
     if not isinstance(data, dict):

@@ -94,6 +94,8 @@ class GradedFeedbackEntryTests(unittest.TestCase):
             try:
                 shared_rpc(self.service.connection, "status", timeout=0.5)
                 break
+            except TimeoutError:
+                raise
             except Exception:
                 if not self.thread.is_alive():
                     break

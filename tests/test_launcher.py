@@ -241,6 +241,8 @@ class LauncherTests(unittest.TestCase):
                     proc.wait(timeout=2)
                 try:
                     proc.stdin.close()
+                except TimeoutError:
+                    raise
                 except Exception:
                     pass
 
@@ -267,6 +269,8 @@ class LauncherTests(unittest.TestCase):
                     proc.wait(timeout=2)
                 try:
                     proc.stdin.close()
+                except TimeoutError:
+                    raise
                 except Exception:
                     pass
 
@@ -299,6 +303,8 @@ class LauncherTests(unittest.TestCase):
                     proc.wait(timeout=2)
                 try:
                     proc.stdin.close()
+                except TimeoutError:
+                    raise
                 except Exception:
                     pass
 
@@ -448,6 +454,8 @@ class LauncherTests(unittest.TestCase):
                         "try:\n"
                         "    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
                         "    print('unlocked')\n"
+                        "except TimeoutError:\n"
+                        "    raise\n"
                         "except OSError:\n"
                         "    print('held')\n",
                     ],

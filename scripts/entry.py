@@ -401,7 +401,7 @@ def _enable_contribution(session, cwd, *, repository, account, branch="main", fo
     branch = check_branch(branch)
     try:
         account = check_account(account)
-    except Exception as exc:
+    except ValueError as exc:
         raise ValueError(str(exc)[:200]) from None
     root = _project_root(session, cwd)
     return sharing_mod.write_enabled(
