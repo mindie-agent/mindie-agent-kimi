@@ -3,11 +3,11 @@
 # the immutable 0.1.2 controller's plain first hop does not.
 #
 # Selecting the direct components here keeps the active runtime at knowledge
-# 0.13.5 source (107f78d), diagnostics 0.5.4 (5ae643e), and remote-dev 0.11.1
+# 0.13.6 (9af5a82), diagnostics 0.5.4 (5ae643e), and remote-dev 0.11.1
 # (2a750ec), overriding the
 # older transitive declarations. component_prepare separately preserves an
 # already-installed newer component or advances to a newer formal release; it
 # never downgrades.
 mindie-diagnostics @ git+https://github.com/mindie-agent/diagnostics@5ae643e19223f2181ecdbaa3edaf464137c4805e
-mindie-knowledge @ git+https://github.com/mindie-agent/knowledge@107f78d547707a35ea356b686bcb125448381e4e
+mindie-knowledge @ git+https://github.com/mindie-agent/knowledge@9af5a82ad557e2120277693854a0571613c8a115
 remote-dev @ git+https://github.com/mindie-agent/remote-dev@2a750ec8c74d7f053410d48dd820aeb542e7d3b1
