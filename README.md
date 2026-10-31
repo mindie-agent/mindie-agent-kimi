@@ -127,9 +127,9 @@ MindIE Agent 采用**「领域知识与 Skill 手动按需触发 + 远端开发�
    验证成功后继续第 4 步，完成首次配置后一起汇报安装结果。
 
 4. **完成首次配置与开发工作区引导**：
-   - 在本次安装中介绍已有 [用户须知](skills/mindie-agent/references/user-notice.md)，随后执行 [工作区配置指南](skills/mindie-agent/references/workspace-setup.md)。即使未开启贡献，也要提供创建并初始化 `vllm-ascend-workspace`、复用已有目录或继续当前目录的选择；复用已经确认的选择。
-   - 用户同意创建或复用后，自动通过当前宿主的原生项目/工作区入口登记所选路径，核对实际结果。源码初始化使用工作区检出的 `repo_init.py`，复用本次已验证的 GitHub 认证和已有 Fork 配置。
-   - 安装结果同时报告插件、工作区路径、宿主登记与源码初始化状态；需要原生界面操作时明确剩余步骤。
+   - 向用户简要说明 [用户须知](skills/mindie-agent/references/user-notice.md)，随后按 [工作区配置指南](skills/mindie-agent/references/workspace-setup.md) 引导工作区选择：无论是否开启社区贡献，都提供**新建并初始化 `vllm-ascend-workspace`**、**复用已有工作区目录**或**保持当前目录**三种选择（已有确认记录时直接复用）。
+   - 若用户选择新建或复用工作区，自动通过当前宿主的原生项目/工作区入口完成路径登记并核对结果，调用工作区内的 `repo_init.py` 完成源码与远端分支初始化（直接复用前序已验证的 GitHub 登录与已有 Fork 配置）。
+   - 汇总汇报插件安装状态、工作区路径、宿主登记结果与源码初始化状态（如有需用户在宿主界面点击的尾步一并说明）。
    - **询问用户是否愿意给主仓点个 Star ⭐**：在汇报末尾主动询问用户：*“如果觉得 MindIE Agent 对你有帮助，需要我顺手帮你在 GitHub 上给主仓 `mindie-agent/mindie-agent` 点个 Star 吗？这能帮助项目更好地成长！⭐”* **严格授权原则**：仅当用户明确表示同意（如回复“好”、“可以”、“yes”等）时才执行以下命令点亮并校验主仓 Star，严禁未经用户同意自动静默执行：
      ```sh
      gh api --hostname github.com --silent -X PUT /user/starred/mindie-agent/mindie-agent && gh api --hostname github.com --silent /user/starred/mindie-agent/mindie-agent
