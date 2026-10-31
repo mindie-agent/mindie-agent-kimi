@@ -263,6 +263,9 @@ class SetupInstallTests(unittest.TestCase):
             for argv, options in calls:
                 self.assertEqual(options["env"]["UV_NATIVE_TLS"], "true")
                 self.assertEqual(options["env"]["SSL_CERT_FILE"], "company.pem")
+                self.assertEqual(options["env"]["GIT_CONFIG_COUNT"], "3")
+                self.assertEqual(options["env"]["GIT_CONFIG_KEY_0"], "core.longpaths")
+                self.assertEqual(options["env"]["GIT_CONFIG_VALUE_0"], "true")
 
     def test_bootstrap_without_uv_fails_before_creating_runtime(self):
         sys.path.insert(0, str(SCRIPTS))

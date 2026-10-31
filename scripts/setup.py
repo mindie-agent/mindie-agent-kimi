@@ -160,9 +160,14 @@ def stage_retained_bootstrap(dest: Path, source: Path) -> Path:
                 shutil.copytree(src, staging / name, ignore=ignore)
             else:
                 shutil.copy2(src, staging / name)
+        for child in staging.rglob("*"):
+            if child.is_file() and child.suffix in {".py", ".json", ".md", ".txt", ".toml"}:
+                raw = child.read_bytes()
+                if b"\r\n" in raw:
+                    child.write_bytes(raw.replace(b"\r\n", b"\n"))
         if any(not (staging / name).exists() for name in BOOTSTRAP_ITEMS):
             raise SystemExit("retained bootstrap is missing required plugin files")
-        (staging / BOOTSTRAP_COMPLETE).write_text("ok\n")
+        (staging / BOOTSTRAP_COMPLETE).write_text("ok\n", newline="\n")
         os.replace(staging, dest)
         staging = None
     finally:
@@ -183,9 +188,22 @@ def write_community(path, community, consent_config=None, python=None):
 
 
 def installer_environment():
-    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", UV_NO_PROGRESS="1")
-    if "UV_SYSTEM_CERTS" not in env:
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never", UV_NO_PROGRESS="1")
+    if "UV_SYSTEM_CERTS" not in env and "UV_NATIVE_TLS" not in env:
+        env["UV_SYSTEM_CERTS"] = "true"
+        env["UV_NATIVE_TLS"] = "true"
+    elif "UV_SYSTEM_CERTS" not in env:
         env.setdefault("UV_NATIVE_TLS", "true")
+    if "GIT_CONFIG_COUNT" not in env:
+        git_pairs = (
+            ("core.longpaths", "true"),
+            ("core.autocrlf", "false"),
+            ("credential.https://github.com.provider", "github"),
+        )
+        env["GIT_CONFIG_COUNT"] = str(len(git_pairs))
+        for idx, (k, v) in enumerate(git_pairs):
+            env[f"GIT_CONFIG_KEY_{idx}"] = k
+            env[f"GIT_CONFIG_VALUE_{idx}"] = v
     return env
 
 
