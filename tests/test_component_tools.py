@@ -300,7 +300,7 @@ def test_sim_preserves_real_cli_error_and_exit_status(sim_gate, tmp_path):
     assert value["stdout"] == ""
     error = json.loads(value["stderr"])
     assert error["status"] == "failed"
-    assert str(tmp_path / "absent.json") in error["error"]
+    assert str(tmp_path / "absent.json") in error["error"] or repr(str(tmp_path / "absent.json")) in error["error"]
 
 
 def test_sim_partial_study_keeps_success_and_failure_in_the_nonzero_cli_result(
