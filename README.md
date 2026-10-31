@@ -77,8 +77,6 @@ MindIE Agent 采用**「领域知识与 Skill 手动按需触发 + 远端开发�
 
 ## 快速开始
 
-### 方式一：发送仓库链接由 Agent 自动安装
-
 直接复制下面这句话发送给你的 Kimi Code（或其他支持终端执行的 AI Agent），由其按步骤完成环境检查、运行时构建与插件注册：
 
 ```text
@@ -137,20 +135,6 @@ MindIE Agent 采用**「领域知识与 Skill 手动按需触发 + 远端开发�
 
 </details>
 
-### 方式二：终端手动安装（One-Line Terminal Install）
-
-如果你习惯在终端手动执行，可直接运行以下命令完成 GitHub 通道校验、运行时构建与原生插件注册：
-
-```sh
-gh api --hostname github.com user --jq .login && gh auth setup-git --hostname github.com && \
-git clone https://github.com/mindie-agent/mindie-agent-kimi.git && \
-cd mindie-agent-kimi && \
-NATIVE_PKG=$(python3 scripts/setup.py | python3 -c "import json,sys; print(json.load(sys.stdin)['native_package'])") && \
-python3 scripts/install_kimi_plugin.py --kimi-home "${KIMI_CODE_HOME:-$HOME/.kimi-code}" --plugin-root "$NATIVE_PKG"
-```
-
-安装命令完成后，在新会话输入 **`/mindie-agent 帮我完成首次配置`**，按 [工作区配置指南](skills/mindie-agent/references/workspace-setup.md) 完成本次安装引导。Agent 会复用 GitHub 登录，提供工作区创建/复用选择，并在同意后登记到当前客户端；选择当前目录也可完成引导。
-
 #### 环境与目录说明
 - **基础依赖与硬性指标**：已安装 `git`、`uv`、已登录认证的 **`gh`（GitHub CLI）**，以及 Kimi Code CLI。
 - **SQLite 要求**：知识引擎使用的 Python 解释器需链接 **SQLite `>= 3.43.0`**（编译启用 FTS5 与 `contentless_delete`），可通过 `--knowledge-python /path/to/python` 指定解释器。
@@ -199,7 +183,7 @@ python3 scripts/install_kimi_plugin.py --kimi-home "${KIMI_CODE_HOME:-$HOME/.kim
 
 ### 自动更新与安全卸载
 
-- **后台自动更新**：macOS 上的 `launchd` 定时检查插件和共享组件的兼容正式版本。更新器先准备独立环境，待当前任务空闲后切换，并保留回滚记录。新增或调整 MCP 服务时会重新注册 Kimi 插件；仅更新组件版本时无需重装插件。详见 [自动更新机制](docs/update.md) 与 [`0.1.6` 发布说明](docs/releases/mindie-agent-kimi-0.1.6.md)。可随时查看更新状态：
+- **后台自动更新**：macOS 上的 `launchd` 定时检查插件和共享组件的兼容正式版本。更新器先准备独立环境，待当前任务空闲后切换，并保留回滚记录。新增或调整 MCP 服务时会重新注册 Kimi 插件；仅更新组件版本时无需重装插件。详见 [自动更新机制](docs/update.md) 与 [`0.1.10` 发布说明](docs/releases/mindie-agent-kimi-0.1.10.md)。可随时查看更新状态：
   ```sh
   MINDIE_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/mindie-agent/kimi.json"
   MINDIE_LAUNCHER=$(python3 -c 'import json,sys,pathlib; cfg=json.loads(pathlib.Path(sys.argv[1]).read_text()); u=pathlib.Path(cfg["state_dir"])/"update"; cur=json.loads((u/"current.json").read_text()); print(u/"launch"/(cur["sha"] or "bootstrap")/"mindie_launch.py")' "$MINDIE_CONFIG")
@@ -246,9 +230,9 @@ python3 -m unittest discover -s tests/native -v
 python3 -m unittest discover -s tests
 ```
 
-### `0.1.6` 发布基准测试（Release Benchmark）
+### `0.1.10` 发布基准测试（Release Benchmark）
 
-本仓库在 [`benchmarks/release.json`](benchmarks/release.json)（由 `benchmarks/release.py` 执行）中定义了面向 `0.1.6` 发布的可复现 CPU 微基准测试（用例 `public-transcript-parsing`，指标 `public_transcript_parse`，单位 `us/op`），用于测量本地 `wire.jsonl` 公开可见消息提取与非公开推理字段过滤的单次解析耗时。每个正式版 GitHub Release 均随附 `benchmark-results.json`、`benchmark-results.md`；该微基准仅验证本地解析组件的性能基线，与常备昇腾 A2/A3 NPU 真机集成验收及端到端 Agent 研发任务评估相互独立。
+本仓库在 [`benchmarks/release.json`](benchmarks/release.json)（由 `benchmarks/release.py` 执行）中定义了面向 `0.1.10` 发布的可复现 CPU 微基准测试（用例 `public-transcript-parsing`，指标 `public_transcript_parse`，单位 `us/op`），用于测量本地 `wire.jsonl` 公开可见消息提取与非公开推理字段过滤的单次解析耗时。每个正式版 GitHub Release 均随附 `benchmark-results.json`、`benchmark-results.md`；该微基准仅验证本地解析组件的性能基线，与常备昇腾 A2/A3 NPU 真机集成验收及端到端 Agent 研发任务评估相互独立。
 
 ---
 

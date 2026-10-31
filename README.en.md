@@ -77,8 +77,6 @@ MindIE Agent combines **manual on-demand activation for domain knowledge & skill
 
 ## Quick Start
 
-### Option 1: Automated Setup via Your AI Agent
-
 Copy and paste the prompt below directly to Kimi Code (or any terminal-capable AI Agent) so it can run the prerequisite checks, build the locked runtime, and register the plugin:
 
 ```text
@@ -137,20 +135,6 @@ If you are an AI Agent asked by the user to install this plugin, execute the fol
 
 </details>
 
-### Option 2: Terminal Install (Manual)
-
-To install manually from your terminal:
-
-```sh
-gh api --hostname github.com user --jq .login && gh auth setup-git --hostname github.com && \
-git clone https://github.com/mindie-agent/mindie-agent-kimi.git && \
-cd mindie-agent-kimi && \
-NATIVE_PKG=$(python3 scripts/setup.py | python3 -c "import json,sys; print(json.load(sys.stdin)['native_package'])") && \
-python3 scripts/install_kimi_plugin.py --kimi-home "${KIMI_CODE_HOME:-$HOME/.kimi-code}" --plugin-root "$NATIVE_PKG"
-```
-
-After the commands, enter **`/mindie-agent help me finish first-time setup`** in a new session and complete [Workspace Setup](skills/mindie-agent/references/workspace-setup.md) as part of installation. The agent reuses GitHub authentication, offers workspace creation/reuse and adds the approved path to the current client. Keeping the current directory also completes the offer.
-
 #### Environment & Storage Notes
 - **Prerequisites (Hard Requirements)**: `git`, `uv`, an authenticated **`gh` (GitHub CLI)**, and Kimi Code CLI.
 - **SQLite Requirement**: The Python interpreter used for the knowledge engine must link **SQLite `>= 3.43.0`** with FTS5 and `contentless_delete` support (pass `--knowledge-python /path/to/python` to `setup.py` to specify an explicit interpreter).
@@ -199,7 +183,7 @@ Each call is bound to the current session and working directory by Kimi's native
 
 ### Automatic Updates & Safe Uninstall
 
-- **Scheduled Model-Free Updates**: On macOS, a `launchd` job checks for compatible formal releases of the plugin and shared components. The updater prepares a separate environment, switches when current tasks are idle, and keeps rollback records. Adding or changing MCP services re-registers the Kimi plugin; component-only updates do not require reinstalling it. See [Automatic Updates](docs/update.en.md) and the [`0.1.6` release notes](docs/releases/mindie-agent-kimi-0.1.6.en.md). Check update status at any time with:
+- **Scheduled Model-Free Updates**: On macOS, a `launchd` job checks for compatible formal releases of the plugin and shared components. The updater prepares a separate environment, switches when current tasks are idle, and keeps rollback records. Adding or changing MCP services re-registers the Kimi plugin; component-only updates do not require reinstalling it. See [Automatic Updates](docs/update.en.md) and the [`0.1.10` release notes](docs/releases/mindie-agent-kimi-0.1.10.md). Check update status at any time with:
   ```sh
   MINDIE_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/mindie-agent/kimi.json"
   MINDIE_LAUNCHER=$(python3 -c 'import json,sys,pathlib; cfg=json.loads(pathlib.Path(sys.argv[1]).read_text()); u=pathlib.Path(cfg["state_dir"])/"update"; cur=json.loads((u/"current.json").read_text()); print(u/"launch"/(cur["sha"] or "bootstrap")/"mindie_launch.py")' "$MINDIE_CONFIG")
@@ -246,9 +230,9 @@ python3 -m unittest discover -s tests/native -v
 python3 -m unittest discover -s tests
 ```
 
-### `0.1.6` Release Benchmark
+### `0.1.10` Release Benchmark
 
-[`benchmarks/release.json`](benchmarks/release.json) (driven by `benchmarks/release.py`) defines the reproducible `0.1.6` CPU microbenchmark (`public-transcript-parsing`, metric `public_transcript_parse` in `us/op`), measuring per-operation latency for extracting public user/assistant messages and filtering non-public reasoning fields from `wire.jsonl`. Every formal GitHub Release publishes `benchmark-results.json`, `benchmark-results.md`. These deterministic CPU microbenchmarks verify local parser latency only and are distinct from live Ascend A2/A3 NPU integration acceptance and end-to-end Agent productivity evaluation.
+[`benchmarks/release.json`](benchmarks/release.json) (driven by `benchmarks/release.py`) defines the reproducible `0.1.10` CPU microbenchmark (`public-transcript-parsing`, metric `public_transcript_parse` in `us/op`), measuring per-operation latency for extracting public user/assistant messages and filtering non-public reasoning fields from `wire.jsonl`. Every formal GitHub Release publishes `benchmark-results.json`, `benchmark-results.md`. These deterministic CPU microbenchmarks verify local parser latency only and are distinct from live Ascend A2/A3 NPU integration acceptance and end-to-end Agent productivity evaluation.
 
 ---
 
