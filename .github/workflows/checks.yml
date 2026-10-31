@@ -35,6 +35,8 @@ jobs:
           python-version: "3.13"
       - name: Install pinned runtime
         run: |
+          git config --global core.longpaths true
+          git config --global core.autocrlf false
           pip install uv
           uv pip install --system -r runtime-requirements.txt -r test-requirements.txt --overrides runtime/active-overrides.txt
       - name: Compile all committed Python
