@@ -26,11 +26,11 @@
 
 ---
 
-**MindIE Agent for Kimi Code**（`mindie-agent-kimi`）是 [MindIE Agent](https://github.com/mindie-agent/mindie-agent) 面向 Kimi Code 的原生插件适配器，面向**昇腾（Ascend）NPU 上的 AI Infra 设计、开发与测试流程**提供统一的 Agent 支撑。当前 `v0.1.10`（配套主产品 `0.1.4`）已交付 **`vLLM-Ascend` 特性开发与测试**、**`AscendC` 与 `Triton` 算子实现验证**、远端 NPU 执行及公开经验脱敏沉淀能力；更多昇腾基础软件方向按路线图持续扩展。
+**MindIE Agent for Kimi Code**（`mindie-agent-kimi`）是 [MindIE Agent](https://github.com/mindie-agent/mindie-agent) 面向 Kimi Code 的原生插件适配器，面向**昇腾（Ascend）NPU 上的 AI Infra 设计、开发与测试流程**提供统一的 Agent 支撑。当前 `v0.1.11`（配套主产品 `0.1.6`）已交付 **`vLLM-Ascend` 特性开发与测试**、**`AscendC` 与 `Triton` 算子实现验证**、远端 NPU 执行及公开经验脱敏沉淀能力；更多昇腾基础软件方向按路线图持续扩展。
 
 项目设计遵循 [MindIE Agent 工程设计原则](https://github.com/mindie-agent/mindie-agent/blob/main/docs/design-principles.md)：共享知识引擎与远端开发能力由独立组件承载，本仓库专注于 Kimi 会话身份绑定、`wire.jsonl` 公开对话提取、MCP 桥接与本地不可变版本更新。
 
-> **生态与版本说明**：当前 `v0.1.10`（配套主产品 `0.1.4`）支持 Claude Code（[`mindie-agent-cc`](https://github.com/mindie-agent/mindie-agent-cc)）、OpenAI Codex CLI（[`mindie-agent-codex`](https://github.com/mindie-agent/mindie-agent-codex)）、Kimi Code（本仓库）与 DeepSeek Harness（[`mindie-agent-dsh`](https://github.com/mindie-agent/mindie-agent-dsh)）四个宿主，共享同一套知识、远端开发与诊断组件。各宿主的实机验证范围详见[文档导航](#文档导航)。
+> **生态与版本说明**：当前 `v0.1.11`（配套主产品 `0.1.6`）支持 Claude Code（[`mindie-agent-cc`](https://github.com/mindie-agent/mindie-agent-cc)）、OpenAI Codex CLI（[`mindie-agent-codex`](https://github.com/mindie-agent/mindie-agent-codex)）、Kimi Code（本仓库）与 DeepSeek Harness（[`mindie-agent-dsh`](https://github.com/mindie-agent/mindie-agent-dsh)）四个宿主，共享同一套知识、远端开发与诊断组件。各宿主的实机验证范围详见[文档导航](#文档导航)。
 
 ---
 
@@ -183,7 +183,7 @@ MindIE Agent 采用**「领域知识与 Skill 手动按需触发 + 远端开发�
 
 ### 自动更新与安全卸载
 
-- **后台自动更新**：macOS 上的 `launchd` 定时检查插件和共享组件的兼容正式版本。更新器先准备独立环境，待当前任务空闲后切换，并保留回滚记录。新增或调整 MCP 服务时会重新注册 Kimi 插件；仅更新组件版本时无需重装插件。详见 [自动更新机制](docs/update.md) 与 [`0.1.10` 发布说明](docs/releases/mindie-agent-kimi-0.1.10.md)。可随时查看更新状态：
+- **后台自动更新**：macOS 上的 `launchd` 定时检查插件和共享组件的兼容正式版本。更新器先准备独立环境，待当前任务空闲后切换，并保留回滚记录。新增或调整 MCP 服务时会重新注册 Kimi 插件；仅更新组件版本时无需重装插件。详见 [自动更新机制](docs/update.md) 与 [`0.1.11` 发布说明](docs/releases/mindie-agent-kimi-0.1.11.md)。可随时查看更新状态：
   ```sh
   MINDIE_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/mindie-agent/kimi.json"
   MINDIE_LAUNCHER=$(python3 -c 'import json,sys,pathlib; cfg=json.loads(pathlib.Path(sys.argv[1]).read_text()); u=pathlib.Path(cfg["state_dir"])/"update"; cur=json.loads((u/"current.json").read_text()); print(u/"launch"/(cur["sha"] or "bootstrap")/"mindie_launch.py")' "$MINDIE_CONFIG")
@@ -230,9 +230,9 @@ python3 -m unittest discover -s tests/native -v
 python3 -m unittest discover -s tests
 ```
 
-### `0.1.10` 发布基准测试（Release Benchmark）
+### `0.1.11` 发布基准测试（Release Benchmark）
 
-本仓库在 [`benchmarks/release.json`](benchmarks/release.json)（由 `benchmarks/release.py` 执行）中定义了面向 `0.1.10` 发布的可复现 CPU 微基准测试（用例 `public-transcript-parsing`，指标 `public_transcript_parse`，单位 `us/op`），用于测量本地 `wire.jsonl` 公开可见消息提取与非公开推理字段过滤的单次解析耗时。每个正式版 GitHub Release 均随附 `benchmark-results.json`、`benchmark-results.md`；该微基准仅验证本地解析组件的性能基线，与常备昇腾 A2/A3 NPU 真机集成验收及端到端 Agent 研发任务评估相互独立。
+本仓库在 [`benchmarks/release.json`](benchmarks/release.json)（由 `benchmarks/release.py` 执行）中定义了面向 `0.1.11` 发布的可复现 CPU 微基准测试（用例 `public-transcript-parsing`，指标 `public_transcript_parse`，单位 `us/op`），用于测量本地 `wire.jsonl` 公开可见消息提取与非公开推理字段过滤的单次解析耗时。每个正式版 GitHub Release 均随附 `benchmark-results.json`、`benchmark-results.md`；该微基准仅验证本地解析组件的性能基线，与常备昇腾 A2/A3 NPU 真机集成验收及端到端 Agent 研发任务评估相互独立。
 
 ---
 
