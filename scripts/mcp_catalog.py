@@ -24,21 +24,11 @@ KNOWLEDGE_TOOLS = [
     dict(
         name="mindie_entry",
         description=(
-            "Native MindIE entry. Mutations require the current /mindie-agent "
-            "invocation; op=status can diagnose an already bound task. "
-            "Requires a fresh request_nonce. Never pass a session id. "
-            "op=init binds this task internally and reports missing configuration "
-            "or status; an optional configured domain binds that target domain "
-            "separately without replacing the default-domain lease. op=choose "
-            "configures contribution or explicit disable "
-            "(contribute/disabled) for knowledge sharing and sanitized fault reporting. A conversational contribution "
-            "naming the public repository and account enables sharing for the "
-            "current project; via the entry itself the destination comes from "
-            "the native arguments (/mindie-agent contribute owner/repo "
-            "account). A saved choice persists across sessions, "
-            "restarts, upgrades and failures. Legacy choices require explicit "
-            "confirmation before fault uploads; ordinary startup never grants consent. "
-            "Status includes safe task failure categories and contribution batch IDs for recover inspection; it never retries work."
+            "Native MindIE entry for Kimi Code (requires a fresh request_nonce). "
+            "op='init' binds this session (or an optional configured target domain); "
+            "op='choose' configures contribution ('contribute' or 'disabled') for "
+            "public knowledge sharing and sanitized fault reporting; op='status' "
+            "returns read-only session, sharing, diagnostic, and reporting status."
         ),
         inputSchema=dict(
             type="object",
@@ -68,17 +58,13 @@ KNOWLEDGE_TOOLS = [
     dict(
         name="knowledge_query",
         description=(
-            "Use when a missing contract, mechanism or method could change the next action. "
-            "Skip retrieval when code and current evidence support a fix and verification; "
-            "probe missing environment facts first. "
-            "Search graded rules and task material in the selected domain. Returns bounded navigation "
-            "cards plus foundation_cards (compatible results also follow); each card has a readable ref "
-            "and feedback_ref for its observed revision. Pass known task conditions to filter graded rules. "
-            "For related task blocks, pass related_next as continuation without query. "
-            "A changed corpus rejects the continuation. Archived or superseded units stay hidden unless "
-            "include_archived is true. Pass domain only when the install configures that domain; an unknown "
-            "domain fails instead of using the default. Set navigation_only for cards without inline bodies, "
-            "and pass run_id to record managed-run delivery. References are advisory."
+            "Search graded rules and task material in the selected domain when a missing "
+            "contract, mechanism, or method is needed for the next step. Returns bounded "
+            "navigation cards and deduplicated foundation_cards; each card includes a "
+            "readable ref and feedback_ref for its observed revision. Pass observed task "
+            "conditions to filter graded rules (include_archived discovers archived or "
+            "superseded units). Pass related_next as continuation for related task blocks, "
+            "navigation_only to omit inline bodies, and run_id to bind delivery events."
         ),
         inputSchema=dict(
             type="object",
@@ -113,14 +99,11 @@ KNOWLEDGE_TOOLS = [
     dict(
         name="knowledge_distill",
         description=(
-            "Distill explicitly selected, already authorized evidence into graded "
-            "knowledge. Requires an active /mindie-agent task in the selected domain, "
-            "a fresh request_nonce, and an explicit task_state; ordinary Stop is not "
-            "completion. Inputs are the selected sanitized evidence only. Optional "
-            "related_refs select existing units for delta comparison, and proposal "
-            "submits a mindie-distill-decision/1 foreground decision for deterministic "
-            "validation without a model call. The shared runtime owns redaction, "
-            "SummaryLedger, local admission, and any publication plan."
+            "Distill caller-selected, authorized evidence into graded knowledge units "
+            "at task_state='verified_milestone' or 'completed' (requires an active "
+            "/mindie-agent session and a fresh request_nonce). Pass related_refs to "
+            "compare against existing units as a delta, or pass a mindie-distill-decision/1 "
+            "proposal for deterministic validation and local application with zero model calls."
         ),
         inputSchema=dict(
             type="object",
@@ -181,16 +164,12 @@ KNOWLEDGE_TOOLS = [
     dict(
         name="knowledge_explain",
         description=(
-            "Read only knowledge needed for the next action; an exact returned ref needs no new query. "
-            "For graded units, prefer refs even for one unit, with observed conditions, fully visible "
-            "known_refs and an explicit token_budget. Copy revision references exactly. Stop reading "
-            "once the next action and required premises are clear; new evidence can reopen retrieval. "
-            "Shared prerequisites expand once in requires; primary units "
-            "return complete units. A single ref keeps the exact current revision and legacy "
-            "task/block navigation; a block ref returns that immutable block with "
-            "previous_block_ref/next_block_ref for walking the task. Pass run_id to record delivery "
-            "for a managed run. The content is a reference "
-            "slice, not the full case or a verified report."
+            "Read complete graded units or task/block references by their exact returned ref. "
+            "For graded units, pass refs (even for one unit) with observed conditions, visible "
+            "known_refs, and token_budget to assemble the dependency closure (shared prerequisites "
+            "expand once in requires and full unit bodies appear in units). A single ref supports "
+            "legacy task and block navigation (first_block_ref and previous_block_ref/next_block_ref "
+            "for walking a task reference slice). Pass run_id to bind delivery events."
         ),
         inputSchema=dict(
             type="object",
@@ -214,11 +193,10 @@ KNOWLEDGE_TOOLS = [
     dict(
         name="knowledge_feedback",
         description=(
-            "Record optional usage evidence for the exact feedback_ref returned by query/explain. "
-            "Keep rating=up|down as the legacy vote; rating is optional when event_type is supplied. "
-            "event_type tracks discovered -> loaded -> applied -> evaluated; evaluated requires a "
-            "run_id and outcome=supported|refuted|inconclusive. step_id binds the stage to a step. "
-            "evidence_source records the caller-declared strength of evaluated evidence. Never required."
+            "Record optional usage events (discovered, loaded, applied, evaluated) or an "
+            "up/down rating for an exact feedback_ref returned by query or explain. "
+            "evaluated requires run_id and outcome=supported|refuted|inconclusive, with "
+            "optional step_id and evidence_source."
         ),
         inputSchema=dict(
             type="object",
