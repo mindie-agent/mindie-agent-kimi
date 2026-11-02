@@ -76,7 +76,7 @@ class NativeMcpLaunchTests(unittest.TestCase):
             manifest = json.loads((package / "kimi.plugin.json").read_text())
             expected = {"knowledge": {"mindie_entry", "knowledge_query", "knowledge_explain", "knowledge_distill", "knowledge_sync"},
                         "remote": {"remote_read", "remote_bash", "remote_job_status"},
-                        "components": {"coordinator", "profiler", "sim", "diagnostics_status",
+                        "components": {"coordinator", "profiler", "sim", "debugger", "diagnostics_status",
                                        "diagnostics_bundle", "mindie_status"}}
             for surface, server in manifest["mcpServers"].items():
                 with self.subTest(surface=surface):

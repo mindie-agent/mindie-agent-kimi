@@ -501,7 +501,7 @@ def _call_budget(surface, raw):
     }:
         return 180.0
     if _local_tool_name(message) in {
-        "profiler", "sim", "coordinator", "diagnostics_status", "diagnostics_bundle",
+        "profiler", "sim", "coordinator", "debugger", "diagnostics_status", "diagnostics_bundle",
     }:
         milliseconds = arguments.get("timeout_ms", 120000)
         if type(milliseconds) is int and 1 <= milliseconds <= 600000:

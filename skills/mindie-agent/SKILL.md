@@ -11,7 +11,7 @@ Use `/mindie-agent` to enable domain knowledge and experience capture for the cu
 
 Remote and component tools are always available without `/mindie-agent`:
 - `remote` MCP tools for remote file read/write, command execution, and background job management over SSH.
-- `components` MCP tools: `mindie_status`, `diagnostics_status`, and `diagnostics_bundle` (local-only), plus `coordinator`, `profiler`, and `sim` (running `mindie-coordinator`, `mindie-profiler`, and `mindie-sim` with an `argv` array).
+- `components` MCP tools: `mindie_status`, `diagnostics_status`, and `diagnostics_bundle` (local-only), plus `coordinator`, `debugger`, `profiler`, and `sim` (running `mindie-coordinator`, `mindie-debugger`, `mindie-profiler`, and `mindie-sim` with an `argv` array).
 
 ## On-Demand Knowledge Retrieval
 
