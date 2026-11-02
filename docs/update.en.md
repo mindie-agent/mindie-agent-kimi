@@ -2,7 +2,7 @@
 
 <a href="update.md">中文</a> | <b>English</b> · <a href="README.en.md">Documentation Index</a>
 
-`mindie-agent-kimi` selects the highest compatible formal Release from its official repository using the actual `kimi --version`. Drafts and prereleases are excluded, and installed versions never downgrade. The `mindie-plugin-release.json` asset declares the version, exact source SHA and supported hosts; it must match the source `harness-compatibility.json`. Supported and verified hosts in `harness-compatibility.json` are Kimi `2.1.1`, `2.2.0`, and `2.3.1`. `update_remote` / `MINDIE_KIMI_UPDATE_REMOTE` may select a source mirror, but cannot change the official Release selection.
+`mindie-agent-kimi` selects the highest compatible formal Release from its official repository using the actual `kimi --version`. Drafts and prereleases are excluded, and installed versions never downgrade. The `mindie-plugin-release.json` asset declares the version, exact source SHA and supported hosts; it must match the source `harness-compatibility.json`. Supported hosts in `harness-compatibility.json` cover Kimi `>=2.1.1 <=2.999.999` (including prerelease tags, verified on `2.1.1`, `2.2.0`, and `2.3.1`). `update_remote` / `MINDIE_KIMI_UPDATE_REMOTE` may select a source mirror, but cannot change the official Release selection.
 
 ---
 

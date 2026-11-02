@@ -2,7 +2,7 @@
 
 <b>中文</b> | <a href="update.en.md">English</a> · <a href="README.md">返回文档索引</a>
 
-`mindie-agent-kimi` 通过操作系统定时任务选择官方仓库中与实际 `kimi --version` 兼容的最高正式 Release，排除 draft 和 prerelease，且不会降级。`mindie-plugin-release.json` 声明版本、精确源 SHA 和兼容范围；源码中的 `harness-compatibility.json` 必须与发布附件一致。当前声明支持且有实机依据的宿主版本为 `2.1.1`、`2.2.0` 与 `2.3.1`。源码镜像可由 `update_remote` / `MINDIE_KIMI_UPDATE_REMOTE` 指定，但不能改变官方 Release 的选择结果。
+`mindie-agent-kimi` 通过操作系统定时任务选择官方仓库中与实际 `kimi --version` 兼容的最高正式 Release，排除 draft 和 prerelease，且不会降级。`mindie-plugin-release.json` 声明版本、精确源 SHA 和兼容范围；源码中的 `harness-compatibility.json` 必须与发布附件一致。当前声明支持 Kimi `>=2.1.1 <=2.999.999`（含预发布后缀，实机验证覆盖 `2.1.1`、`2.2.0` 与 `2.3.1`）。源码镜像可由 `update_remote` / `MINDIE_KIMI_UPDATE_REMOTE` 指定，但不能改变官方 Release 的选择结果。
 
 ---
 

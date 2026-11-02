@@ -30,10 +30,16 @@ class ReleaseSelectionTests(unittest.TestCase):
             self.assertEqual(result["harness_version"], "2.2.0")
             self.assertEqual(native.call_args.args[0], ["/selected/kimi", "--version"])
             self.assertEqual(verify.call_args.args[0], declaration)
-            version_result.stdout = "2.1.2\n"
-            result = release_metadata.select_candidate("/selected/kimi", "0.0.1")
-            self.assertEqual(result["status"], "no_compatible_release")
-            self.assertEqual(verify.call_count, 1)
+            for compatible in ("2.3.1\n", "2.3.2\n", "2.4.0-rc.1\n", "2.99.0\n"):
+                version_result.stdout = compatible
+                result = release_metadata.select_candidate("/selected/kimi", "0.0.1")
+                self.assertEqual(result["candidate"]["metadata"], declaration)
+            verify_calls = verify.call_count
+            for incompatible in ("2.1.0\n", "3.0.0-alpha.1\n", "3.0.0\n"):
+                version_result.stdout = incompatible
+                result = release_metadata.select_candidate("/selected/kimi", "0.0.1")
+                self.assertEqual(result["status"], "no_compatible_release")
+            self.assertEqual(verify.call_count, verify_calls)
 
     def test_source_verification_failure_stops_selection(self):
         declaration = release_metadata.metadata(SCRIPTS.parent, "a" * 40)
