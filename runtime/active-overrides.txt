@@ -9,6 +9,6 @@
 # already-installed newer component or advances to a newer formal release; it
 # never downgrades.
 mindie-diagnostics @ git+https://github.com/mindie-agent/diagnostics@f2f2f946c172afc99342a84c0c1ed244f6d44e01
-mindie-knowledge @ git+https://github.com/mindie-agent/knowledge@7936a4fda67f6808d8fa73824363a4d7345766e5
+mindie-knowledge @ git+https://github.com/mindie-agent/knowledge@8645deb20026a3d47ef0aa97e2dbaff619065353
 mindie-sim @ git+https://github.com/mindie-agent/sim@ced2dba5741af2d98f3a75b2a9cad77b9b94c40d
 remote-dev @ git+https://github.com/mindie-agent/remote-dev@7c67876d716feb3949e4dbf33eb5e06980ff0d36

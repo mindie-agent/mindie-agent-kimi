@@ -78,7 +78,7 @@ KNOWLEDGE_TOOLS = [
                     "description": "Installed canonical domain to search; omit for the default domain.",
                 },
                 domain_path={"type": "string"},
-                token_budget={"type": "integer", "minimum": 1, "maximum": 16000},
+                token_budget={"type": "integer", "minimum": 1, "maximum": 64000},
                 include_unknown={"type": "boolean"},
                 include_archived={"type": "boolean"},
                 navigation_only={
@@ -178,7 +178,7 @@ KNOWLEDGE_TOOLS = [
                 refs={"type": "array", "items": {"type": "string"}},
                 conditions={"type": "object"},
                 known_refs={"type": "array", "items": {"type": "string"}},
-                token_budget={"type": "integer", "minimum": 1, "maximum": 16000},
+                token_budget={"type": "integer", "minimum": 1, "maximum": 64000},
                 run_id={
                     "type": "string",
                     "description": "Managed run id used to record explain delivery for this read.",
