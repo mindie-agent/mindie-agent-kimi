@@ -3,5 +3,5 @@
 pytest==9.1.1
 mindie-debugger @ git+https://github.com/mindie-agent/debugger@e9406b2b178335190d5cb59dff4d6985894497ba
 mindie-profiler @ git+https://github.com/mindie-agent/profiler@79d97e75bff7351b0472b93c03b072c1cf47f5e7
-mindie-sim @ git+https://github.com/mindie-agent/sim@ced2dba5741af2d98f3a75b2a9cad77b9b94c40d
+mindie-sim @ git+https://github.com/mindie-agent/sim@dbadff04b60937a0722b0a227cdad01beed083cd
 mindie-coordinator @ git+https://github.com/mindie-agent/coordinator@79a8b28eef72d57f965a01c6660849f024fbb1c0
