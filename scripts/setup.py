@@ -194,16 +194,23 @@ def installer_environment():
         env["UV_NATIVE_TLS"] = "true"
     elif "UV_SYSTEM_CERTS" not in env:
         env.setdefault("UV_NATIVE_TLS", "true")
-    if "GIT_CONFIG_COUNT" not in env:
-        git_pairs = (
-            ("core.longpaths", "true"),
-            ("core.autocrlf", "false"),
-            ("credential.https://github.com.provider", "github"),
-        )
-        env["GIT_CONFIG_COUNT"] = str(len(git_pairs))
-        for idx, (k, v) in enumerate(git_pairs):
-            env[f"GIT_CONFIG_KEY_{idx}"] = k
-            env[f"GIT_CONFIG_VALUE_{idx}"] = v
+    git_pairs = (
+        ("core.longpaths", "true"),
+        ("core.autocrlf", "false"),
+        ("credential.https://github.com.provider", "github"),
+    )
+    try:
+        count = max(0, int(env.get("GIT_CONFIG_COUNT") or "0"))
+    except ValueError:
+        count = 0
+    existing_keys = {env.get(f"GIT_CONFIG_KEY_{idx}") for idx in range(count)}
+    for k, v in git_pairs:
+        if k not in existing_keys:
+            env[f"GIT_CONFIG_KEY_{count}"] = k
+            env[f"GIT_CONFIG_VALUE_{count}"] = v
+            existing_keys.add(k)
+            count += 1
+    env["GIT_CONFIG_COUNT"] = str(count)
     return env
 
 
@@ -232,17 +239,46 @@ def build_bootstrap_runtime(domain_root: Path) -> str:
     return str(python)
 
 
-def activate_reporting(python, config, *, contribution=False):
+def activate_reporting(python, config, *, contribution=False, choice=None):
     from bounded import run
 
     argv = [str(python), str(PLUGIN_ROOT / "scripts" / "diagnostic_support.py"),
             "--config", str(config)]
-    if contribution:
-        argv += ["--choice", "contribute"]
+    selected = choice or ("contribute" if contribution else None)
+    if selected:
+        argv += ["--choice", selected]
     return json.loads(run(argv, "", timeout=90))
 
 
-def main():
+def _resolve_sharing_python(config: Path, knowledge_python: str | None) -> str | None:
+    import importlib.util
+
+    if knowledge_python:
+        return str(Path(knowledge_python).expanduser().absolute())
+    for candidate_cfg in (config, default_config_path()):
+        if candidate_cfg.is_file():
+            try:
+                configured = json.loads(candidate_cfg.read_text(encoding="utf-8")).get("python")
+                if isinstance(configured, str) and Path(configured).is_file():
+                    return configured
+            except (OSError, ValueError):
+                pass
+    if importlib.util.find_spec("mindie_knowledge") is not None:
+        return sys.executable
+    return None
+
+
+def main(argv: list[str] | None = None):
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    if raw_argv and raw_argv[0] == "sharing":
+        from community_config import run_sharing_cli
+
+        return run_sharing_cli(
+            raw_argv[1:],
+            default_config=default_config_path(),
+            resolve_python=_resolve_sharing_python,
+            activate_reporting_fn=activate_reporting,
+        )
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--knowledge-python", default=None, help="operator override; default builds a pinned venv")
     parser.add_argument("--config", type=Path, default=default_config_path())
@@ -261,7 +297,7 @@ def main():
     parser.add_argument("--kimi-home", type=Path, help="explicit Kimi home for native plugin install/update")
     parser.add_argument("--update-remote", default=None, help="git remote tracked for automatic updates")
     parser.add_argument("--no-schedule", action="store_true", help="do not register the automatic update check")
-    args = parser.parse_args()
+    args = parser.parse_args(raw_argv)
     if sys.version_info < ((3, 12) if os.name == "nt" else (3, 11)):
         parser.error("Python 3.12+ on Windows or 3.11+ on POSIX is required; prefer Python 3.13")
     community = community_settings(args, parser)

@@ -673,3 +673,164 @@ class SetupInstallTests(unittest.TestCase):
             self.assertFalse((dest / setup.BOOTSTRAP_COMPLETE).exists())
             leftovers = [p.name for p in dest.parent.iterdir() if p.name != dest.name]
             self.assertEqual(leftovers, [])
+
+    def test_installer_environment_appends_to_existing_git_config_count(self):
+        sys.path.insert(0, str(SCRIPTS))
+        import setup
+        from unittest.mock import patch
+
+        with patch.dict(
+            os.environ,
+            {
+                "GIT_CONFIG_COUNT": "2",
+                "GIT_CONFIG_KEY_0": "http.sslCAInfo",
+                "GIT_CONFIG_VALUE_0": "/etc/corp/ca.pem",
+                "GIT_CONFIG_KEY_1": "core.longpaths",
+                "GIT_CONFIG_VALUE_1": "true",
+            },
+            clear=False,
+        ):
+            env = setup.installer_environment()
+        self.assertEqual(env["GIT_CONFIG_COUNT"], "4")
+        self.assertEqual(env["GIT_CONFIG_KEY_0"], "http.sslCAInfo")
+        self.assertEqual(env["GIT_CONFIG_KEY_1"], "core.longpaths")
+        self.assertEqual(env["GIT_CONFIG_KEY_2"], "core.autocrlf")
+        self.assertEqual(env["GIT_CONFIG_VALUE_2"], "false")
+        self.assertEqual(env["GIT_CONFIG_KEY_3"], "credential.https://github.com.provider")
+        self.assertEqual(env["GIT_CONFIG_VALUE_3"], "github")
+
+    def test_sharing_subcommand_lifecycle_mutual_exclusivity_and_validation_guard(self):
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            config = tmp / "cfg" / "kimi.json"
+            project = tmp / "workspace"
+            project.mkdir()
+            env = env_for(
+                extra={
+                    "MINDIE_KIMI_CONFIG": str(config),
+                    "MINDIE_DIAGNOSTICS_ROOT": str(tmp / "diag-root"),
+                    "MINDIE_DIAGNOSTICS_CONFIG": str(tmp / "cfg" / "diagnostics.json"),
+                }
+            )
+            # 1. Mutual exclusivity: bare `sharing` or `--enable --disable` must exit 2 without creating consent.
+            for bad_args in (["sharing"], ["sharing", "--enable", "--disable"]):
+                res = subprocess.run(
+                    [sys.executable, str(SCRIPTS / "setup.py"), *bad_args],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    env=env,
+                )
+                self.assertEqual(res.returncode, 2, res.stderr)
+                self.assertFalse(config.with_name("mindie-consent.json").exists())
+
+            # 2. Pure-stdlib `--status` before onboarding.
+            status_res = subprocess.run(
+                [sys.executable, "-S", str(SCRIPTS / "setup.py"), "sharing", "--status", "--config", str(config)],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                env=env,
+            )
+            self.assertEqual(status_res.returncode, 0, status_res.stderr)
+            initial = json.loads(status_res.stdout)
+            self.assertEqual(initial["schema"], "mindie-sharing-status/1")
+            self.assertEqual(initial["harness"], "kimi-code")
+            self.assertIsNone(initial["consent_choice"])
+            self.assertFalse(initial["sharing_enabled"])
+            self.assertFalse(initial["reporting_enabled"])
+            self.assertTrue(initial["needs_onboarding_prompt"])
+
+            # 3. Invalid `--repository` must fail BEFORE writing `mindie-consent.json`.
+            bad_repo = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPTS / "setup.py"),
+                    "sharing",
+                    "--enable",
+                    "--config",
+                    str(config),
+                    "--project-root",
+                    str(project),
+                    "--repository",
+                    "INVALID_REPO",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                env=env,
+            )
+            self.assertNotEqual(bad_repo.returncode, 0)
+            self.assertFalse(config.with_name("mindie-consent.json").exists())
+
+            # 4. Valid `--enable` writes community config, consent (`contribute`), and reporting.
+            enable_res = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPTS / "setup.py"),
+                    "sharing",
+                    "--enable",
+                    "--config",
+                    str(config),
+                    "--project-root",
+                    str(project),
+                    "--account",
+                    "alice",
+                    "--fork",
+                    "alice/knowledge-vllm-ascend",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=env,
+            )
+            self.assertEqual(enable_res.returncode, 0, enable_res.stderr)
+            enabled_payload = json.loads(enable_res.stdout)
+            self.assertEqual(enabled_payload["consent_choice"], "contribute")
+            self.assertTrue(enabled_payload["sharing_enabled"])
+            self.assertFalse(enabled_payload["needs_onboarding_prompt"])
+            self.assertEqual(enabled_payload["account"], "alice")
+            self.assertEqual(enabled_payload["fork"], "alice/knowledge-vllm-ascend")
+            self.assertEqual(enabled_payload["project_roots"], [str(project.resolve())])
+
+            # 5. `--disable` records `disabled` and turns sharing off; invalid `--repository` after disable cannot flip consent back.
+            disable_res = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPTS / "setup.py"),
+                    "sharing",
+                    "--disable",
+                    "--config",
+                    str(config),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=env,
+            )
+            self.assertEqual(disable_res.returncode, 0, disable_res.stderr)
+            disabled_payload = json.loads(disable_res.stdout)
+            self.assertEqual(disabled_payload["consent_choice"], "disabled")
+            self.assertFalse(disabled_payload["sharing_enabled"])
+            self.assertFalse(disabled_payload["reporting_enabled"])
+            self.assertFalse(disabled_payload["needs_onboarding_prompt"])
+
+            bad_reenable = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPTS / "setup.py"),
+                    "sharing",
+                    "--enable",
+                    "--config",
+                    str(config),
+                    "--repository",
+                    "BAD",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                env=env,
+            )
+            self.assertNotEqual(bad_reenable.returncode, 0)
+            consent_doc = json.loads(config.with_name("mindie-consent.json").read_text())
+            self.assertEqual(consent_doc["choice"], "disabled")

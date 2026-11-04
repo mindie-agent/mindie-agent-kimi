@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/mindie-agent/mindie-agent-kimi/releases"><img src="https://img.shields.io/badge/release-v0.1.15-0F766E.svg" alt="Release v0.1.15"></a>
+  <a href="https://github.com/mindie-agent/mindie-agent-kimi/releases"><img src="https://img.shields.io/badge/release-v0.1.16-0F766E.svg" alt="Release v0.1.16"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-0F766E.svg" alt="License: MIT"></a>
   <a href="runtime-requirements.txt"><img src="https://img.shields.io/badge/python-3.11%2B-2563EB.svg" alt="Python 3.11+"></a>
   <a href="kimi.plugin.json"><img src="https://img.shields.io/badge/host-Kimi_Code-7C3AED.svg" alt="Host: Kimi Code"></a>
@@ -19,7 +19,7 @@
 <p align="center">
   <a href="README.md">中文</a> | <b>English</b> ·
   <a href="#quick-start">Quick Start</a> ·
-  <a href="#why-use-this-plugin">What Can It Do?</a> ·
+  <a href="#why-use-this-plugin-trigger-modes--usage-examples">What Can It Do?</a> ·
   <a href="#everyday-usage--interaction">Usage</a> ·
   <a href="#architecture--component-map">Architecture</a> ·
   <a href="docs/README.en.md">Documentation</a>
@@ -27,11 +27,11 @@
 
 ---
 
-**MindIE Agent for Kimi Code** (`mindie-agent-kimi`) is the native Kimi Code plugin adapter for [MindIE Agent](https://github.com/mindie-agent/mindie-agent), supporting the **Ascend NPU AI Infra design, development, and testing workflow**. In `v0.1.14` (paired with `mindie-agent 0.1.8`), it delivers **`vLLM-Ascend` feature development & testing**, **`AscendC` / `Triton` operator implementation & verification**, remote NPU execution, and sanitized public experience capture, while additional Ascend AI Infra domains continue expanding on the roadmap.
+**MindIE Agent for Kimi Code** (`mindie-agent-kimi`) is the native Kimi Code plugin adapter for [MindIE Agent](https://github.com/mindie-agent/mindie-agent), supporting the **Ascend NPU AI Infra design, development, and testing workflow**. In `v0.1.15` (paired with `mindie-agent 0.1.8`), it delivers **`vLLM-Ascend` feature development & testing**, **`AscendC` / `Triton` operator implementation & verification**, remote NPU execution, and sanitized public experience capture, while additional Ascend AI Infra domains continue expanding on the roadmap.
 
 Designed around the [MindIE Agent Engineering Design Principles](https://github.com/mindie-agent/mindie-agent/blob/main/docs/design-principles.en.md), this thin adapter handles Kimi session identity, `wire.jsonl` public transcript extraction, MCP dispatch, and atomic generation updates, while delegating core knowledge, remote execution, and diagnostics to shared components.
 
-> **Ecosystem & Release Note**: Currently `v0.1.14` (paired with `mindie-agent 0.1.8`) supports four hosts — Claude Code ([`mindie-agent-cc`](https://github.com/mindie-agent/mindie-agent-cc)), OpenAI Codex CLI ([`mindie-agent-codex`](https://github.com/mindie-agent/mindie-agent-codex)), Kimi Code (this repository), and DeepSeek Harness ([`mindie-agent-dsh`](https://github.com/mindie-agent/mindie-agent-dsh)) — all built on the same shared knowledge, remote-dev, and diagnostics components. See the [Documentation Index](#documentation-index) for per-host verification scope.
+> **Ecosystem & Release Note**: Currently `v0.1.15` (paired with `mindie-agent 0.1.8`) supports four hosts — Claude Code ([`mindie-agent-cc`](https://github.com/mindie-agent/mindie-agent-cc)), OpenAI Codex CLI ([`mindie-agent-codex`](https://github.com/mindie-agent/mindie-agent-codex)), Kimi Code (this repository), and DeepSeek Harness ([`mindie-agent-dsh`](https://github.com/mindie-agent/mindie-agent-dsh)) — all built on the same shared knowledge, remote-dev, and diagnostics components. See the [Documentation Index](#documentation-index) for per-host verification scope.
 
 ---
 
@@ -90,49 +90,72 @@ Please install https://github.com/mindie-agent/mindie-agent-kimi for me
 If you are an AI Agent asked by the user to install this plugin, execute the following deterministic steps directly in the terminal **without asking the user to read the documentation manually**:
 
 1. **Check prerequisites, the `gh` GitHub channel (Hard Requirement), and SQLite FTS5 support**:
-   **A stable, authenticated GitHub CLI (`gh`) channel is a hard requirement**—it powers source fetches, `knowledge-vllm-ascend` sync, automated PR publication (via `gh api` and `!gh auth git-credential`), and opt-in fault reporting:
+   **A stable, authenticated GitHub CLI (`gh`) channel is a hard requirement**—it powers source fetches, `knowledge-vllm-ascend` sync, automated PR publication (via `gh api` and process-scoped `!gh auth git-credential` with zero global Git config pollution), and opt-in fault reporting:
    ```sh
-   git --version
-   gh --version
+   git --version && uv --version && gh --version && kimi --version
    GH_USER=$(gh api --hostname github.com user --jq .login) && echo "GitHub channel verified for account: $GH_USER"
-   gh auth setup-git --hostname github.com
-   kimi --version
-   python3 -c "import sqlite3; assert sqlite3.sqlite_version_info >= (3, 43, 0), sqlite3.sqlite_version; print('SQLite OK:', sqlite3.sqlite_version)"
+   uv run --no-project --python 3.13 python -c "import sqlite3; assert sqlite3.sqlite_version_info >= (3, 43, 0), sqlite3.sqlite_version; print('SQLite OK:', sqlite3.sqlite_version)"
    ```
-   - **Hard Gate (Never skip or silently ignore)**: If `gh` is missing, assist the user in installing it first (macOS: `brew install gh`; Windows: `winget install --id GitHub.cli`; Ubuntu / WSL: `sudo apt update && sudo apt install -y gh`). Reuse a working account. Otherwise follow [GitHub Sign-In](skills/mindie-agent/references/github-authentication.md): browser login on ordinary networks, or token login on enterprise networks / blocked browser authorization. Use an existing token in the hidden `gh` prompt (or a supplied private file), or guide token creation. Verify the account, Git and credential reuse before continuing; fix transport/certificate failures before retrying authentication.
+   - **Hard Gate (Never skip or silently ignore)**: If `gh` is missing, assist the user in installing it first (macOS: `brew install gh`; Windows: `winget install --id GitHub.cli`; Ubuntu / WSL: `sudo apt update && sudo apt install -y gh`). Reuse a working account. Otherwise follow [GitHub Sign-In](skills/mindie-agent/references/github-authentication.md): browser login on ordinary networks, or token login on enterprise networks / blocked browser authorization. Use an existing token in the hidden `gh` prompt (or a supplied private file), or guide token creation. Use process-scoped `GIT_CONFIG_COUNT` (including `credential.https://github.com.helper=!gh auth git-credential`, without modifying global or system Git configuration files) to verify the account, Git, and credential reuse before continuing; fix transport/certificate failures before retrying authentication.
    - Prefer Python 3.13. Windows requires Python >= 3.12 for nonblocking MCP pipes; POSIX requires Python >= 3.11. The linked SQLite library must be `>= 3.43.0` (compiled with FTS5 and `contentless_delete` support).
 
-2. **Clone the repository, build the pinned runtime, and register via Kimi's native plugin API**:
+2. **Clone the repository and build the pinned runtime**:
    ```sh
-   git clone https://github.com/mindie-agent/mindie-agent-kimi.git /tmp/mindie-agent-kimi
-   cd /tmp/mindie-agent-kimi
-   SETUP_JSON=$(python3 scripts/setup.py)
+   KIMI_SRC="${TMPDIR:-/tmp}/mindie-agent-kimi"
+   rm -rf "$KIMI_SRC"
+   UV_SYSTEM_CERTS=true UV_NATIVE_TLS=true \
+   GIT_CONFIG_COUNT=3 \
+   GIT_CONFIG_KEY_0=core.longpaths GIT_CONFIG_VALUE_0=true \
+   GIT_CONFIG_KEY_1=core.autocrlf GIT_CONFIG_VALUE_1=false \
+   GIT_CONFIG_KEY_2=credential.https://github.com.helper GIT_CONFIG_VALUE_2="!gh auth git-credential" \
+   git clone --depth 1 --branch v0.1.16 https://github.com/mindie-agent/mindie-agent-kimi.git "$KIMI_SRC"
+   SETUP_JSON=$(uv run --no-project --python 3.13 python "$KIMI_SRC/scripts/setup.py")
    echo "$SETUP_JSON"
-   NATIVE_PKG=$(printf '%s' "$SETUP_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin)['native_package'])")
-   python3 scripts/install_kimi_plugin.py \
+   NATIVE_PKG=$(printf '%s' "$SETUP_JSON" | uv run --no-project --python 3.13 python -c "import json,sys; print(json.load(sys.stdin)['native_package'])")
+   ```
+
+3. **Register via Kimi's native plugin API**:
+   ```sh
+   uv run --no-project --python 3.13 python "$KIMI_SRC/scripts/install_kimi_plugin.py" \
      --kimi-home "${KIMI_CODE_HOME:-$HOME/.kimi-code}" \
      --plugin-root "$NATIVE_PKG"
    ```
 
-3. **Verify plugin installation**:
+4. **Verify plugin installation and read-only onboarding status**:
    ```sh
-   python3 scripts/install_kimi_plugin.py \
+   uv run --no-project --python 3.13 python "$KIMI_SRC/scripts/install_kimi_plugin.py" \
      --kimi-home "${KIMI_CODE_HOME:-$HOME/.kimi-code}" \
      --plugin-root "$NATIVE_PKG" \
      --readback
+   uv run --no-project --python 3.13 python "$KIMI_SRC/scripts/setup.py" sharing --status
    ```
-   - Confirm `mindie-agent` shows `enabled: true`, `state: "ok"`, and all three MCP servers (`knowledge`, `remote`, and `components`) enabled. Report the verified GitHub account (`$GH_USER`) and installation completion to the user (the temporary clone `/tmp/mindie-agent-kimi` can be removed; the persistent runtime lives under `~/.local/share/mindie-agent/kimi`).
+   - Confirm `mindie-agent` shows `enabled: true`, `state: "ok"`, and all three MCP servers (`knowledge`, `remote`, and `components`) enabled. The temporary clone `$KIMI_SRC` can be removed after completing step 5; the persistent runtime lives under `~/.local/share/mindie-agent/kimi`.
 
-   Continue with step 4 after verification, then report the complete setup result.
+   Continue immediately with step 5 after verification, then report the complete setup result.
 
-4. **Finish first-time setup and development workspace onboarding**:
-   - Summarize the [User & Contribution Notice](skills/mindie-agent/references/user-notice.md), then walk through [Workspace Setup](skills/mindie-agent/references/workspace-setup.md): whether contribution is enabled or disabled, offer **creating and initializing `vllm-ascend-workspace`**, **reusing an existing workspace directory**, or **keeping the current directory** (reusing any choice already saved).
-   - When the user chooses to create or reuse a workspace, automatically register the selected path through the host's native project/workspace command, verify the result, and initialize sources via the workspace's `repo_init.py` (reusing the verified GitHub login and any saved fork configuration).
-   - Report the plugin installation status, workspace path, native host registration, and source initialization status together (noting any final UI step if needed).
-   - **Ask if the user would like to Star the main repository ⭐**: At the end of the summary, ask: *"If you found MindIE Agent helpful, would you like me to star `mindie-agent/mindie-agent` on GitHub for you? It helps the project grow! ⭐"* **Strict Consent Rule**: Only run the command if the user explicitly says yes (never run it automatically without consent):
-     ```sh
-     gh api --hostname github.com --silent -X PUT /user/starred/mindie-agent/mindie-agent && gh api --hostname github.com --silent /user/starred/mindie-agent/mindie-agent
-     ```
+5. **Pop up Kimi's native `AskUserQuestion` onboarding prompt and apply choices in order**:
+   - Briefly present the three core guarantees from the [User & Contribution Notice](skills/mindie-agent/references/user-notice.md) (local Gitleaks dual-layer redaction, public knowledge PRs + sanitized fault Issues only, and a single revocable `mindie-consent.json` authority switch).
+   - When `setup.py sharing --status` reports `needs_onboarding_prompt: true` (or workspace/Star onboarding is pending), **call Kimi Code's native `AskUserQuestion` tool** (or present a structured numbered choice card `[1]/[2]` and wait for the user's reply if the current CLI surface does not expose `AskUserQuestion`) with these 3 single-select questions:
+     1. **Community Sharing & Fault Reporting (`Community`)**:
+        - Option 1: `(Recommended) Enable community sharing & fault reporting (contribute)` — Enable experience distillation, local Gitleaks redaction + open-source PRs to `mindie-agent/knowledge-vllm-ascend`, and sanitized fault reporting
+        - Option 2: `Keep disabled for local-only use (disabled)` — Use local deterministic tools and read-only public knowledge without background capture or reporting
+     2. **GitHub Star ⭐ (`GitHub Star`)**:
+        - Option 1: `(Recommended) Star mindie-agent/mindie-agent ⭐` — Star `mindie-agent/mindie-agent` with the authenticated `gh` account
+        - Option 2: `Skip for now` — Do not star the repository
+     3. **Local Development Workspace (`Workspace`)**:
+        - Option 1: `(Recommended) Create and initialize vllm-ascend-workspace` — Follow [Workspace Setup](skills/mindie-agent/references/workspace-setup.md) to create the workspace, register it in Kimi, and run `uv run --no-project --python 3.13 python .agents/scripts/repo_init.py --no-input`
+        - Option 2: `Keep the current directory` — Use the current working directory without cloning source repositories
+        - Option 3: `Reuse an existing local workspace directory` — Specify an existing local workspace path and register it in Kimi
+   - **Apply only the user's explicit answers in strict order (never write consent without user input)**:
+     1. **Resolve or initialize the workspace directory first** to obtain the absolute `WORKSPACE_ROOT`;
+     2. **Record the community sharing & fault reporting choice**:
+        - If `contribute`: `uv run --no-project --python 3.13 python "$KIMI_SRC/scripts/setup.py" sharing --enable --project-root "$WORKSPACE_ROOT"`
+        - If `disabled`: `uv run --no-project --python 3.13 python "$KIMI_SRC/scripts/setup.py" sharing --disable`
+     3. **Star the main repository if approved in Question 2**:
+        ```sh
+        gh api --hostname github.com --silent -X PUT /user/starred/mindie-agent/mindie-agent && gh api --hostname github.com --silent /user/starred/mindie-agent/mindie-agent
+        ```
+   - Report the plugin installation status, verified GitHub account (`$GH_USER`), sharing status, workspace path, and native host registration together.
 
 </details>
 
@@ -184,7 +207,7 @@ Each call is bound to the current session and working directory by Kimi's native
 
 ### Automatic Updates & Safe Uninstall
 
-- **Scheduled Model-Free Updates**: On macOS, a `launchd` job checks for compatible formal releases of the plugin and shared components. The updater prepares a separate environment, switches when current tasks are idle, and keeps rollback records. Adding or changing MCP services re-registers the Kimi plugin; component-only updates do not require reinstalling it. See [Automatic Updates](docs/update.en.md) and the [`0.1.14` release notes](docs/releases/mindie-agent-kimi-0.1.14.md). Check update status at any time with:
+- **Scheduled Model-Free Updates**: On macOS, a `launchd` job checks for compatible formal releases of the plugin and shared components. The updater prepares a separate environment, switches when current tasks are idle, and keeps rollback records. Adding or changing MCP services re-registers the Kimi plugin; component-only updates do not require reinstalling it. See [Automatic Updates](docs/update.en.md) and the [`0.1.15` release notes](docs/releases/mindie-agent-kimi-0.1.15.md). Check update status at any time with:
   ```sh
   MINDIE_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/mindie-agent/kimi.json"
   MINDIE_LAUNCHER=$(python3 -c 'import json,sys,pathlib; cfg=json.loads(pathlib.Path(sys.argv[1]).read_text()); u=pathlib.Path(cfg["state_dir"])/"update"; cur=json.loads((u/"current.json").read_text()); print(u/"launch"/(cur["sha"] or "bootstrap")/"mindie_launch.py")' "$MINDIE_CONFIG")
@@ -231,9 +254,9 @@ python3 -m unittest discover -s tests/native -v
 python3 -m unittest discover -s tests
 ```
 
-### `0.1.14` Release Benchmark
+### Release Benchmark
 
-[`benchmarks/release.json`](benchmarks/release.json) (driven by `benchmarks/release.py`) defines the reproducible `0.1.14` CPU microbenchmark (`public-transcript-parsing`, metric `public_transcript_parse` in `us/op`), measuring per-operation latency for extracting public user/assistant messages and filtering non-public reasoning fields from `wire.jsonl`. Every formal GitHub Release publishes `benchmark-results.json`, `benchmark-results.md`. These deterministic CPU microbenchmarks verify local parser latency only and are distinct from live Ascend A2/A3 NPU integration acceptance and end-to-end Agent productivity evaluation.
+[`benchmarks/release.json`](benchmarks/release.json) (driven by `benchmarks/release.py`) defines the reproducible `0.1.15` CPU microbenchmark (`public-transcript-parsing`, metric `public_transcript_parse` in `us/op`), measuring per-operation latency for extracting public user/assistant messages and filtering non-public reasoning fields from `wire.jsonl`. Every formal GitHub Release publishes `benchmark-results.json`, `benchmark-results.md`. These deterministic CPU microbenchmarks verify local parser latency only and are distinct from live Ascend A2/A3 NPU integration acceptance and end-to-end Agent productivity evaluation.
 
 ---
 
