@@ -44,6 +44,7 @@ def metadata(source: Path, revision: str) -> dict:
 def select_candidate(kimi_bin: str, installed_version: str) -> dict:
     version = subprocess.run(
         [kimi_bin, "--version"], check=True, capture_output=True, text=True, timeout=10,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     ).stdout.strip()
     selected = select_release(
         fetch_releases(REPOSITORY, minimum_version=installed_version), repository=REPOSITORY, harness_name=HARNESS,

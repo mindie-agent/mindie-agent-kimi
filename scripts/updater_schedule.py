@@ -229,6 +229,7 @@ def _native_run(argv, timeout):
     completed = subprocess.run(
         argv, stdin=subprocess.DEVNULL, capture_output=True, text=True,
         errors="replace", timeout=timeout,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     return completed.returncode, completed.stdout or "", completed.stderr or ""
 

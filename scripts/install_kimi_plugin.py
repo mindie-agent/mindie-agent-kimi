@@ -198,6 +198,7 @@ def main():
             env=env,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         token_path = home / "server.token"
         deadline = time.monotonic() + 20

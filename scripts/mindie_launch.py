@@ -762,7 +762,9 @@ def _updater(rest) -> int:
 
             return subprocess.run(
                 [current["python"], str(script), *rest],
+                stdin=sys.stdin, stdout=sys.stdout, stderr=sys.stderr,
                 env=_child_env(current), timeout=1210, check=False,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             ).returncode
         os.execve(current["python"], [current["python"], str(script), *rest], _child_env(current))
     except TimeoutError:

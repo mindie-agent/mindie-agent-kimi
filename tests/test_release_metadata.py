@@ -31,6 +31,10 @@ class ReleaseSelectionTests(unittest.TestCase):
             self.assertEqual(result["candidate"]["metadata"], declaration)
             self.assertEqual(result["harness_version"], "2.2.0")
             self.assertEqual(native.call_args.args[0], ["/selected/kimi", "--version"])
+            self.assertEqual(
+                native.call_args.kwargs.get("creationflags"),
+                getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
             self.assertEqual(verify.call_args.args[0], declaration)
             for compatible in ("2.3.1\n", "2.3.2\n", "2.4.0-rc.1\n", "2.99.0\n"):
                 version_result.stdout = compatible
