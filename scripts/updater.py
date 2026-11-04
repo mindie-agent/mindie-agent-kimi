@@ -152,30 +152,46 @@ def _installed_version(current: dict) -> str:
 
 def _release_catalog(adapter: dict, current: dict, deadline: float) -> dict:
     from paths import resolve_kimi_bin
+    from release_metadata import typed_catalog_error
 
     kimi = resolve_kimi_bin(adapter)
     if not (isinstance(kimi, str) and kimi):
-        raise CheckFailed("adapter configuration lacks kimi_bin for release selection")
+        raise FileNotFoundError("adapter configuration lacks kimi_bin for release selection")
     # Bound all pagination, asset and source reads together, including cleanup.
-    output = bounded_run(
-        [sys.executable, str(HERE / "release_metadata.py"), "select",
-         "--kimi-bin", kimi,
-         "--installed-version", _installed_version(current)],
-        "", timeout=min(60, _remaining(deadline, RESERVE + 2)), transport=True,
-    )
-    return json.loads(output)
+    try:
+        output = bounded_run(
+            [sys.executable, str(HERE / "release_metadata.py"), "select",
+             "--kimi-bin", kimi,
+             "--installed-version", _installed_version(current)],
+            "", timeout=min(60, _remaining(deadline, RESERVE + 2)), transport=True,
+        )
+    except TimeoutError:
+        raise
+    except Exception as exc:
+        raise typed_catalog_error(exc) from None
+    try:
+        selected = json.loads(output)
+    except (TypeError, ValueError):
+        raise CheckFailed("release catalog result is unusable") from None
+    if not isinstance(selected, dict) or "candidate" not in selected:
+        raise CheckFailed("release catalog result is unusable")
+    return selected
 
 
 def resolve_release(remote: str, adapter: dict, current: dict, deadline: float) -> dict:
     selected = _release_catalog(adapter, current, deadline)
     candidate = selected["candidate"]
     if candidate is not None:
-        tag = "refs/tags/" + candidate["tag_name"]
+        try:
+            tag = "refs/tags/" + candidate["tag_name"]
+            declared = candidate["metadata"]["source"]["sha"]
+        except (TypeError, KeyError):
+            raise CheckFailed("release candidate is unusable") from None
         output = _git(["ls-remote", remote, tag, tag + "^{}"],
                       timeout=30, deadline=deadline, transport=True)
         refs = dict((ref, sha) for sha, ref in (line.split() for line in output.splitlines()))
         sha = refs.get(tag + "^{}", refs.get(tag))
-        if sha != candidate["metadata"]["source"]["sha"]:
+        if sha != declared:
             raise CheckFailed("formal Release tag does not match its declared source SHA")
     return selected
 

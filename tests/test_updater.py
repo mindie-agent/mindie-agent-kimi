@@ -379,6 +379,8 @@ class UpdaterTests(unittest.TestCase):
 
         def fake_run(argv, stdin, **kw):
             calls.append((list(argv), kw.get("env")))
+            if Path(argv[1]).name == "release_metadata.py":
+                return json.dumps({"status": "up_to_date", "candidate": None})
             return "{}"
 
         self._catalog.stop()
