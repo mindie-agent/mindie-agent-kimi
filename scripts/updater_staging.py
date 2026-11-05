@@ -109,9 +109,12 @@ def build_runtime(generation: Path, deadline: float) -> Path:
     env = installer_environment()
     _h("bounded_run")([uv, "venv", "--python", sys.executable, str(venv)], "",
                       timeout=min(180, _h("_remaining")(deadline, _h("RESERVE"))), env=env)
+    install_argv = [uv, "pip", "install", "--python", str(python), "-r", str(requirements)]
+    if overrides != requirements:
+        install_argv += ["-r", str(overrides)]
+    install_argv += ["--overrides", str(overrides)]
     _h("bounded_run")(
-        [uv, "pip", "install", "--python", str(python), "-r", str(requirements),
-         "--overrides", str(overrides)],
+        install_argv,
         "", timeout=min(600, _h("_remaining")(deadline, _h("RESERVE"))),
         max_output=512 * 1024, env=env, transport=True,
     )

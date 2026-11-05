@@ -38,7 +38,7 @@ jobs:
           git config --global core.longpaths true
           git config --global core.autocrlf false
           pip install uv
-          uv pip install --system -r runtime-requirements.txt -r test-requirements.txt --overrides runtime/active-overrides.txt
+          uv pip install --system -r runtime-requirements.txt -r runtime/active-overrides.txt -r test-requirements.txt --overrides runtime/active-overrides.txt
       - name: Compile all committed Python
         run: python -m compileall -q scripts tests
       - name: Pin preflight

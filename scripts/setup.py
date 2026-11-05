@@ -230,10 +230,12 @@ def build_bootstrap_runtime(domain_root: Path) -> str:
         raise RuntimeError("uv is required to prepare the MindIE runtime")
     if not python.is_file():
         create_venv(venv, timeout=180)
+    overrides = PLUGIN_ROOT / "runtime/active-overrides.txt"
     run(
         [uv, "pip", "install", "--python", str(python),
          "-r", str(PLUGIN_ROOT / "runtime-requirements.txt"),
-         "--overrides", str(PLUGIN_ROOT / "runtime/active-overrides.txt")],
+         "-r", str(overrides),
+         "--overrides", str(overrides)],
         "", timeout=600, max_output=512 * 1024, env=installer_environment(),
     )
     return str(python)
