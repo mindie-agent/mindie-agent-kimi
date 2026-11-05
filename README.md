@@ -136,22 +136,22 @@ MindIE Agent 采用**「领域知识与 Skill 手动按需触发 + 远端开发�
 5. **调用 Kimi 原生 `AskUserQuestion` 弹出首次配置提问并按序落盘**：
    - 先向用户简要呈现 [用户须知](skills/mindie-agent/references/user-notice.md) 的三项核心契约（本地 Gitleaks 双层脱敏、仅向公开知识库提 PR 与向主仓提脱敏故障 Issue、单一 `mindie-consent.json` 权威开关可随时关闭）。
    - 当 `setup.py sharing --status` 返回 `needs_onboarding_prompt: true`（或尚无工作区/Star 确认记录）时，**优先调用 Kimi Code 原生 `AskUserQuestion` 工具**（若当前 CLI 会话未暴露 `AskUserQuestion`，则输出编号单选卡片 `[1]/[2]` 并等待用户回复），一次性弹出以下 3 个单选问题：
-     1. **社区知识共享与自动故障上报（`Community`）**：
-        - 选项 1：`(Recommended) 开启社区共享与故障上报 (contribute)` — 启用经验蒸馏、本地 Gitleaks 脱敏后向 `mindie-agent/knowledge-vllm-ascend` 提交开源 PR，并开启脱敏故障上报
-        - 选项 2：`暂不开启，仅本地使用 (disabled)` — 仅使用本地确定性工具与只读公共知识，不启动后台采集或上报
-     2. **点亮 GitHub Star ⭐（`GitHub Star`）**：
-        - 选项 1：`(Recommended) 点亮 Star ⭐` — 使用当前已登录的 `gh` 账号为 `mindie-agent/mindie-agent` 点亮 Star
-        - 选项 2：`暂不点亮` — 跳过 Star 操作
-     3. **本地开发工作区初始化（`Workspace`）**：
+     1. **本地开发工作区初始化（`Workspace`）**：
         - 选项 1：`(Recommended) 新建并初始化 vllm-ascend-workspace` — 按 [工作区配置指南](skills/mindie-agent/references/workspace-setup.md) 创建聚合工作区、登记到 Kimi 客户端并运行 `uv run --no-project --python 3.13 python .agents/scripts/repo_init.py --no-input`
         - 选项 2：`保持当前目录不变` — 暂不克隆源码仓库，直接将当前目录作为工作区
         - 选项 3：`复用本机已有工作区目录` — 指定本机已存在的开发工作区路径并登记到 Kimi 客户端
+     2. **社区知识共享与自动故障上报（`Community`）**：
+        - 选项 1：`(Recommended) 开启社区共享与故障上报 (contribute)` — 启用经验蒸馏、本地 Gitleaks 脱敏后向 `mindie-agent/knowledge-vllm-ascend` 提交开源 PR，并开启脱敏故障上报
+        - 选项 2：`暂不开启，仅本地使用 (disabled)` — 仅使用本地确定性工具与只读公共知识，不启动后台采集或上报
+     3. **顺手给 MindIE Agent 点个 GitHub Star 吗？ ⭐（`GitHub Star`）**：
+        - 选项 1：`(Recommended) 好，点个 Star ⭐` — 在 GitHub 上 star `mindie-agent/mindie-agent` 支持一下项目
+        - 选项 2：`先不用` — 直接开始使用
    - **严格按序执行用户明确授权的选项（严禁未经用户回答擅自落盘）**：
      1. **先确定/初始化工作区**得到目标绝对路径 `WORKSPACE_ROOT`；
      2. **再落盘社区共享与故障上报选择**：
         - 若选择 `contribute`：`uv run --no-project --python 3.13 python "$KIMI_SRC/scripts/setup.py" sharing --enable --project-root "$WORKSPACE_ROOT"`
         - 若选择 `disabled`：`uv run --no-project --python 3.13 python "$KIMI_SRC/scripts/setup.py" sharing --disable`
-     3. **最后按需点亮主仓 Star ⭐**（仅当用户在问题 2 明确选择点亮时执行）：
+     3. **最后按用户意愿点上 Star ⭐**（仅当用户在第 3 题明确选择点个 Star 时执行）：
         ```sh
         gh api --hostname github.com --silent -X PUT /user/starred/mindie-agent/mindie-agent && gh api --hostname github.com --silent /user/starred/mindie-agent/mindie-agent
         ```
