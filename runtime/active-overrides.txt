@@ -2,13 +2,17 @@
 # trio in runtime-requirements.txt. Candidate setup and CI consume this file;
 # the immutable 0.1.2 controller's plain first hop does not.
 #
-# Selecting the direct components here keeps the active runtime at knowledge
-# 0.13.12 (1840bd4), diagnostics 0.5.6 (9b33195), and remote-dev 0.11.5
-# (131b245), overriding the
+# Selecting the direct components here keeps the active runtime at coordinator
+# 0.7.4 (14d7cec), debugger 0.1.0 (e9406b2), diagnostics 0.5.7 (f338788),
+# knowledge 0.13.12 (1840bd4), profiler 0.5.6 (79d97e7), sim 0.9.3 (dbadff0),
+# and remote-dev 0.11.5 (131b245), overriding the
 # older transitive declarations. component_prepare separately preserves an
 # already-installed newer component or advances to a newer formal release; it
 # never downgrades.
-mindie-diagnostics @ git+https://github.com/mindie-agent/diagnostics@9b331956b00737dd6d8c956da3416316f2de1ddf
+mindie-coordinator @ git+https://github.com/mindie-agent/coordinator@14d7cec7247bdcbea9b9878db4770e3a05a6ea41
+mindie-debugger @ git+https://github.com/mindie-agent/debugger@e9406b2b178335190d5cb59dff4d6985894497ba
+mindie-diagnostics @ git+https://github.com/mindie-agent/diagnostics@f338788cecc56f7aff1dccab1d53426c9e28fe7f
 mindie-knowledge @ git+https://github.com/mindie-agent/knowledge@1840bd4e238e718676768489058917818d18cd3c
+mindie-profiler @ git+https://github.com/mindie-agent/profiler@79d97e75bff7351b0472b93c03b072c1cf47f5e7
 mindie-sim @ git+https://github.com/mindie-agent/sim@dbadff04b60937a0722b0a227cdad01beed083cd
 remote-dev @ git+https://github.com/mindie-agent/remote-dev@131b24533479e9cefc572144adccdcb345f70846
