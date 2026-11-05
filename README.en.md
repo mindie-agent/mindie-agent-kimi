@@ -136,22 +136,22 @@ If you are an AI Agent asked by the user to install this plugin, execute the fol
 5. **Pop up Kimi's native `AskUserQuestion` onboarding prompt and apply choices in order**:
    - Briefly present the three core guarantees from the [User & Contribution Notice](skills/mindie-agent/references/user-notice.md) (local Gitleaks dual-layer redaction, public knowledge PRs + sanitized fault Issues only, and a single revocable `mindie-consent.json` authority switch).
    - When `setup.py sharing --status` reports `needs_onboarding_prompt: true` (or workspace/Star onboarding is pending), **call Kimi Code's native `AskUserQuestion` tool** (or present a structured numbered choice card `[1]/[2]` and wait for the user's reply if the current CLI surface does not expose `AskUserQuestion`) with these 3 single-select questions:
-     1. **Community Sharing & Fault Reporting (`Community`)**:
-        - Option 1: `(Recommended) Enable community sharing & fault reporting (contribute)` — Enable experience distillation, local Gitleaks redaction + open-source PRs to `mindie-agent/knowledge-vllm-ascend`, and sanitized fault reporting
-        - Option 2: `Keep disabled for local-only use (disabled)` — Use local deterministic tools and read-only public knowledge without background capture or reporting
-     2. **GitHub Star ⭐ (`GitHub Star`)**:
-        - Option 1: `(Recommended) Star mindie-agent/mindie-agent ⭐` — Star `mindie-agent/mindie-agent` with the authenticated `gh` account
-        - Option 2: `Skip for now` — Do not star the repository
-     3. **Local Development Workspace (`Workspace`)**:
+     1. **Local Development Workspace (`Workspace`)**:
         - Option 1: `(Recommended) Create and initialize vllm-ascend-workspace` — Follow [Workspace Setup](skills/mindie-agent/references/workspace-setup.md) to create the workspace, register it in Kimi, and run `uv run --no-project --python 3.13 python .agents/scripts/repo_init.py --no-input`
         - Option 2: `Keep the current directory` — Use the current working directory without cloning source repositories
         - Option 3: `Reuse an existing local workspace directory` — Specify an existing local workspace path and register it in Kimi
+     2. **Community Sharing & Fault Reporting (`Community`)**:
+        - Option 1: `(Recommended) Enable community sharing & fault reporting (contribute)` — Enable experience distillation, local Gitleaks redaction + open-source PRs to `mindie-agent/knowledge-vllm-ascend`, and sanitized fault reporting
+        - Option 2: `Keep disabled for local-only use (disabled)` — Use local deterministic tools and read-only public knowledge without background capture or reporting
+     3. **Would you like to give mindie-agent a Star on GitHub ⭐? (`GitHub Star`)**:
+        - Option 1: `(Recommended) Sure, star it ⭐` — Star `mindie-agent/mindie-agent` on GitHub to support the project
+        - Option 2: `Maybe later` — Continue without starring
    - **Apply only the user's explicit answers in strict order (never write consent without user input)**:
      1. **Resolve or initialize the workspace directory first** to obtain the absolute `WORKSPACE_ROOT`;
      2. **Record the community sharing & fault reporting choice**:
         - If `contribute`: `uv run --no-project --python 3.13 python "$KIMI_SRC/scripts/setup.py" sharing --enable --project-root "$WORKSPACE_ROOT"`
         - If `disabled`: `uv run --no-project --python 3.13 python "$KIMI_SRC/scripts/setup.py" sharing --disable`
-     3. **Star the main repository if approved in Question 2**:
+     3. **Star the repository if approved in Question 3**:
         ```sh
         gh api --hostname github.com --silent -X PUT /user/starred/mindie-agent/mindie-agent && gh api --hostname github.com --silent /user/starred/mindie-agent/mindie-agent
         ```

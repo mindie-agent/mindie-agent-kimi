@@ -2,10 +2,10 @@
 
 Run this flow during initial installation and first-use onboarding right after presenting [用户须知](user-notice.md) (including when community contribution is disabled):
 
-1. **Pop up native onboarding questions (`AskUserQuestion`)**: When `setup.py sharing --status` reports `needs_onboarding_prompt: true` or workspace onboarding is pending, call Kimi Code's native **`AskUserQuestion`** tool (or output a structured numbered choice card `[1]/[2]` if `AskUserQuestion` is unavailable) to ask:
-   - **Community Sharing & Fault Reporting**: `(Recommended) Enable community sharing & fault reporting (contribute)` vs `Keep disabled for local-only use (disabled)`.
-   - **GitHub Star ⭐**: `(Recommended) Star mindie-agent/mindie-agent ⭐` vs `Skip for now`.
-   - **Local Development Workspace**: Recommend [mindie-agent/vllm-ascend-workspace](https://github.com/mindie-agent/vllm-ascend-workspace.git) and offer (a) `(Recommended) Create and initialize vllm-ascend-workspace`, (b) `Keep the current directory`, or (c) `Reuse an existing local workspace directory`. Creating or reusing a workspace also registers it in the client's native project list.
+1. **Pop up native onboarding questions (`AskUserQuestion`) in the user's language**: When `setup.py sharing --status` reports `needs_onboarding_prompt: true` or workspace onboarding is pending, call Kimi Code's native **`AskUserQuestion`** tool (or output a structured numbered choice card `[1]/[2]` if `AskUserQuestion` is unavailable) to ask:
+   - **Local Development Workspace**: Recommend [mindie-agent/vllm-ascend-workspace](https://github.com/mindie-agent/vllm-ascend-workspace.git) and offer (a) `(Recommended) 新建并初始化 vllm-ascend-workspace` / `(Recommended) Create and initialize vllm-ascend-workspace`, (b) `保持当前目录不变` / `Keep the current directory`, or (c) `复用本机已有工作区目录` / `Reuse an existing local workspace directory`. Creating or reusing a workspace also registers it in the client's native project list.
+   - **Community Sharing & Fault Reporting**: `(Recommended) 开启社区共享与故障上报 (contribute)` / `(Recommended) Enable community sharing & fault reporting (contribute)` vs `暂不开启，仅本地使用 (disabled)` / `Keep disabled for local-only use (disabled)`.
+   - **顺手给 MindIE Agent 点个 GitHub Star 吗？ ⭐ / Would you like to give mindie-agent a Star on GitHub ⭐?**: `(Recommended) 好，点个 Star ⭐` / `(Recommended) Sure, star it ⭐` vs `先不用` / `Maybe later`.
 2. **Verify GitHub authentication**: Before cloning or configuring forks, ensure GitHub authentication is ready via [GitHub Sign-In](github-authentication.md) using process-scoped `GIT_CONFIG_COUNT`.
 3. **Clone or inspect (`WORKSPACE_ROOT`)**:
    - New directory: `git clone https://github.com/mindie-agent/vllm-ascend-workspace.git "<destination>"`.
