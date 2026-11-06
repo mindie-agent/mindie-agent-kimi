@@ -30,6 +30,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import struct
 import subprocess
 import time
 import xml.etree.ElementTree as ET
@@ -139,10 +140,40 @@ def _verify_scheduled_task(wrapper: Path, pythonw: Path) -> None:
         )
 
 
+def _require_windowless_python(python):
+    """Task metadata cannot hide a CUI executable named pythonw.exe.
+
+    PE32 and PE32+ place Subsystem at optional-header offset 68; read just
+    these headers before touching any wrapper or native registration.
+    """
+    try:
+        with Path(python).open("rb") as stream:
+            dos = stream.read(64)
+            if len(dos) != 64 or dos[:2] != b"MZ":
+                raise ValueError()
+            offset = struct.unpack_from("<I", dos, 60)[0]
+            if offset < 64:
+                raise ValueError()
+            stream.seek(offset)
+            pe = stream.read(24)
+            optional = stream.read(70)
+            if (len(pe) != 24 or pe[:4] != b"PE\0\0"
+                    or struct.unpack_from("<H", pe, 20)[0] < 70
+                    or len(optional) != 70
+                    or struct.unpack_from("<H", optional)[0] not in {0x10B, 0x20B}
+                    or struct.unpack_from("<H", optional, 68)[0] != 2):
+                raise ValueError()
+    except TimeoutError:
+        raise
+    except (OSError, ValueError):
+        raise SystemExit(
+            f"a PE GUI windowless Python is required at {python}; task was not registered"
+        ) from None
+
+
 def _register_windows_schedule(adapter: dict, command) -> dict:
     pythonw = Path(command[0]).with_name("pythonw.exe")
-    if not pythonw.is_file():
-        raise SystemExit(f"windowless Python is unavailable at {pythonw}; task was not registered")
+    _require_windowless_python(pythonw)
     wrapper = _h("_schedule_wrapper")(adapter, command)
     # XML keeps the interpreter and wrapper paths separate, without /TR's
     # command-line length limit or cmd.exe's codepage and metacharacter parsing.

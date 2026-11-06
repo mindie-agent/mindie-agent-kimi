@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 from support import SCRIPTS, make_config
+from windows_launcher_fixture import write_launcher
 
 sys.path.insert(0, str(SCRIPTS))
 
@@ -151,7 +152,7 @@ class WindowsScheduleTests(unittest.TestCase):
         self.python = self.tmp / "runtime with spaces" / "python.exe"
         self.python.parent.mkdir()
         self.pythonw = self.python.with_name("pythonw.exe")
-        self.pythonw.touch()
+        write_launcher(self.pythonw)
         self.command = [str(self.python), str(self.tmp / "long launcher path" / "mindie_launch.py"),
                         "--config", str(self.tmp / "100% 中文 & kimi.json"), "updater", "check"]
 
@@ -195,7 +196,7 @@ class WindowsScheduleTests(unittest.TestCase):
         self.command[0] = str(self.tmp / ("a" * 70) / ("b" * 70) / "python.exe")
         self.pythonw = Path(self.command[0]).with_name("pythonw.exe")
         self.pythonw.parent.mkdir(parents=True)
-        self.pythonw.touch()
+        write_launcher(self.pythonw)
         self.command[3] = str(self.tmp / ("c" * 70) / ("d" * 70) / "中文.json")
         self.test_registration_references_wrapper_and_verifies_readback()
 
@@ -204,6 +205,15 @@ class WindowsScheduleTests(unittest.TestCase):
         with mock.patch.object(updater, "bounded_run") as run, self.assertRaises(SystemExit):
             updater._register_windows_schedule(self.adapter, self.command)
         run.assert_not_called()
+
+    def test_console_pythonw_does_not_write_wrapper_or_register(self):
+        write_launcher(self.pythonw, subsystem=3)
+        with mock.patch.object(updater, "bounded_run") as run, self.assertRaises(SystemExit):
+            updater._register_windows_schedule(self.adapter, self.command)
+        run.assert_not_called()
+        self.assertFalse(self.wrapper.exists())
+        write_launcher(self.pythonw)
+        self.test_registration_references_wrapper_and_verifies_readback()
 
     def test_truncated_readback_is_a_loud_failure(self):
         truncated = (
