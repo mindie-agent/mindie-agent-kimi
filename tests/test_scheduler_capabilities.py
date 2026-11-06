@@ -7,6 +7,7 @@ import sys
 import pytest
 
 from support import SCRIPTS, make_config
+from windows_launcher_fixture import write_launcher
 
 sys.path.insert(0, str(SCRIPTS))
 
@@ -59,7 +60,7 @@ def test_task_scheduler_capabilities_drive_registration_and_verified_removal(
 ):
     config, adapter, launcher = schedule_profile
     python = tmp_path / "python.exe"
-    python.with_name("pythonw.exe").touch()
+    write_launcher(python.with_name("pythonw.exe"))
     monkeypatch.setattr(updater_schedule.shutil, "which",
                         lambda name: f"/scheduler/{name}" if name in {"schtasks", "powershell"} else None)
     monkeypatch.setattr(updater, "schedule_command",
