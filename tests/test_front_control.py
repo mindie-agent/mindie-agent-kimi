@@ -127,6 +127,24 @@ class FrontControlTests(unittest.TestCase):
         self.proc.stdin.close()
         self.proc.wait(timeout=3)
 
+    def test_malformed_frame_returns_parse_error_and_keeps_ping_reachable(self):
+        # Installed host packages rewrite MCP args to
+        # `mindie_launch.py --config <adapter> mcp <surface>`
+        # (`updater_staging.build_host_package`). This process is that entry.
+        self.proc.stdin.write(b"{not-json\n")
+        self.proc.stdin.flush()
+        parse = json.loads(self.proc.stdout.readline())
+        self.assertEqual(parse["jsonrpc"], "2.0")
+        self.assertEqual(parse["error"]["code"], -32700)
+        self.assertEqual(parse["error"]["message"], "Parse error")
+        self.assertIsNone(parse["id"])
+        self.send({"jsonrpc": "2.0", "id": 2, "method": "ping"})
+        ping = json.loads(self.proc.stdout.readline())
+        self.assertEqual(ping["id"], 2)
+        self.assertEqual(ping["result"], {})
+        self.proc.stdin.close()
+        self.proc.wait(timeout=3)
+
     def test_eof_with_unread_large_response_is_bounded(self):
         self.start_call(large=True)
         time.sleep(.15)

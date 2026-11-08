@@ -56,6 +56,28 @@ send({jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-11-25
 """
 
 
+NODE_PARSE = r"""
+const fs=require('node:fs'), {spawn}=require('node:child_process'), readline=require('node:readline');
+const spec=JSON.parse(fs.readFileSync(0,'utf8'));
+const child=spawn(spec.command,spec.args,{cwd:spec.cwd,env:{...process.env,...spec.env},shell:false,windowsHide:true});
+let fault=null, errors='';
+const lines=[];
+const timer=setTimeout(()=>{fault='timeout';child.kill();},10000);
+child.on('error',e=>{fault=e.code;});
+child.stderr.on('data',data=>{errors+=data;});
+readline.createInterface({input:child.stdout}).on('line',line=>{
+  lines.push(line);
+  if(lines.length===1) child.stdin.write('{"jsonrpc":"2.0","id":2,"method":"ping"}\n');
+  if(lines.length===2) child.stdin.end();
+});
+child.on('close',code=>{
+  clearTimeout(timer);
+  process.stdout.write(JSON.stringify({code,error:fault,lines,stderr:errors}));
+});
+child.stdin.write('{not-json\n');
+"""
+
+
 class NativeMcpLaunchTests(unittest.TestCase):
     def test_generated_package_lists_real_runtime_tools(self):
         node = shutil.which("node")
@@ -131,6 +153,41 @@ class NativeMcpLaunchTests(unittest.TestCase):
                     reply = json.loads(result.stdout)
                     self.assertEqual(Path(reply["python"]), Path(sys.executable))
                     self.assertEqual(reply["args"], ["--config", str(config), "mcp", surface])
+
+    def test_published_package_reports_parse_error_and_keeps_ping_reachable(self):
+        node = shutil.which("node")
+        self.assertIsNotNone(node, "native launch contract requires Node.js on PATH")
+        with tempfile.TemporaryDirectory(prefix="mindie parse ") as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            (source / "scripts").mkdir(parents=True)
+            for name in ("mindie_launch.py", "bounded.py", "diagnostic_support.py", "paths.py", "launch_budget.py"):
+                shutil.copy2(SCRIPTS / name, source / "scripts" / name)
+            shutil.copy2(TESTS.parent / "kimi.plugin.json", source / "kimi.plugin.json")
+            config = make_config(root / "config")
+            adapter = json.loads(config.read_text())
+            sha = "c" * 40
+            package = updater.build_host_package(source, adapter, sha, config_file=config)
+            genstate.write_current(dict(generation=str(TESTS.parent), python=sys.executable,
+                                        adapter_config=str(config), sha=sha), adapter)
+            manifest = json.loads((package / "kimi.plugin.json").read_text())
+            server = manifest["mcpServers"]["knowledge"]
+            self.assertEqual(server["args"][-2:], ["mcp", "knowledge"])
+            spec = dict(server, cwd=str(package))
+            spec.setdefault("env", {})
+            process = subprocess.run(
+                [node, "-e", NODE_PARSE], input=json.dumps(spec),
+                text=True, encoding="utf-8", capture_output=True, timeout=15,
+            )
+            self.assertEqual(process.returncode, 0, process.stderr)
+            result = json.loads(process.stdout)
+            self.assertIsNone(result["error"], result)
+            lines = [json.loads(row) for row in result["lines"]]
+            self.assertEqual(len(lines), 2, result)
+            self.assertEqual(lines[0]["error"]["code"], -32700)
+            self.assertIsNone(lines[0]["id"])
+            self.assertEqual(lines[1]["id"], 2)
+            self.assertEqual(lines[1]["result"], {})
 
 
 if __name__ == "__main__":

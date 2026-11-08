@@ -163,8 +163,9 @@ class IdentityTests(unittest.TestCase):
             with patch.object(Path, "open", open_path):
                 with self.assertRaises(OSError) as ctx:
                     identity.locate_session_dir("ses_idx", kimi_home=home)
+            self.assertEqual(ctx.exception.errno, 13)
+            self.assertEqual(Path(ctx.exception.filename).resolve(), index.resolve())
             self.assertIn(str(index), str(ctx.exception))
-            self.assertIsInstance(ctx.exception.__cause__, OSError)
 
     def test_wire_read_oserror_is_not_missing_turn_origin(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -186,9 +187,9 @@ class IdentityTests(unittest.TestCase):
             self.assertNotEqual(
                 str(ctx.exception), "current native turn origin is unavailable"
             )
+            self.assertEqual(ctx.exception.errno, 5)
+            self.assertEqual(Path(ctx.exception.filename).name, "wire.jsonl")
             self.assertIn("wire.jsonl", str(ctx.exception))
-            self.assertIsInstance(ctx.exception.__cause__, OSError)
-            self.assertEqual(ctx.exception.__cause__.errno, 5)
 
 
 def _substitute_plugin_root(text: str, root) -> str:
