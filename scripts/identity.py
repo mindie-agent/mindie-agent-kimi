@@ -161,9 +161,13 @@ def session_state(session_id: str, *, kimi_home=None) -> dict:
         data = json.loads(path.read_text(encoding="utf-8"))
     except TimeoutError:
         raise
-    except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
+    except OSError as exc:
+        raise OSError(f"session state unreadable: {path}") from exc
+    except ValueError as exc:
+        raise ValueError(f"session state is unusable: {path}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"session state must be a JSON object: {path}")
+    return data
 
 
 def _from_index(index: Path, session_id: str, home: Path) -> Path | None:
@@ -191,8 +195,8 @@ def _from_index(index: Path, session_id: str, home: Path) -> Path | None:
                         matched = resolved
     except TimeoutError:
         raise
-    except OSError:
-        return None
+    except OSError as exc:
+        raise OSError(f"session index unreadable: {index}") from exc
     return matched
 
 
@@ -237,8 +241,8 @@ def _tail_records(session_id: str, *, kimi_home=None):
             window = min(window * 4, TAIL_MAX, size)
     except TimeoutError:
         raise
-    except OSError:
-        return []
+    except OSError as exc:
+        raise OSError(f"wire.jsonl unreadable: {wire}") from exc
 
 
 def _normalize_activation(origin, *, steering):

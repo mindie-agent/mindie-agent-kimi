@@ -74,6 +74,39 @@ class McpTests(unittest.TestCase):
                 proc.kill()
                 proc.wait(timeout=2)
 
+    def test_invalid_json_line_returns_parse_error_and_keeps_serving(self):
+        import io
+        import mcp_server
+
+        init = dict(jsonrpc="2.0", id=2, method="initialize", params={})
+        incoming = b"{not-json\n" + (json.dumps(init) + "\n").encode("utf-8")
+        captured = io.BytesIO()
+        stdin = type("Stdin", (), {"buffer": io.BytesIO(incoming)})()
+        stdout = type("Stdout", (), {"buffer": captured})()
+        with patch.object(sys, "stdin", stdin), patch.object(sys, "stdout", stdout):
+            mcp_server.serve("knowledge")
+        lines = [json.loads(line) for line in captured.getvalue().splitlines() if line.strip()]
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(lines[0]["error"]["code"], -32700)
+        self.assertEqual(lines[0]["error"]["message"], "Parse error")
+        self.assertIsNone(lines[0]["id"])
+        self.assertEqual(lines[1]["id"], 2)
+        self.assertEqual(lines[1]["result"]["serverInfo"]["name"], "mindie-kimi-knowledge")
+
+    def test_serve_once_invalid_json_returns_parse_error(self):
+        import io
+        import mcp_server
+
+        captured = io.BytesIO()
+        stdin = type("Stdin", (), {"buffer": io.BytesIO(b"{not-json\n")})()
+        stdout = type("Stdout", (), {"buffer": captured})()
+        with patch.object(sys, "stdin", stdin), patch.object(sys, "stdout", stdout):
+            mcp_server.serve_once("components")
+        reply = json.loads(captured.getvalue())
+        self.assertEqual(reply["jsonrpc"], "2.0")
+        self.assertEqual(reply["error"]["code"], -32700)
+        self.assertIsNone(reply["id"])
+
     def test_bound_nonce_argument_mismatch_is_rejected(self):
         with tempfile.TemporaryDirectory() as raw:
             config = make_config(Path(raw))

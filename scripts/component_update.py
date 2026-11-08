@@ -1,8 +1,9 @@
 """[Role] Advance component releases using Kimi's existing generation transaction.
 [Invariants] Native plugin definitions are reinstalled only for plugin updates.
 Component updates preserve the plugin SHA and all profile authority paths.
-[Timeouts & Locks] Builder uses the remaining enclosing budget minus 260s for
-probe/configuration/handoff; the existing exclusive operation lock gates commit.
+[Timeouts & Locks] Builder uses remaining enclosing budget minus updater.RESERVE
+(rollback + feed + handoff) for catalog/inventory/build; exclusive operation
+lock gates commit. Restore failure is never reported as components.status=active.
 [Side-Effect Policy] Software release reads/builds and idle generation switch;
 never authorizes knowledge, reads a corpus or changes contribution consent.
 """
@@ -10,6 +11,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import time
+
+
+def _step_timeout(deadline, cap, reserve):
+    left = deadline - time.monotonic() - reserve
+    if left <= 0:
+        raise TimeoutError("component update budget exhausted")
+    return min(cap, left)
 
 
 def prepare(adapter, source, python, deadline, *, force=False):
@@ -27,12 +35,12 @@ def prepare(adapter, source, python, deadline, *, force=False):
         raise ValueError("Kimi profile configuration must be one object")
     baseline = source_baseline(source, active_overrides=True)
     selected = discover(current["python"], baseline["runtime"], force=force,
-                        catalog=Catalog(budget=min(120, deadline - time.monotonic() - 260)),
+                        catalog=Catalog(budget=_step_timeout(deadline, 120, host.RESERVE)),
                         required_components=required_components(profile))
     needs_binding = bool(profile.get("component_commands")) and (
         rebind_commands(profile, python, selected["runtime"]) != profile["component_commands"])
     installed = (selected["installed"] if Path(python) == Path(current["python"])
-                 else read_inventory(python, timeout=min(15, deadline - time.monotonic() - 260)))
+                 else read_inventory(python, timeout=_step_timeout(deadline, 15, host.RESERVE)))
     needs_build = installed != selected["runtime"]
     # Older controllers can stage only the bootstrap trio. Declared source
     # pins are a required floor, not proof of this interpreter's contents.
@@ -42,7 +50,7 @@ def prepare(adapter, source, python, deadline, *, force=False):
     if needs_build:
         artifact = build(source, host.update_dir(adapter) / "component-runtimes", baseline,
                          selected["runtime"], python=python,
-                         timeout=min(420, deadline - time.monotonic() - 260))
+                         timeout=_step_timeout(deadline, 420, host.RESERVE))
         generation, python = Path(artifact["source"]), Path(artifact["python"])
     host.probe_runtime(python, deadline, generation)
     config = host.write_generation_configs(generation, python, adapter, components=selected["runtime"])
@@ -63,4 +71,13 @@ def check(adapter, deadline, *, force, idle, install, lock_timeout):
         host.build_host_package(generation, adapter, current["sha"], config_file=config)
     host.switch(adapter, current, generation, python, config, current.get("sha"), deadline,
                 idle, install, lock_timeout, update_native=False)
+    handoff = host.read_status(adapter).get("service_handoff") or {}
+    status = handoff.get("status")
+    if status in {"failed", "pending"}:
+        return dict(
+            status="failed" if status == "failed" else "degraded",
+            generation=str(generation),
+            python=str(python),
+            service_handoff=handoff,
+        )
     return dict(status="active", generation=str(generation), python=str(python))
