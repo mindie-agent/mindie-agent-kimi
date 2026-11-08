@@ -671,6 +671,8 @@ def _mcp(surface: str) -> int:
                 send(dict(jsonrpc="2.0", id=None, error=dict(code=-32700, message="Parse error")))
                 continue
             if not isinstance(message, dict):
+                diagnostic_support.failure("mcp.serve", "parse", "protocol")
+                send(dict(jsonrpc="2.0", id=None, error=dict(code=-32600, message="Invalid Request")))
                 continue
             method = message.get("method")
             if method == "notifications/cancelled":

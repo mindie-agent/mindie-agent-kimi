@@ -84,7 +84,7 @@ def send(message):
 
 def parse_rpc_line(line):
     try:
-        return json.loads(line)
+        message = json.loads(line)
     except TimeoutError:
         raise
     except ValueError as exc:
@@ -93,6 +93,13 @@ def parse_rpc_line(line):
         record_failure("mcp.serve", "parse", "protocol", exception=exc)
         send(dict(jsonrpc="2.0", id=None, error=dict(code=-32700, message="Parse error")))
         return None
+    if not isinstance(message, dict):
+        from diagnostic_support import failure as record_failure
+
+        record_failure("mcp.serve", "parse", "protocol")
+        send(dict(jsonrpc="2.0", id=None, error=dict(code=-32600, message="Invalid Request")))
+        return None
+    return message
 
 
 def failure(exc):

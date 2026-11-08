@@ -127,19 +127,43 @@ class FrontControlTests(unittest.TestCase):
         self.proc.stdin.close()
         self.proc.wait(timeout=3)
 
+    def _read_reply(self, timeout=2):
+        box = queue.Queue()
+        threading.Thread(target=lambda: box.put(self.proc.stdout.readline()),
+                         daemon=True).start()
+        line = box.get(timeout=timeout)
+        self.assertTrue(line, "MCP front dropped the frame without a JSON-RPC error")
+        return json.loads(line)
+
     def test_malformed_frame_returns_parse_error_and_keeps_ping_reachable(self):
         # Installed host packages rewrite MCP args to
         # `mindie_launch.py --config <adapter> mcp <surface>`
         # (`updater_staging.build_host_package`). This process is that entry.
         self.proc.stdin.write(b"{not-json\n")
         self.proc.stdin.flush()
-        parse = json.loads(self.proc.stdout.readline())
+        parse = self._read_reply()
         self.assertEqual(parse["jsonrpc"], "2.0")
         self.assertEqual(parse["error"]["code"], -32700)
         self.assertEqual(parse["error"]["message"], "Parse error")
         self.assertIsNone(parse["id"])
         self.send({"jsonrpc": "2.0", "id": 2, "method": "ping"})
-        ping = json.loads(self.proc.stdout.readline())
+        ping = self._read_reply()
+        self.assertEqual(ping["id"], 2)
+        self.assertEqual(ping["result"], {})
+        self.proc.stdin.close()
+        self.proc.wait(timeout=3)
+
+    def test_non_object_frames_return_invalid_request_and_keep_ping_reachable(self):
+        for raw in (b"[]\n", b"123\n", b"true\n"):
+            self.proc.stdin.write(raw)
+            self.proc.stdin.flush()
+            reply = self._read_reply()
+            self.assertEqual(reply["jsonrpc"], "2.0")
+            self.assertEqual(reply["error"]["code"], -32600)
+            self.assertEqual(reply["error"]["message"], "Invalid Request")
+            self.assertIsNone(reply["id"])
+        self.send({"jsonrpc": "2.0", "id": 2, "method": "ping"})
+        ping = self._read_reply()
         self.assertEqual(ping["id"], 2)
         self.assertEqual(ping["result"], {})
         self.proc.stdin.close()
