@@ -82,6 +82,26 @@ def send(message):
     sys.stdout.buffer.flush()
 
 
+def parse_rpc_line(line):
+    try:
+        message = json.loads(line)
+    except TimeoutError:
+        raise
+    except ValueError as exc:
+        from diagnostic_support import failure as record_failure
+
+        record_failure("mcp.serve", "parse", "protocol", exception=exc)
+        send(dict(jsonrpc="2.0", id=None, error=dict(code=-32700, message="Parse error")))
+        return None
+    if not isinstance(message, dict):
+        from diagnostic_support import failure as record_failure
+
+        record_failure("mcp.serve", "parse", "protocol")
+        send(dict(jsonrpc="2.0", id=None, error=dict(code=-32600, message="Invalid Request")))
+        return None
+    return message
+
+
 def failure(exc):
     from diagnostic_support import attach
 
@@ -652,10 +672,7 @@ def serve(surface):
         line = raw.rstrip(b"\r\n")
         if not line.strip():
             continue
-        try:
-            message = json.loads(line)
-        except ValueError:
-            continue
+        message = parse_rpc_line(line)
         if isinstance(message, dict) and (response := handle(surface, message)) is not None:
             send(response)
 
@@ -665,10 +682,7 @@ def serve_once(surface):
     line, _, _ = raw.partition(b"\n")
     if not line.strip():
         return
-    try:
-        message = json.loads(line)
-    except ValueError:
-        return
+    message = parse_rpc_line(line)
     if isinstance(message, dict) and (response := handle(surface, message)) is not None:
         send(response)
 

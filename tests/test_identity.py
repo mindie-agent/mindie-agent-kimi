@@ -108,6 +108,89 @@ class IdentityTests(unittest.TestCase):
             self.assertEqual(found["arguments"], "")
             self.assertEqual(found["activation_id"], "act-nocargs")
 
+    def test_corrupt_fork_state_does_not_trust_inherited_history(self):
+        with tempfile.TemporaryDirectory() as raw:
+            home = Path(raw)
+            inherited = turn_records(plugin_origin("init", "act-parent"), "init", time=1)
+            root, _ = write_session(
+                home, "ses_fork", inherited,
+                state={"forkedFrom": "ses_parent", "createdAt": 2},
+            )
+            (root / "state.json").write_text("{broken", encoding="utf-8")
+            with self.assertRaises(ValueError) as ctx:
+                identity.require_current_entry("ses_fork", "init", kimi_home=home)
+            self.assertIn("state.json", str(ctx.exception))
+            self.assertNotIn("act-parent", str(ctx.exception))
+
+    def test_non_object_state_is_not_treated_as_empty(self):
+        with tempfile.TemporaryDirectory() as raw:
+            home = Path(raw)
+            root, _ = write_session(
+                home, "ses_arr",
+                turn_records(plugin_origin("init", "act-1"), "init", time=1),
+            )
+            (root / "state.json").write_text("[]", encoding="utf-8")
+            with self.assertRaises(ValueError) as ctx:
+                identity.session_state("ses_arr", kimi_home=home)
+            self.assertIn("JSON object", str(ctx.exception))
+
+    def test_missing_state_still_allows_a_non_fork_entry(self):
+        with tempfile.TemporaryDirectory() as raw:
+            home = Path(raw)
+            root, _ = write_session(
+                home, "ses_plain",
+                turn_records(plugin_origin("init", "act-plain"), "init", time=1),
+            )
+            (root / "state.json").unlink()
+            found = identity.require_current_entry("ses_plain", "init", kimi_home=home)
+            self.assertEqual(found["activation_id"], "act-plain")
+
+    def test_unreadable_session_index_does_not_scan_sessions(self):
+        with tempfile.TemporaryDirectory() as raw:
+            home = Path(raw)
+            write_session(
+                home, "ses_idx",
+                turn_records(plugin_origin("init", "act-idx"), "init", time=1),
+            )
+            index = home / "session_index.jsonl"
+            original = Path.open
+
+            def open_path(self, *args, **kwargs):
+                if Path(self).resolve() == index.resolve():
+                    raise OSError(13, "Permission denied", str(self))
+                return original(self, *args, **kwargs)
+
+            with patch.object(Path, "open", open_path):
+                with self.assertRaises(OSError) as ctx:
+                    identity.locate_session_dir("ses_idx", kimi_home=home)
+            self.assertEqual(ctx.exception.errno, 13)
+            self.assertEqual(Path(ctx.exception.filename).resolve(), index.resolve())
+            self.assertIn(str(index), str(ctx.exception))
+
+    def test_wire_read_oserror_is_not_missing_turn_origin(self):
+        with tempfile.TemporaryDirectory() as raw:
+            home = Path(raw)
+            write_session(
+                home, "ses_wire",
+                turn_records(plugin_origin("init", "act-wire"), "init", time=1),
+            )
+            original = Path.open
+
+            def open_path(self, *args, **kwargs):
+                if Path(self).name == "wire.jsonl":
+                    raise OSError(5, "Input/output error", str(self))
+                return original(self, *args, **kwargs)
+
+            with patch.object(Path, "open", open_path):
+                with self.assertRaises(OSError) as ctx:
+                    identity.current_turn_origin("ses_wire", kimi_home=home)
+            self.assertNotEqual(
+                str(ctx.exception), "current native turn origin is unavailable"
+            )
+            self.assertEqual(ctx.exception.errno, 5)
+            self.assertEqual(Path(ctx.exception.filename).name, "wire.jsonl")
+            self.assertIn("wire.jsonl", str(ctx.exception))
+
 
 def _substitute_plugin_root(text: str, root) -> str:
     """Splice the repo path into JSONL fixture text. The placeholder sits

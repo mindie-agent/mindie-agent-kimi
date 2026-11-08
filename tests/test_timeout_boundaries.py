@@ -34,6 +34,54 @@ def test_native_profile_timeout_does_not_become_configuration_unavailable(tmp_pa
     assert raised.value is fault
 
 
+def test_session_state_timeout_is_not_rewritten_as_unusable_state(tmp_path, monkeypatch):
+    write_session(tmp_path, "ses_to", [], state={"forkedFrom": "parent", "createdAt": 1000})
+    original = Path.read_text
+    fault = TimeoutError("state read exceeded its deadline")
+
+    def read(path, *args, **kwargs):
+        if path.name == "state.json":
+            raise fault
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read)
+    with pytest.raises(TimeoutError) as raised:
+        identity.session_state("ses_to", kimi_home=tmp_path)
+    assert raised.value is fault
+
+
+def test_session_index_timeout_is_not_rewritten_as_missing_directory(tmp_path, monkeypatch):
+    write_session(tmp_path, "ses_idx_to", [])
+    original = Path.open
+    fault = TimeoutError("index read exceeded its deadline")
+
+    def open_path(self, *args, **kwargs):
+        if Path(self).name == "session_index.jsonl":
+            raise fault
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", open_path)
+    with pytest.raises(TimeoutError) as raised:
+        identity.locate_session_dir("ses_idx_to", kimi_home=tmp_path)
+    assert raised.value is fault
+
+
+def test_wire_timeout_is_not_rewritten_as_missing_turn_origin(tmp_path, monkeypatch):
+    write_session(tmp_path, "ses_wire_to", [{"type": "metadata", "created_at": 1}])
+    original = Path.open
+    fault = TimeoutError("wire read exceeded its deadline")
+
+    def open_path(self, *args, **kwargs):
+        if Path(self).name == "wire.jsonl":
+            raise fault
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", open_path)
+    with pytest.raises(TimeoutError) as raised:
+        identity.current_turn_origin("ses_wire_to", kimi_home=tmp_path)
+    assert raised.value is fault
+
+
 def test_fork_lineage_timeout_is_not_rewritten_as_unavailable_evidence(tmp_path, monkeypatch):
     _, wire = write_session(tmp_path, "child", [], state={"forkedFrom": "parent", "createdAt": 1000})
     original = Path.read_text

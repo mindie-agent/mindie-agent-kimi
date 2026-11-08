@@ -196,3 +196,138 @@ def test_bootstrap_interpreter_is_rebuilt_even_when_targets_equal_source_pins(tm
     assert prepared[:2] == (Path(artifact["source"]), Path(artifact["python"]))
     assert build.call_args.args[3] == target
     assert configure.call_args.kwargs["components"] == target
+
+
+def test_component_check_does_not_report_active_after_restore_failure(tmp_path):
+    import component_update
+
+    adapter, old, candidate, _profile, _commands = component_generations(tmp_path)
+    prepared = (
+        Path(candidate["generation"]),
+        Path(candidate["python"]),
+        Path(candidate["adapter_config"]),
+    )
+
+    def restore(adapter, final, deadline):
+        updater._record(adapter, service_handoff={
+            "status": "failed",
+            "error": "RuntimeError",
+            "sha": (final or {}).get("sha"),
+        })
+
+    with patch.object(component_update, "prepare", return_value=prepared), \
+            patch.object(updater, "_restore_stopped_service", side_effect=restore), \
+            patch.object(updater, "build_host_package"):
+        result = component_update.check(
+            adapter, time.monotonic() + 120, force=False,
+            idle=lambda *_: {"service": "stopped", "idle": True},
+            install=Mock(), lock_timeout=1,
+        )
+    assert result["status"] == "failed"
+    assert result["service_handoff"]["error"] == "RuntimeError"
+    assert result["generation"] == candidate["generation"]
+
+
+def test_component_check_reports_degraded_when_restore_stays_pending(tmp_path):
+    import component_update
+
+    adapter, old, candidate, _profile, _commands = component_generations(tmp_path)
+    prepared = (
+        Path(candidate["generation"]),
+        Path(candidate["python"]),
+        Path(candidate["adapter_config"]),
+    )
+
+    def restore(adapter, final, deadline):
+        updater._record(adapter, service_handoff={
+            "status": "pending",
+            "error": "interrupted-stop-or-restore-needs-attention",
+            "sha": (final or {}).get("sha"),
+        })
+
+    with patch.object(component_update, "prepare", return_value=prepared), \
+            patch.object(updater, "_restore_stopped_service", side_effect=restore), \
+            patch.object(updater, "build_host_package"):
+        result = component_update.check(
+            adapter, time.monotonic() + 120, force=False,
+            idle=lambda *_: {"service": "stopped", "idle": True},
+            install=Mock(), lock_timeout=1,
+        )
+    assert result["status"] == "degraded"
+    assert result["service_handoff"]["status"] == "pending"
+
+
+def test_component_check_reports_active_after_successful_restore(tmp_path):
+    import component_update
+
+    adapter, old, candidate, _profile, _commands = component_generations(tmp_path)
+    prepared = (
+        Path(candidate["generation"]),
+        Path(candidate["python"]),
+        Path(candidate["adapter_config"]),
+    )
+
+    def restore(adapter, final, deadline):
+        updater._record(adapter, service_handoff={
+            "status": "restored",
+            "sha": (final or {}).get("sha"),
+        })
+
+    with patch.object(component_update, "prepare", return_value=prepared), \
+            patch.object(updater, "_restore_stopped_service", side_effect=restore), \
+            patch.object(updater, "build_host_package"):
+        result = component_update.check(
+            adapter, time.monotonic() + 120, force=False,
+            idle=lambda *_: {"service": "stopped", "idle": True},
+            install=Mock(), lock_timeout=1,
+        )
+    assert result == dict(
+        status="active",
+        generation=candidate["generation"],
+        python=candidate["python"],
+    )
+
+
+def test_component_prepare_uses_reserve_not_hardcoded_260(tmp_path, monkeypatch):
+    import component_update
+
+    adapter, (old, _candidate) = generations(tmp_path)
+    start = 10_000.0
+    monkeypatch.setattr(time, "monotonic", lambda: start)
+    captured = {}
+
+    class Catalog:
+        def __init__(self, budget=None, **_kwargs):
+            captured["budget"] = budget
+
+    inventory = {"mindie-knowledge": {"revision": "a" * 40}}
+    with patch("mindie_knowledge.component_releases.Catalog", Catalog), \
+            patch("mindie_knowledge.component_runtime.source_baseline",
+                  return_value={"runtime": inventory}), \
+            patch("mindie_knowledge.component_runtime.discover", return_value={
+                "changed": False, "installed": inventory, "runtime": inventory,
+            }) as discover, \
+            patch("mindie_knowledge.component_runtime.read_inventory", return_value=inventory):
+        assert component_update.prepare(
+            adapter, Path(old["generation"]), old["python"], start + 200,
+        ) is None
+    # 200s remaining minus RESERVE 113s leaves 87s; catalog cap is 120.
+    assert captured["budget"] == 87
+    assert captured["budget"] > 0
+    discover.assert_called_once()
+
+
+def test_component_prepare_exhausted_reserve_raises_timeout(tmp_path, monkeypatch):
+    import component_update
+
+    adapter, (old, _candidate) = generations(tmp_path)
+    start = 10_000.0
+    monkeypatch.setattr(time, "monotonic", lambda: start)
+    with patch("mindie_knowledge.component_runtime.source_baseline",
+               return_value={"runtime": {}}), \
+            patch("mindie_knowledge.component_runtime.discover") as discover, \
+            pytest.raises(TimeoutError, match="budget exhausted"):
+        component_update.prepare(
+            adapter, Path(old["generation"]), old["python"], start + 50,
+        )
+    discover.assert_not_called()
