@@ -12,6 +12,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -418,6 +419,7 @@ class EntryBoundaryTests(LaneIsolation):
                          str(self.tmp / "kimi.json"), str(ready / kind),
                          str(ready / peer), kind],
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                     ))
                 for proc in procs:
                     _out, err = proc.communicate(timeout=15)
@@ -442,6 +444,50 @@ class EntryBoundaryTests(LaneIsolation):
                 lost.append(dict(path=str(pointed), enabled=final.get("enabled")))
                 break
         self.assertEqual(lost, [])
+
+    @unittest.skipUnless(os.name == "nt", "requires Windows reader sharing semantics")
+    def test_settings_stamp_waits_for_a_real_config_reader(self):
+        """A short ordinary reader must not abort the profile path migration."""
+        from unittest.mock import patch
+
+        import consent
+        import sharing
+
+        sharing._settings_mod()
+        self._configured(sharing=False)
+        adapter_path = self.tmp / "kimi.json"
+        busy = threading.Event()
+        errors = []
+        replace = os.replace
+
+        def observe_replace(source, target):
+            try:
+                return replace(source, target)
+            except PermissionError as exc:
+                if Path(target) == adapter_path and exc.winerror in (5, 32):
+                    busy.set()
+                raise
+
+        def stamp():
+            try:
+                consent.adopt_community_settings()
+            except BaseException as exc:
+                errors.append(type(exc).__name__)
+
+        worker = threading.Thread(target=stamp)
+        with patch.object(os, "replace", new=observe_replace):
+            with adapter_path.open("rb") as reader:
+                reader.read(1)
+                worker.start()
+                observed = busy.wait(5)
+            worker.join(5)
+        self.assertTrue(observed, "the real reader did not exercise the sharing conflict")
+        self.assertFalse(worker.is_alive(), "settings writer did not finish after reader closed")
+        self.assertEqual(errors, [])
+        adapter = json.loads(adapter_path.read_text())
+        shared = Path(adapter["community_config"])
+        self.assertEqual(shared, consent.shared_community_path())
+        self.assertFalse(json.loads(shared.read_text())["enabled"])
 
     def test_adopt_reloads_adapter_config_inside_the_write_lock(self):
         """A config write that lands after adopt has loaded, but before it
@@ -475,6 +521,7 @@ class EntryBoundaryTests(LaneIsolation):
         proc = subprocess.Popen(
             [sys.executable, "-c", script, str(SCRIPTS), str(adapter_path), str(waiting)],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         # Observe a real kernel-lock contention, without replacing its result.
         # This white-box barrier does not depend on lsof or startup timing.

@@ -14,7 +14,8 @@ onto the profile authority without one-way fault lockouts.
 
 [Timeouts & Locks]
 - Uses `_UpdateLock` (`5.0s` wait) for consent writes and `CommunityWriteContext`
-  for community-settings convergence.
+  for community-settings convergence. The shared platform replace allows short
+  Windows readers to close within its existing `5.0s` budget.
 
 [Side-Effect Policy]
 - Writes `mindie-consent.json`, `mindie-community.json`, `kimi.json`, and
@@ -107,7 +108,7 @@ def _atomic_write_bytes(path: Path, raw: bytes) -> None:
     try:
         with os.fdopen(descriptor, "wb") as stream:
             stream.write(raw)
-        os.replace(tmp, path)
+        consent_store._atomic_replace(tmp, path)
     except BaseException:
         try:
             os.unlink(tmp)
