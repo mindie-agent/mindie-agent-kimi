@@ -15,7 +15,7 @@ jobs:
     secrets:
       MINDIE_RELEASE_DEPLOY_KEY: ${{ secrets.MINDIE_RELEASE_DEPLOY_KEY }}
     with:
-      release-notes-path: docs/releases/mindie-agent-kimi-0.1.18.md
+      release-notes-path: docs/releases/mindie-agent-kimi-0.1.19.md
       version-files: |
         kimi.plugin.json
       setup-command: |

@@ -8,6 +8,8 @@ disableModelInvocation: true
 
 **Keep the user's task moving.** MindIE knowledge, setup, onboarding, diagnostics and local ledgers support the task. If one is unavailable, report that specific failure and continue independent work or use equivalent authorized host-native tools. Defer optional setup and sharing questions when they would interrupt the task. Retain existing job IDs and confirmed results. Reconcile an uncertain remote write before repeating that operation; do not bypass identity, permissions or actual device/port ownership. Coordinator-managed work keeps its leases; an existing verified host reservation may support equivalent native work. If ownership cannot be established, pause only that device action.
 
+**Task binding and resource checks have separate scopes.** Coordinator `hosts`, `probe`, `container` and `lease` work without a managed task attachment; omit `context_file` for independent environment operations. Missing MindIE attachment or knowledge activation must not stop authorized SSH inspection, container/source/model discovery, CPU-only tests, offline profiler analysis or simulation. Native call identity still applies to plugin tools. Before starting device work, establish actual device/port ownership and obtain a lease or verify an existing reservation. If that cannot be established, pause that device action and continue independent work.
+
 Use `/mindie-agent` to enable domain knowledge and experience capture for the current Kimi session.
 `knowledge_query`, `knowledge_explain`, `knowledge_feedback`, `knowledge_distill`, `knowledge_sync`, and background `Stop` capture require the user's explicit `/mindie-agent` entry in this session (new chats, forks, and subagents require their own entry).
 
