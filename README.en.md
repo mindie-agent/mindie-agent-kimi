@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/mindie-agent/mindie-agent-kimi/releases"><img src="https://img.shields.io/badge/release-v0.1.18-0F766E.svg" alt="Release v0.1.18"></a>
+  <a href="https://github.com/mindie-agent/mindie-agent-kimi/releases"><img src="https://img.shields.io/badge/release-v0.1.19-0F766E.svg" alt="Release v0.1.19"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-0F766E.svg" alt="License: MIT"></a>
   <a href="runtime-requirements.txt"><img src="https://img.shields.io/badge/python-3.11%2B-2563EB.svg" alt="Python 3.11+"></a>
   <a href="kimi.plugin.json"><img src="https://img.shields.io/badge/host-Kimi_Code-7C3AED.svg" alt="Host: Kimi Code"></a>
@@ -108,7 +108,7 @@ If you are an AI Agent asked by the user to install this plugin, execute the fol
    GIT_CONFIG_KEY_0=core.longpaths GIT_CONFIG_VALUE_0=true \
    GIT_CONFIG_KEY_1=core.autocrlf GIT_CONFIG_VALUE_1=false \
    GIT_CONFIG_KEY_2=credential.https://github.com.helper GIT_CONFIG_VALUE_2="!gh auth git-credential" \
-   git clone --depth 1 --branch v0.1.18 https://github.com/mindie-agent/mindie-agent-kimi.git "$KIMI_SRC"
+   git clone --depth 1 --branch v0.1.19 https://github.com/mindie-agent/mindie-agent-kimi.git "$KIMI_SRC"
    SETUP_JSON=$(uv run --no-project --python 3.13 python "$KIMI_SRC/scripts/setup.py")
    echo "$SETUP_JSON"
    NATIVE_PKG=$(printf '%s' "$SETUP_JSON" | uv run --no-project --python 3.13 python -c "import json,sys; print(json.load(sys.stdin)['native_package'])")
