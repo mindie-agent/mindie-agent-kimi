@@ -430,7 +430,7 @@ def _local_answer(message: dict):
             jsonrpc="2.0", id=ident,
             result=dict(
                 protocolVersion="2025-11-25",
-                capabilities={"tools": {}},
+                capabilities={"tools": {"listChanged": True}},
                 serverInfo={"name": "mindie-kimi-front", "version": diagnostic_support.plugin_version()},
             ),
         )
@@ -573,180 +573,23 @@ def _read_mcp_line(stdin):
 
 
 def _mcp(surface: str) -> int:
-    output_fd = sys.stdout.fileno()
-    # MCP stdout is a pipe; Python 3.12+ supports nonblocking Windows pipes.
-    os.set_blocking(output_fd, False)
-    stdin = sys.stdin.buffer
-    output_lock = threading.Lock()
-    transport_closed = threading.Event()
-    pending_lock = threading.Lock()
-    pending = {}
-    workers = []
-    active_work = 0
-    active_control = 0
-
-    def send(response):
-        deadline = time.monotonic() + OUTPUT_BUDGET
-        if not output_lock.acquire(timeout=OUTPUT_BUDGET):
-            raise TimeoutError("response output unavailable")
-        try:
-            data = memoryview(json.dumps(response, ensure_ascii=False).encode() + b"\n")
-            while data:
-                if transport_closed.is_set() or time.monotonic() >= deadline:
-                    raise TimeoutError("response output unavailable")
-                try:
-                    count = os.write(output_fd, data)
-                except BlockingIOError:
-                    transport_closed.wait(0.02)
-                    continue
-                if not count:
-                    transport_closed.wait(0.02)
-                    continue
-                data = data[count:]
-        finally:
-            output_lock.release()
-
-    def reap():
-        alive = []
-        for thread in workers:
-            if thread.is_alive():
-                alive.append(thread)
-            else:
-                thread.join(timeout=0)
-        workers[:] = alive
-
-    def execute(raw, message, ident, cancel, slot):
-        nonlocal active_work, active_control
-        try:
-            try:
-                if cancel.is_set():
-                    raise bounded.CommandCancelled("command cancelled")
-                response = _dispatch(surface, raw, ident, cancel=cancel)
-            except bounded.CommandCancelled:
-                response = _stage_error(ident, message, "cancelled", surface)
-            except DispatchFailure as exc:
-                response = _stage_error(ident, message, exc.stage, surface)
-                response["result"] = diagnostic_support.attach(response["result"], exc.diagnostic)
-            except (bounded.CommandTimedOut, LockUnavailable):
-                response = _stage_error(ident, message, "deadline", surface)
-            except TimeoutError:
-                raise
-            except Exception:
-                response = _stage_error(ident, message, "helper_failed", surface)
-            with pending_lock:
-                if cancel.is_set():
-                    response = _stage_error(ident, message, "cancelled", surface)
-                if pending.get(ident) is cancel:
-                    pending.pop(ident)
-            send(response)
-        except TimeoutError:
-            raise
-        except OSError:
-            transport_closed.set()
-            with pending_lock:
-                for event in pending.values():
-                    event.set()
-        finally:
-            with pending_lock:
-                if pending.get(ident) is cancel:
-                    pending.pop(ident)
-                if slot == "control":
-                    active_control -= 1
-                else:
-                    active_work -= 1
-
-    try:
-        while not transport_closed.is_set():
-            raw = _read_mcp_line(stdin)
-            if raw is False:
-                break
-            if raw is None or not raw.strip():
-                continue
-            try:
-                message = json.loads(raw)
-            except TimeoutError:
-                raise
-            except ValueError as exc:
-                diagnostic_support.failure("mcp.serve", "parse", "protocol", exception=exc)
-                send(dict(jsonrpc="2.0", id=None, error=dict(code=-32700, message="Parse error")))
-                continue
-            if not isinstance(message, dict):
-                diagnostic_support.failure("mcp.serve", "parse", "protocol")
-                send(dict(jsonrpc="2.0", id=None, error=dict(code=-32600, message="Invalid Request")))
-                continue
-            method = message.get("method")
-            if method == "notifications/cancelled":
-                params = message.get("params") if isinstance(message.get("params"), dict) else {}
-                request_id = params.get("requestId")
-                if _valid_rpc_id(request_id):
-                    with pending_lock:
-                        if (event := pending.get(request_id)) is not None:
-                            event.set()
-                continue
-            if "id" not in message:
-                continue
-            ident = message["id"]
-            if not _valid_rpc_id(ident):
-                send(dict(jsonrpc="2.0", id=None, error=dict(code=-32600, message="Invalid request id")))
-                continue
-            if (local := _local_answer(message)) is not None:
-                with pending_lock:
-                    duplicate = ident in pending
-                send(_front_reject(ident, "Duplicate pending request; not executed.") if duplicate else local)
-                continue
-            if method not in {"tools/list", "tools/call"}:
-                send(dict(jsonrpc="2.0", id=ident, error=dict(code=-32601, message="Method not found")))
-                continue
-            is_control = method == "tools/call" and _local_tool_name(message) in CONTROL_TOOLS
-            slot = None
-            cancel = None
-            with pending_lock:
-                reap()
-                if ident in pending:
-                    duplicate = True
-                else:
-                    duplicate = False
-                    if is_control:
-                        if active_work < WORK_LIMIT:
-                            slot = "work"
-                        elif active_control < CONTROL_LIMIT:
-                            slot = "control"
-                    elif active_work < WORK_LIMIT:
-                        slot = "work"
-                    if slot == "work":
-                        active_work += 1
-                    elif slot == "control":
-                        active_control += 1
-                    if slot:
-                        cancel = threading.Event()
-                        pending[ident] = cancel
-            if duplicate:
-                send(_front_reject(ident, "Duplicate pending request; not executed."))
-                continue
-            if slot is None:
-                send(_front_reject(ident, "Request capacity reached; not executed."))
-                continue
-            thread = threading.Thread(
-                target=execute,
-                args=(raw, message, ident, cancel, slot),
-                name=f"mindie-mcp-{ident}",
-                daemon=True,
-            )
-            thread.start()
-            workers.append(thread)
-    finally:
-        transport_closed.set()
-        with pending_lock:
-            events = list(pending.values())
-        for event in events:
-            event.set()
-        deadline = time.monotonic() + EOF_JOIN
-        for thread in list(workers):
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            thread.join(timeout=remaining)
-    return 0
+    current = _current(_state_dir())
+    # Old controllers copy a fixed launcher file set. Enter the complete
+    # selected payload/interpreter before importing its transport dependencies.
+    if Path(current["python"]).absolute() != Path(sys.executable).absolute():
+        environment = _child_env(current, surface)
+        environment.pop("PYTHONPATH", None)
+        os.execve(current["python"], [
+            current["python"], str(Path(__file__).resolve()), "--config", str(_config_path()), "mcp", surface,
+        ], environment)
+    import importlib.util
+    transport = Path(__file__).with_name("native_mcp.py")
+    if not transport.is_file():
+        transport = Path(current["generation"]) / "scripts/native_mcp.py"
+    spec = importlib.util.spec_from_file_location("_mindie_selected_mcp", transport)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.serve(surface, sys.modules[__name__])
 
 
 def _updater(rest) -> int:

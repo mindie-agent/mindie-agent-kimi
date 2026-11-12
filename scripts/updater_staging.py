@@ -279,6 +279,9 @@ def build_host_package(
     for name in (_h("LAUNCHER"), "bounded.py", "diagnostic_support.py", "paths.py", "launch_budget.py"):
         if not (launcher_dir / name).is_file():
             shutil.copy2(generation / "scripts" / name, launcher_dir / name)
+    transport = generation / "scripts/native_mcp.py"
+    if transport.is_file() and not (launcher_dir / transport.name).exists():
+        shutil.copy2(transport, launcher_dir / transport.name)
     for name in ("updater.py", "updater_check.py", "updater_schedule.py", "updater_staging.py"):
         source = generation / "scripts" / name
         if source.is_file() and not (launcher_dir / name).exists():
@@ -290,7 +293,8 @@ def build_host_package(
     manifest = json.loads((generation / "kimi.plugin.json").read_text(encoding="utf-8"))
     base = str(manifest.get("version") or "0.0.1").split("+")[0]
     manifest["version"] = f"{base}+mindie.{sha[:12]}"
-    base_python = sys.executable
+    configured = _h("read_json")(config_file) or {}
+    base_python = configured.get("python") or sys.executable
     if os.name == "nt":
         front = Path(base_python).name
         front_env = {"PATH": str(Path(base_python).parent) + os.pathsep + os.environ.get("PATH", "")}

@@ -702,7 +702,8 @@ def main(argv=None):
     if once:
         serve_once(surface)
     else:
-        serve(surface)
+        from native_mcp import serve_profile
+        serve_profile(surface)
 
 
 if __name__ == "__main__":
