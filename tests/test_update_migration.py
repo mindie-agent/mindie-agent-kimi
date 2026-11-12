@@ -46,7 +46,7 @@ def runtime_tool_names():
 def make_generation(tmp: Path, manifest: dict) -> Path:
     generation = tmp / "generation"
     (generation / "scripts").mkdir(parents=True)
-    for name in ("mindie_launch.py", "bounded.py", "diagnostic_support.py", "paths.py", "launch_budget.py"):
+    for name in ("mindie_launch.py", "bounded.py", "diagnostic_support.py", "paths.py", "launch_budget.py", "native_mcp.py"):
         shutil.copy2(SCRIPTS / name, generation / "scripts" / name)
     write_json(generation / "kimi.plugin.json", manifest)
     return generation

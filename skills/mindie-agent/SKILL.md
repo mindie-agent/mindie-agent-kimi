@@ -10,6 +10,8 @@ disableModelInvocation: true
 
 **Task binding and resource checks have separate scopes.** Coordinator `hosts`, `probe`, `container` and `lease` work without a managed task attachment; omit `context_file` for independent environment operations. Missing MindIE attachment or knowledge activation must not stop authorized SSH inspection, container/source/model discovery, CPU-only tests, offline profiler analysis or simulation. Native call identity still applies to plugin tools. Before starting device work, establish actual device/port ownership and obtain a lease or verify an existing reservation. If that cannot be established, pause that device action and continue independent work.
 
+**Binding recovery and updates.** Knowledge activation, native call identity, managed task attachment, and device ownership have separate authorities. Repeating `/mindie-agent` or `$mindie-agent` does not repair a missing managed task attachment or native transport identity. Follow the structured failure and continue independent authorized work. The resident MCP facade publishes catalog changes for the selected runtime; activation commands are not a catalog-refresh mechanism. An already loaded legacy facade or a host without notification support follows its native reload boundary, with refresh state reported separately from installation success.
+
 Use `/mindie-agent` to enable domain knowledge and experience capture for the current Kimi session.
 `knowledge_query`, `knowledge_explain`, `knowledge_feedback`, `knowledge_distill`, `knowledge_sync`, and background `Stop` capture require the user's explicit `/mindie-agent` entry in this session (new chats, forks, and subagents require their own entry).
 
