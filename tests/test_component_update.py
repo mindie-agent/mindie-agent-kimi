@@ -331,3 +331,148 @@ def test_component_prepare_exhausted_reserve_raises_timeout(tmp_path, monkeypatc
             adapter, Path(old["generation"]), old["python"], start + 50,
         )
     discover.assert_not_called()
+
+
+def test_component_prepare_filters_retired_mindie_bench_and_types_catalog_errors(tmp_path):
+    import urllib.error
+    import component_update
+
+    adapter, (old, _candidate) = generations(tmp_path)
+    profile = tmp_path / "profile/kimi.json"
+    profile.write_text(json.dumps(dict(adapter, component_commands={
+        "bench": [sys.executable, "-m", "mindie_bench"],
+    })))
+    adapter["profile_config"] = str(profile)
+    active = {"mindie-knowledge": {"repository": "mindie-agent/knowledge",
+                                   "version": "0.13.15", "revision": "a" * 40}}
+    legacy = dict(active, **{
+        "mindie-bench": {"repository": "mindie-agent/mindie-bench",
+                         "version": "0.1.0", "revision": "b" * 40},
+    })
+    artifact = {"source": str(tmp_path / "rebuilt/source"),
+                "python": str(tmp_path / "rebuilt/runtime/python")}
+
+    def fake_discover(python, baseline, *, required_components=None, **_kwargs):
+        import mindie_knowledge.component_runtime as cr
+        inv = cr.read_inventory(python)
+        assert "mindie-bench" not in inv
+        assert "mindie-bench" not in (required_components or {})
+        return {"changed": False, "installed": inv, "runtime": active}
+
+    with patch("mindie_knowledge.component_runtime.source_baseline",
+               return_value={"runtime": {"mindie-knowledge": "a" * 40}}), \
+            patch("mindie_knowledge.component_runtime.read_inventory", return_value=legacy), \
+            patch("mindie_knowledge.component_runtime.discover", side_effect=fake_discover), \
+            patch("mindie_knowledge.component_runtime.build", return_value=artifact) as build, \
+            patch.object(updater, "probe_runtime"), \
+            patch.object(updater, "write_generation_configs",
+                         return_value=Path(old["adapter_config"])):
+        prepared = component_update.prepare(
+            adapter, Path(old["generation"]), old["python"], time.monotonic() + 600,
+        )
+    assert prepared is not None
+    build.assert_called_once()
+
+    typed = component_update.typed_catalog_error(urllib.error.URLError("offline"))
+    assert isinstance(typed, component_update.CatalogError)
+    assert typed.code == "release_transport_unavailable"
+    assert typed.category == "temporary_network"
+
+
+def test_updater_check_isolates_component_update_failure_and_deferral(tmp_path, capsys):
+    import component_update
+
+    adapter, (old, _candidate) = generations(tmp_path)
+    recorded = []
+    with patch.object(updater, "resolve_release",
+                      return_value={"status": "up_to_date", "candidate": None}), \
+            patch.object(component_update, "check",
+                         side_effect=ValueError("component release artifacts are incomplete: mindie-sim")), \
+            patch.object(updater, "_update_diagnostic",
+                         side_effect=lambda stage, exc: recorded.append((stage, type(exc).__name__)) or {"recorded": True, "logging_failed": False}):
+        rc = updater._check_once(
+            adapter, time.monotonic() + 300, force=False,
+            build=Mock(), idle=Mock(), install=Mock(), lock_timeout=1,
+        )
+    assert rc == 1
+    assert recorded == [("component_update", "ValueError")]
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["result"] == "degraded"
+    assert payload["components"] == {"status": "failed", "error_type": "ValueError"}
+
+    # Immediate scheduled tick honors the recorded component retry backoff; force=True bypasses it.
+    with patch.object(updater, "resolve_release",
+                      return_value={"status": "up_to_date", "candidate": None}), \
+            patch.object(component_update, "check") as skipped_check:
+        rc_wait = updater._check_once(
+            adapter, time.monotonic() + 300, force=False,
+            build=Mock(), idle=Mock(), install=Mock(), lock_timeout=1,
+        )
+    assert rc_wait == 0
+    skipped_check.assert_not_called()
+    payload_wait = json.loads(capsys.readouterr().out)
+    assert payload_wait["result"] == "retry-waiting"
+
+    with patch.object(updater, "resolve_release",
+                      return_value={"status": "up_to_date", "candidate": None}), \
+            patch.object(component_update, "check",
+                         side_effect=updater.Deferred("service busy")), \
+            patch.object(updater, "repair_host_package", return_value=None):
+        rc_def = updater._check_once(
+            adapter, time.monotonic() + 300, force=True,
+            build=Mock(), idle=Mock(), install=Mock(), lock_timeout=1,
+        )
+    assert rc_def == 0
+    payload_def = json.loads(capsys.readouterr().out)
+    assert payload_def["components"] == {"status": "deferred", "reason": "service busy"}
+
+
+def test_component_failure_backoff_and_recovery_clears_active_failure(tmp_path, monkeypatch, capsys):
+    import component_update
+    import entry as kimi_entry
+
+    adapter, _ = generations(tmp_path)
+    cfg_file = tmp_path / "kimi-adapter.json"
+    cfg_file.write_text(json.dumps(adapter), encoding="utf-8")
+    monkeypatch.setenv("MINDIE_KIMI_CONFIG", str(cfg_file))
+
+    now = [1000.0]
+    err = component_update._catalog_error("release_http_error", category="rate_limited", status=429)
+    with patch("time.time", side_effect=lambda: now[0]), \
+            patch("random.uniform", return_value=0.0), \
+            patch.object(updater, "resolve_release",
+                         return_value={"status": "up_to_date", "candidate": None}), \
+            patch.object(updater, "_update_diagnostic",
+                         return_value={"recorded": True, "logging_failed": False}), \
+            patch.object(updater, "repair_host_package", return_value=None), \
+            patch.object(component_update, "check", side_effect=[err, {"status": "up_to_date"}]) as checks:
+        assert updater._check_once(
+            adapter, time.monotonic() + 300, force=False,
+            build=Mock(), idle=Mock(), install=Mock(), lock_timeout=1,
+        ) == 1
+        capsys.readouterr()
+        assert kimi_entry._updater_view()["active_failure"] is True
+
+        # Before next_retry_at (1300.0), scheduled tick waits without calling component_update.check.
+        now[0] = 1200.0
+        assert updater._check_once(
+            adapter, time.monotonic() + 300, force=False,
+            build=Mock(), idle=Mock(), install=Mock(), lock_timeout=1,
+        ) == 0
+        assert checks.call_count == 1
+        capsys.readouterr()
+
+        # After backoff expires, recovery clears active_failure while preserving history.
+        now[0] = 2000.0
+        assert updater._check_once(
+            adapter, time.monotonic() + 300, force=False,
+            build=Mock(), idle=Mock(), install=Mock(), lock_timeout=1,
+        ) == 0
+        assert checks.call_count == 2
+        recovered = json.loads(capsys.readouterr().out)
+        assert recovered["result"] == "current"
+        view = kimi_entry._updater_view()
+        assert view["active_failure"] is False
+        assert view["status"] == "recovered"
+        failed_record = updater.read_json(updater.failed_path(adapter))
+        assert len(failed_record["history"]) == 1

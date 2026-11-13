@@ -128,6 +128,69 @@ def fold_feed_results(output):
     return "sync_failed", rows, summary
 
 
+def _components_confirmed(components, repair=None):
+    return (
+        isinstance(components, dict)
+        and components.get("status") in {"up_to_date", "active"}
+        and repair in (None, "installed")
+    )
+
+
+def _safe_component_check(adapter, deadline, *, force, idle, install, lock_timeout,
+                          current_sha, extra_fields=None):
+    from component_update import check as component_check
+
+    failed = _h("read_json")(_h("failed_path")(adapter))
+    if (not force
+            and isinstance(failed, dict)
+            and failed.get("sha") == current_sha
+            and _h("_failure_gate")(failed) == "wait"):
+        result_name = (
+            "action-required"
+            if failed.get("failure_class") in _h("_ACTIONABLE")
+            else "retry-waiting"
+        )
+        status = _h("_record")(
+            adapter,
+            current_sha=current_sha,
+            result=result_name,
+            error=failed.get("error"),
+            failure_class=failed.get("failure_class"),
+            next_retry_at=failed.get("next_retry_at"),
+            **(extra_fields or {}),
+        )
+        print(json.dumps(status))
+        return None, 0
+
+    try:
+        return component_check(
+            adapter, deadline, force=force, idle=idle,
+            install=install, lock_timeout=lock_timeout,
+        ), None
+    except _h("LockTimeout"):
+        return {"status": "deferred-busy"}, None
+    except _h("Deferred") as exc:
+        return {"status": "deferred", "reason": str(exc)[:300]}, None
+    except TimeoutError:
+        raise
+    except Exception as exc:
+        record = _h("_remember_failure")(adapter, current_sha, exc)
+        diagnostic = _h("_update_diagnostic")("component_update", exc)
+        status = _h("_record")(
+            adapter,
+            current_sha=current_sha,
+            result="degraded",
+            error=record.get("error"),
+            failure_class=record.get("failure_class"),
+            next_retry_at=record.get("next_retry_at"),
+            diagnostic=diagnostic,
+            components={"status": "failed", "error_type": type(exc).__name__},
+            **(extra_fields or {}),
+        )
+        print(json.dumps(status))
+        return None, 1
+
+
 def _check_once(adapter: dict, deadline: float, *, force, build, idle, install, lock_timeout) -> int:
     current = _h("read_current")(adapter)
     from updater_schedule import refresh_existing_wrapper
@@ -163,9 +226,13 @@ def _check_once(adapter: dict, deadline: float, *, force, build, idle, install, 
     _h("_clear_resolve_wait")(adapter)
     candidate = selected["candidate"]
     if candidate is None:
-        from component_update import check as component_check
-        components = component_check(adapter, deadline, force=force, idle=idle,
-                                     install=install, lock_timeout=lock_timeout)
+        components, exit_code = _safe_component_check(
+            adapter, deadline, force=force, idle=idle, install=install,
+            lock_timeout=lock_timeout, current_sha=current.get("sha"),
+            extra_fields={"release_selection": selected},
+        )
+        if exit_code is not None:
+            return exit_code
         active = _h("read_current")(adapter)
         repair = None
         try:
@@ -184,6 +251,7 @@ def _check_once(adapter: dict, deadline: float, *, force, build, idle, install, 
             status = _h("_record")(
                 adapter, current_sha=active.get("sha"), result="degraded",
                 error=record.get("error"), failure_class=record.get("failure_class"),
+                next_retry_at=record.get("next_retry_at"),
                 diagnostic=diagnostic, release_selection=selected,
                 components=components,
             )
@@ -192,6 +260,10 @@ def _check_once(adapter: dict, deadline: float, *, force, build, idle, install, 
         else:
             if repaired:
                 repair = "installed"
+        if _components_confirmed(components, repair):
+            _h("_clear_active_failure")(adapter, current.get("sha"))
+            if active.get("sha") != current.get("sha"):
+                _h("_clear_active_failure")(adapter, active.get("sha"))
         result = "current" if selected["status"] == "up_to_date" else selected["status"]
         status = _h("_record")(
             adapter, current_sha=active.get("sha"), result=result, error=None,
@@ -222,9 +294,12 @@ def _check_once(adapter: dict, deadline: float, *, force, build, idle, install, 
             )
             return 0
     if sha == current.get("sha"):
-        from component_update import check as component_check
-        components = component_check(adapter, deadline, force=force, idle=idle,
-                                     install=install, lock_timeout=lock_timeout)
+        components, exit_code = _safe_component_check(
+            adapter, deadline, force=force, idle=idle, install=install,
+            lock_timeout=lock_timeout, current_sha=sha,
+        )
+        if exit_code is not None:
+            return exit_code
         # A legacy 0.1.2/0.1.3 receipt proves that the package was built by the
         # old builder, which dropped toolTimeoutMs and could drop the profile.
         # Repair it once with this generation's builder and install readback.
@@ -254,11 +329,13 @@ def _check_once(adapter: dict, deadline: float, *, force, build, idle, install, 
             status = _h("_record")(
                 adapter, current_sha=sha, result="degraded",
                 error=record.get("error"), failure_class=record.get("failure_class"),
+                next_retry_at=record.get("next_retry_at"),
                 diagnostic=diagnostic, components=components,
             )
             print(json.dumps(status))
             return 1
-        _h("_clear_active_failure")(adapter, sha)
+        if _components_confirmed(components, "installed" if repaired else None):
+            _h("_clear_active_failure")(adapter, sha)
         status = _h("_record")(
             adapter, current_sha=sha, result="current", error=None,
             components=components,
@@ -380,7 +457,7 @@ def _logging_maintenance(adapter, deadline):
         with _h("OperationLock")(adapter).shared(timeout=min(0.5, remaining)):
             current = _h("read_current")(adapter)
         available = min(75, deadline - time.monotonic())
-        if available <= 0:
+        if available <= 5.0:
             status["logging_maintenance"] = {"status": "skipped_budget"}
             _h("write_status")(status, adapter)
             return
@@ -389,7 +466,7 @@ def _logging_maintenance(adapter, deadline):
                 current["python"], "-m", "mindie_diagnostics.cli",
                 "reporting", "maintain", "--update-running", "--config",
                 str(_h("diagnostic_support").reporting_config_path()),
-                "--budget-seconds", str(max(0, available - 2)),
+                "--budget-seconds", str(available - 5.0),
             ],
             "", timeout=available, max_output=65536, check=False,
         )
