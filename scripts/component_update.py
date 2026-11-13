@@ -8,9 +8,85 @@ lock gates commit. Restore failure is never reported as components.status=active
 never authorizes knowledge, reads a corpus or changes contribution consent.
 """
 from __future__ import annotations
+from contextlib import contextmanager
 import json
 from pathlib import Path
 import time
+import urllib.error
+
+RETIRED_COMPONENTS = frozenset({"mindie-bench"})
+
+
+class CatalogError(RuntimeError):
+    """Expected catalog miss; static codes only, never raw feed text."""
+
+
+def _catalog_error(code, *, category="temporary_network", status=None):
+    error = CatalogError(code)
+    error.code = code
+    error.category = category
+    if type(status) is int and 100 <= status <= 599:
+        error.status = status
+    return error
+
+
+def typed_catalog_error(exc):
+    from mindie_knowledge.release_http import ReleaseResponseTooLarge
+    from mindie_knowledge.releases_io import ReleaseFetchError
+
+    if isinstance(exc, ReleaseFetchError):
+        return _catalog_error(
+            exc.code,
+            category="rate_limited" if exc.status == 429 else "temporary_network",
+            status=exc.status,
+        )
+    if isinstance(exc, urllib.error.HTTPError):
+        return _catalog_error(
+            "release_http_error",
+            category="rate_limited" if exc.code == 429 else "temporary_network",
+            status=exc.code,
+        )
+    if isinstance(exc, json.JSONDecodeError):
+        return _catalog_error("release_catalog_invalid")
+    if isinstance(exc, (urllib.error.URLError, ConnectionError, ReleaseResponseTooLarge)):
+        return _catalog_error("release_transport_unavailable")
+    return exc
+
+
+def _discover_catalog(*args, **kwargs):
+    from mindie_knowledge.component_runtime import discover
+
+    try:
+        return discover(*args, **kwargs)
+    except TimeoutError:
+        raise
+    except Exception as exc:
+        raise typed_catalog_error(exc) from None
+
+
+@contextmanager
+def _without_retired_inventory(runtime_module, retired_state: dict):
+    original = getattr(runtime_module, "read_inventory", None)
+    if original is None:
+        yield
+        return
+
+    def filtered_inventory(python, *args, **kwargs):
+        installed = dict(original(python, *args, **kwargs))
+        removed = {
+            name: installed.pop(name)
+            for name in list(installed)
+            if name in RETIRED_COMPONENTS
+        }
+        if removed:
+            retired_state["removed"] = True
+        return installed
+
+    runtime_module.read_inventory = filtered_inventory
+    try:
+        yield
+    finally:
+        runtime_module.read_inventory = original
 
 
 def _step_timeout(deadline, cap, reserve):
@@ -23,8 +99,9 @@ def _step_timeout(deadline, cap, reserve):
 def prepare(adapter, source, python, deadline, *, force=False):
     import updater_check
     host = updater_check._HOST
+    import mindie_knowledge.component_runtime as component_runtime
     from mindie_knowledge.component_bindings import required_components, rebind_commands
-    from mindie_knowledge.component_runtime import build, discover, read_inventory, source_baseline
+    from mindie_knowledge.component_runtime import build, source_baseline
     from mindie_knowledge.component_releases import Catalog
     from paths import profile_config_path
     current = host.read_current(adapter)
@@ -34,14 +111,38 @@ def prepare(adapter, source, python, deadline, *, force=False):
     if not isinstance(profile, dict):
         raise ValueError("Kimi profile configuration must be one object")
     baseline = source_baseline(source, active_overrides=True)
-    selected = discover(current["python"], baseline["runtime"], force=force,
-                        catalog=Catalog(budget=_step_timeout(deadline, 120, host.RESERVE)),
-                        required_components=required_components(profile))
+    required = {
+        name: version
+        for name, version in required_components(profile).items()
+        if name not in RETIRED_COMPONENTS
+    }
+    retired_state = {"removed": False}
+    with _without_retired_inventory(component_runtime, retired_state):
+        selected = _discover_catalog(
+            current["python"],
+            baseline["runtime"],
+            force=force,
+            catalog=Catalog(budget=_step_timeout(deadline, 120, host.RESERVE)),
+            required_components=required,
+        )
+        installed = (
+            selected["installed"]
+            if Path(python) == Path(current["python"])
+            else component_runtime.read_inventory(
+                python, timeout=_step_timeout(deadline, 15, host.RESERVE)
+            )
+        )
+    if isinstance(selected.get("runtime"), dict):
+        for name in RETIRED_COMPONENTS:
+            if name in selected["runtime"]:
+                selected["runtime"] = {
+                    k: v for k, v in selected["runtime"].items() if k not in RETIRED_COMPONENTS
+                }
+                retired_state["removed"] = True
+                break
     needs_binding = bool(profile.get("component_commands")) and (
         rebind_commands(profile, python, selected["runtime"]) != profile["component_commands"])
-    installed = (selected["installed"] if Path(python) == Path(current["python"])
-                 else read_inventory(python, timeout=_step_timeout(deadline, 15, host.RESERVE)))
-    needs_build = installed != selected["runtime"]
+    needs_build = installed != selected["runtime"] or retired_state["removed"]
     # Older controllers can stage only the bootstrap trio. Declared source
     # pins are a required floor, not proof of this interpreter's contents.
     if not needs_build and not needs_binding:

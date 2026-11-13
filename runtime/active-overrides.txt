@@ -3,8 +3,8 @@
 # runtime-requirements.txt remains the immutable controller bootstrap trio.
 mindie-coordinator @ git+https://github.com/mindie-agent/coordinator@db9b0c6432001d6049056eabd37422d0bfb9f75a
 mindie-debugger @ git+https://github.com/mindie-agent/debugger@e9406b2b178335190d5cb59dff4d6985894497ba
-mindie-diagnostics @ git+https://github.com/mindie-agent/diagnostics@f338788cecc56f7aff1dccab1d53426c9e28fe7f
-mindie-knowledge @ git+https://github.com/mindie-agent/knowledge@3c478a19b5542b38520c7f98b87a07f37e305021
+mindie-diagnostics @ git+https://github.com/mindie-agent/diagnostics@37ed7f04a47eae8097cc286335186c3fcd9584b3
+mindie-knowledge @ git+https://github.com/mindie-agent/knowledge@1d0e413a2852007b46275a123fa1cce7be7b90d0
 mindie-profiler @ git+https://github.com/mindie-agent/profiler@79d97e75bff7351b0472b93c03b072c1cf47f5e7
 mindie-sim @ git+https://github.com/mindie-agent/sim@6f1d5a871a7b1ef20ff7a8cab33aaf4637fb3f66
 remote-dev @ git+https://github.com/mindie-agent/remote-dev@6e9882e0fa495bf2feeef29ec86492498d364531
