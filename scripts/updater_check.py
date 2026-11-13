@@ -128,9 +128,39 @@ def fold_feed_results(output):
     return "sync_failed", rows, summary
 
 
+def _components_confirmed(components, repair=None):
+    return (
+        isinstance(components, dict)
+        and components.get("status") in {"up_to_date", "active"}
+        and repair in (None, "installed")
+    )
+
+
 def _safe_component_check(adapter, deadline, *, force, idle, install, lock_timeout,
                           current_sha, extra_fields=None):
     from component_update import check as component_check
+
+    failed = _h("read_json")(_h("failed_path")(adapter))
+    if (not force
+            and isinstance(failed, dict)
+            and failed.get("sha") == current_sha
+            and _h("_failure_gate")(failed) == "wait"):
+        result_name = (
+            "action-required"
+            if failed.get("failure_class") in _h("_ACTIONABLE")
+            else "retry-waiting"
+        )
+        status = _h("_record")(
+            adapter,
+            current_sha=current_sha,
+            result=result_name,
+            error=failed.get("error"),
+            failure_class=failed.get("failure_class"),
+            next_retry_at=failed.get("next_retry_at"),
+            **(extra_fields or {}),
+        )
+        print(json.dumps(status))
+        return None, 0
 
     try:
         return component_check(
@@ -152,6 +182,7 @@ def _safe_component_check(adapter, deadline, *, force, idle, install, lock_timeo
             result="degraded",
             error=record.get("error"),
             failure_class=record.get("failure_class"),
+            next_retry_at=record.get("next_retry_at"),
             diagnostic=diagnostic,
             components={"status": "failed", "error_type": type(exc).__name__},
             **(extra_fields or {}),
@@ -220,6 +251,7 @@ def _check_once(adapter: dict, deadline: float, *, force, build, idle, install, 
             status = _h("_record")(
                 adapter, current_sha=active.get("sha"), result="degraded",
                 error=record.get("error"), failure_class=record.get("failure_class"),
+                next_retry_at=record.get("next_retry_at"),
                 diagnostic=diagnostic, release_selection=selected,
                 components=components,
             )
@@ -228,6 +260,10 @@ def _check_once(adapter: dict, deadline: float, *, force, build, idle, install, 
         else:
             if repaired:
                 repair = "installed"
+        if _components_confirmed(components, repair):
+            _h("_clear_active_failure")(adapter, current.get("sha"))
+            if active.get("sha") != current.get("sha"):
+                _h("_clear_active_failure")(adapter, active.get("sha"))
         result = "current" if selected["status"] == "up_to_date" else selected["status"]
         status = _h("_record")(
             adapter, current_sha=active.get("sha"), result=result, error=None,
@@ -293,11 +329,13 @@ def _check_once(adapter: dict, deadline: float, *, force, build, idle, install, 
             status = _h("_record")(
                 adapter, current_sha=sha, result="degraded",
                 error=record.get("error"), failure_class=record.get("failure_class"),
+                next_retry_at=record.get("next_retry_at"),
                 diagnostic=diagnostic, components=components,
             )
             print(json.dumps(status))
             return 1
-        _h("_clear_active_failure")(adapter, sha)
+        if _components_confirmed(components, "installed" if repaired else None):
+            _h("_clear_active_failure")(adapter, sha)
         status = _h("_record")(
             adapter, current_sha=sha, result="current", error=None,
             components=components,

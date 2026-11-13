@@ -400,15 +400,79 @@ def test_updater_check_isolates_component_update_failure_and_deferral(tmp_path, 
     assert payload["result"] == "degraded"
     assert payload["components"] == {"status": "failed", "error_type": "ValueError"}
 
+    # Immediate scheduled tick honors the recorded component retry backoff; force=True bypasses it.
+    with patch.object(updater, "resolve_release",
+                      return_value={"status": "up_to_date", "candidate": None}), \
+            patch.object(component_update, "check") as skipped_check:
+        rc_wait = updater._check_once(
+            adapter, time.monotonic() + 300, force=False,
+            build=Mock(), idle=Mock(), install=Mock(), lock_timeout=1,
+        )
+    assert rc_wait == 0
+    skipped_check.assert_not_called()
+    payload_wait = json.loads(capsys.readouterr().out)
+    assert payload_wait["result"] == "retry-waiting"
+
     with patch.object(updater, "resolve_release",
                       return_value={"status": "up_to_date", "candidate": None}), \
             patch.object(component_update, "check",
                          side_effect=updater.Deferred("service busy")), \
             patch.object(updater, "repair_host_package", return_value=None):
         rc_def = updater._check_once(
-            adapter, time.monotonic() + 300, force=False,
+            adapter, time.monotonic() + 300, force=True,
             build=Mock(), idle=Mock(), install=Mock(), lock_timeout=1,
         )
     assert rc_def == 0
     payload_def = json.loads(capsys.readouterr().out)
     assert payload_def["components"] == {"status": "deferred", "reason": "service busy"}
+
+
+def test_component_failure_backoff_and_recovery_clears_active_failure(tmp_path, monkeypatch, capsys):
+    import component_update
+    import entry as kimi_entry
+
+    adapter, _ = generations(tmp_path)
+    cfg_file = tmp_path / "kimi-adapter.json"
+    cfg_file.write_text(json.dumps(adapter), encoding="utf-8")
+    monkeypatch.setenv("MINDIE_KIMI_CONFIG", str(cfg_file))
+
+    now = [1000.0]
+    err = component_update._catalog_error("release_http_error", category="rate_limited", status=429)
+    with patch("time.time", side_effect=lambda: now[0]), \
+            patch("random.uniform", return_value=0.0), \
+            patch.object(updater, "resolve_release",
+                         return_value={"status": "up_to_date", "candidate": None}), \
+            patch.object(updater, "_update_diagnostic",
+                         return_value={"recorded": True, "logging_failed": False}), \
+            patch.object(updater, "repair_host_package", return_value=None), \
+            patch.object(component_update, "check", side_effect=[err, {"status": "up_to_date"}]) as checks:
+        assert updater._check_once(
+            adapter, time.monotonic() + 300, force=False,
+            build=Mock(), idle=Mock(), install=Mock(), lock_timeout=1,
+        ) == 1
+        capsys.readouterr()
+        assert kimi_entry._updater_view()["active_failure"] is True
+
+        # Before next_retry_at (1300.0), scheduled tick waits without calling component_update.check.
+        now[0] = 1200.0
+        assert updater._check_once(
+            adapter, time.monotonic() + 300, force=False,
+            build=Mock(), idle=Mock(), install=Mock(), lock_timeout=1,
+        ) == 0
+        assert checks.call_count == 1
+        capsys.readouterr()
+
+        # After backoff expires, recovery clears active_failure while preserving history.
+        now[0] = 2000.0
+        assert updater._check_once(
+            adapter, time.monotonic() + 300, force=False,
+            build=Mock(), idle=Mock(), install=Mock(), lock_timeout=1,
+        ) == 0
+        assert checks.call_count == 2
+        recovered = json.loads(capsys.readouterr().out)
+        assert recovered["result"] == "current"
+        view = kimi_entry._updater_view()
+        assert view["active_failure"] is False
+        assert view["status"] == "recovered"
+        failed_record = updater.read_json(updater.failed_path(adapter))
+        assert len(failed_record["history"]) == 1
