@@ -31,7 +31,7 @@ def main(argv=None):
     python = sys.executable
     if path.is_file():
         try:
-            configured = json.loads(path.read_text(encoding="utf-8")).get("python")
+            configured = json.loads(path.read_text(encoding="utf-8-sig")).get("python")
             if isinstance(configured, str) and configured:
                 python = configured
         except TimeoutError:
@@ -43,9 +43,15 @@ def main(argv=None):
     if os.name == "nt":
         import subprocess
 
+        def _stdio(stream):
+            return subprocess.DEVNULL if stream is None else stream
+
         raise SystemExit(
             subprocess.run(
                 command,
+                stdin=_stdio(sys.stdin),
+                stdout=_stdio(sys.stdout),
+                stderr=_stdio(sys.stderr),
                 check=False,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             ).returncode

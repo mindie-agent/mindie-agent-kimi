@@ -76,6 +76,36 @@ def _has_pe_header(path: Path) -> bool:
                 pass
 
 
+def _is_wsl_linux_executable(path: Path) -> bool:
+    """Return True only for genuine Linux ELF or POSIX shebang scripts stored on WSL DrvFS."""
+    fd = -1
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size < 4:
+            return False
+        head = os.read(fd, 512)
+    except TimeoutError:
+        raise
+    except OSError:
+        return False
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+    if head.startswith(b"\x7fELF"):
+        return True
+    if not head.startswith(b"#!"):
+        return False
+    first_line = head.splitlines()[0][2:].strip().lower()
+    if not first_line or any(tok in first_line for tok in (b".exe", b".cmd", b".bat", b"powershell")):
+        return False
+    lowered = head.lower()
+    return not any(marker in lowered for marker in (b".exe", b"cygpath", b"$basedir/", b"\\windows\\"))
+
+
 def is_windows_host_binary(candidate) -> bool:
     """Reject Windows PE/.exe/DrvFS shims when discovering POSIX/WSL host CLIs."""
     if not candidate or os.name != "posix":
@@ -85,7 +115,7 @@ def is_windows_host_binary(candidate) -> bool:
         return True
     norm = os.path.normpath(raw)
     if in_wsl() and _WSL_DRVFS_RE.match(norm):
-        return True
+        return not _is_wsl_linux_executable(Path(raw))
     return _has_pe_header(Path(raw))
 
 
@@ -133,11 +163,8 @@ def which_host_binary(name: str, *, path: str | None = None, which_fn=None) -> s
     if rejected is None or not rejected(found):
         return found
     search = os.environ.get("PATH", "") if path is None else path
-    wsl = os.name == "posix" and in_wsl()
     for entry in search.split(os.pathsep):
         if not entry:
-            continue
-        if wsl and _WSL_DRVFS_RE.match(os.path.normpath(entry)):
             continue
         cand = _REAL_WHICH(name, path=entry)
         if cand and not rejected(cand):
@@ -333,8 +360,20 @@ def resolve_kimi_bin(config=None):
     return which_host_binary("kimi", which_fn=shutil.which)
 
 
-def _expand_git_location(raw: str) -> str:
-    expanded = re.sub(r"%([^%]+)%", lambda m: os.environ.get(m.group(1), m.group(0)), raw)
+def _expand_git_location(raw: str) -> str | None:
+    missing = False
+
+    def _sub(match: re.Match[str]) -> str:
+        nonlocal missing
+        value = os.environ.get(match.group(1))
+        if value is None:
+            missing = True
+            return ""
+        return value
+
+    expanded = re.sub(r"%([^%]+)%", _sub, raw)
+    if missing:
+        return None
     if expanded != raw and os.path.sep == "/":
         expanded = expanded.replace("\\", "/")
     return expanded
@@ -348,6 +387,6 @@ def resolve_git_bin():
     if os.name == "nt":
         for raw in GIT_WINDOWS_LOCATIONS:
             candidate = _expand_git_location(raw)
-            if "%" not in candidate and Path(candidate).is_file():
+            if candidate and Path(candidate).is_file():
                 return candidate
     return None

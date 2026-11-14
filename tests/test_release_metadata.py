@@ -180,6 +180,9 @@ class ReleaseSelectionTests(unittest.TestCase):
             self.assertIsInstance(rebuilt, release_metadata.CatalogError)
             self.assertEqual(rebuilt.code, expected_code)
             self.assertEqual(rebuilt.category, expected_category)
+        self.assertIsNone(release_metadata._transport_select_error(http.client.InvalidURL("bad port")))
+        self.assertIsNone(release_metadata._transport_select_error(http.client.CannotSendRequest("bad state")))
+        self.assertIsNone(release_metadata._transport_select_error(json.JSONDecodeError("bad", "{", 1)))
 
         for local_bug in (
             http.client.InvalidURL("http://bad host"),

@@ -198,8 +198,18 @@ def main():
     kimi_exe = (
         KIMI
         if (KIMI != "kimi" or os.environ.get("MINDIE_KIMI_BIN"))
-        else (which_host_binary("kimi") or KIMI)
+        else which_host_binary("kimi")
     )
+    if not kimi_exe:
+        from diagnostic_support import failure
+
+        diagnostic = failure(
+            "native_install", "native_api", "native_unavailable",
+            exception=FileNotFoundError("kimi binary is not installed on PATH"),
+            reportable=False, elapsed_ms=(time.monotonic() - started) * 1000,
+        )
+        incident = diagnostic.get("incident_id")
+        raise SystemExit("native Kimi plugin API failed (FileNotFoundError)" + (f"; incident {incident}" if incident else ""))
     try:
         process = subprocess.Popen(
             [kimi_exe, "web", "--no-open", "--port", str(port)],

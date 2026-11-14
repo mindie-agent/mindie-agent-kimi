@@ -123,10 +123,6 @@ def _transport_select_error(exc):
         err.code = "release_http_error"
         err.status = exc.code
         return err
-    if isinstance(exc, json.JSONDecodeError):
-        err = CatalogError("release_catalog_invalid")
-        err.code = "release_catalog_invalid"
-        return err
     if isinstance(exc, ReleaseResponseTooLarge):
         err = CatalogError("release_transport_unavailable")
         err.code = "release_transport_unavailable"
