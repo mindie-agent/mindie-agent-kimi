@@ -94,8 +94,9 @@ def catalog():
         ("diagnostics_status", "Inspect local MindIE diagnostic/reporting status without starting a worker or contacting GitHub.",
          dict(config=dict(type="string", description="Optional existing diagnostics policy path.")), []),
         ("diagnostics_bundle", "Export a bounded, sanitized local diagnostic support bundle. Does not upload it.",
-         dict(root=dict(type="string", description="Local diagnostics log root."),
-              operation_id=dict(type="string"), output=dict(type="string", description="Local output file.")), ["root"]),
+         dict(root=dict(type="string", description="Optional local diagnostics log root; defaults to the active MindIE diagnostics root."),
+              operation_id=dict(type="string"), incident_id=dict(type="string", description="Incident identifier alias for operation_id."),
+              output=dict(type="string", description="Local output file.")), []),
     ):
         result.append(dict(name=name, description=description,
                            inputSchema=dict(type="object", additionalProperties=False,
@@ -143,10 +144,23 @@ def execute(name, arguments, session, *, cancel=None, timeout=None):
         if arguments.get("config") is not None:
             argv += ["--config", arguments["config"]]
     elif name == "diagnostics_bundle":
-        component, argv = "diagnostics", ["bundle", "--root", arguments["root"]]
-        for key in ("operation_id", "output"):
-            if arguments.get(key) is not None:
-                argv += ["--" + key.replace("_", "-"), arguments[key]]
+        root_val = arguments.get("root")
+        if root_val is None:
+            explicit_root = os.environ.get("MINDIE_DIAGNOSTICS_ROOT")
+            if explicit_root:
+                root_val = str(Path(explicit_root).expanduser())
+            elif os.name == "nt" and not os.environ.get("XDG_STATE_HOME") and os.environ.get("LOCALAPPDATA"):
+                root_val = str(Path(os.environ["LOCALAPPDATA"]) / "mindie" / "diagnostics")
+            elif os.environ.get("XDG_STATE_HOME"):
+                root_val = str(Path(os.environ["XDG_STATE_HOME"]) / "mindie" / "diagnostics")
+            else:
+                root_val = str(Path.home() / ".local" / "state" / "mindie" / "diagnostics")
+        component, argv = "diagnostics", ["bundle", "--root", root_val]
+        op_id = arguments.get("operation_id") if arguments.get("operation_id") is not None else arguments.get("incident_id")
+        if op_id is not None:
+            argv += ["--operation-id", op_id]
+        if arguments.get("output") is not None:
+            argv += ["--output", arguments["output"]]
     else:
         raise ValueError("unknown deterministic component tool")
     budget = arguments.get("max_output_tokens", 16384)
@@ -160,6 +174,9 @@ def execute(name, arguments, session, *, cancel=None, timeout=None):
         bound = min(bound, timeout)
     environment = dict(os.environ, MINDIE_KIMI_CONFIG=str(config_path()))
     environment.pop("PYTHONPATH", None)
+    invocation_token = os.urandom(16).hex() if name in DESCRIPTIONS else None
+    if invocation_token is not None:
+        environment["MINDIE_DIAGNOSTICS_INVOCATION_TOKEN"] = invocation_token
     cwd = arguments.get("cwd")
     if cwd is None:
         from identity import session_cwd
@@ -198,5 +215,14 @@ def execute(name, arguments, session, *, cancel=None, timeout=None):
         value["result"] = json.loads(stdout)
     except json.JSONDecodeError:
         pass
+    if name in DESCRIPTIONS and interrupted is None and output.returncode not in (0, 2):
+        import diagnostic_support
+        diag = diagnostic_support.record_component_crash(
+            name, argv, output.returncode, output.stderr,
+            parsed_result=value.get("result"), executable=child[0],
+            invocation_token=invocation_token,
+        )
+        if diag is not None:
+            value["diagnostic"] = diag
     return dict(content=[dict(type="text", text=json.dumps(value, ensure_ascii=False))],
                 structuredContent=value, isError=interrupted is not None or output.returncode != 0)
