@@ -38,9 +38,9 @@ import xml.etree.ElementTree as ET
 try:
     from bounded import run as bounded_run
     from genstate import read_current, update_dir
-    from paths import config_path, load_adapter_config
+    from paths import config_path, load_adapter_config, which_host_binary
 except ImportError:
-    pass
+    which_host_binary = None
 
 INTERVAL_SECONDS = 300
 LAUNCHER = "mindie_launch.py"
@@ -65,9 +65,10 @@ def _h(name):
 
 def _scheduler_backend():
     """Select only schedulers whose registration and readback commands exist."""
-    if shutil.which("launchctl") and callable(getattr(os, "getuid", None)):
+    resolve = (lambda name: which_host_binary(name, which_fn=shutil.which)) if which_host_binary else shutil.which
+    if resolve("launchctl") and callable(getattr(os, "getuid", None)):
         return "launchd"
-    if shutil.which("schtasks") and shutil.which("powershell"):
+    if resolve("schtasks") and resolve("powershell"):
         return "task-scheduler"
     return None
 
@@ -120,15 +121,22 @@ def refresh_existing_wrapper(adapter, current):
 
 
 def _verify_scheduled_task(wrapper: Path, pythonw: Path) -> None:
-    # schtasks writes its XML in the console codepage. Export Unicode directly
-    # so bounded_run's UTF-8 transport also preserves non-ASCII paths.
-    output = _h("bounded_run")([
-        "powershell", "-NoProfile", "-NonInteractive", "-Command",
-        "[Console]::OutputEncoding = [Text.UTF8Encoding]::new(); "
-        "Export-ScheduledTask -TaskName MindIEKimiUpdate -ErrorAction Stop",
-    ], "", timeout=30)
+    # Headless Windows PowerShell 5.1 (`CREATE_NO_WINDOW`) has no console handle,
+    # so `[Console]::OutputEncoding = ...` throws IOException (and parameterless
+    # `UTF8Encoding::new()` emits a BOM). Write UTF-8 without BOM to raw stdout.
+    script = (
+        "$ErrorActionPreference='Stop'; "
+        "$xml = Export-ScheduledTask -TaskName MindIEKimiUpdate -ErrorAction Stop; "
+        "$bytes = [Text.UTF8Encoding]::new($false).GetBytes([string]$xml); "
+        "$out = [Console]::OpenStandardOutput(); "
+        "$out.Write($bytes, 0, $bytes.Length); $out.Flush()"
+    )
+    output = _h("bounded_run")(
+        ["powershell", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+        "", timeout=30,
+    )
     try:
-        actions = ET.fromstring(output).findall("./{*}Actions/{*}Exec")
+        actions = ET.fromstring(output.lstrip("\ufeff")).findall("./{*}Actions/{*}Exec")
     except ET.ParseError:
         actions = []
     if (len(actions) != 1

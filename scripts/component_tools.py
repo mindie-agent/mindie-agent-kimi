@@ -115,12 +115,14 @@ def command(adapter, component):
         return configured
     if component == "diagnostics":
         return [adapter["python"], "-I", "-m", "mindie_diagnostics.cli"]
+    from paths import same_interpreter, which_host_binary
+
     runtime = Path(adapter["python"])
     runtime_paths = [str(runtime.parent)]
-    if runtime == Path(sys.executable):
+    if same_interpreter(runtime, sys.executable):
         runtime_paths.append(sysconfig.get_path("scripts"))
     search_path = os.pathsep.join([*runtime_paths, os.environ.get("PATH", "")])
-    executable = shutil.which("mindie-" + component, path=search_path)
+    executable = which_host_binary("mindie-" + component, path=search_path, which_fn=shutil.which)
     if executable is None:
         raise FileNotFoundError(
             "mindie-" + component + " is not installed on PATH; install the component "

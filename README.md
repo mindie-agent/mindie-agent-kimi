@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/mindie-agent/mindie-agent-kimi/releases"><img src="https://img.shields.io/badge/release-v0.1.23-0F766E.svg" alt="Release v0.1.23"></a>
+  <a href="https://github.com/mindie-agent/mindie-agent-kimi/releases"><img src="https://img.shields.io/badge/release-v0.1.24-0F766E.svg" alt="Release v0.1.24"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-0F766E.svg" alt="License: MIT"></a>
   <a href="runtime-requirements.txt"><img src="https://img.shields.io/badge/python-3.11%2B-2563EB.svg" alt="Python 3.11+"></a>
   <a href="kimi.plugin.json"><img src="https://img.shields.io/badge/host-Kimi_Code-7C3AED.svg" alt="Host: Kimi Code"></a>
@@ -27,11 +27,11 @@
 
 ---
 
-**MindIE Agent for Kimi Code**（`mindie-agent-kimi`）是 [MindIE Agent](https://github.com/mindie-agent/mindie-agent) 面向 Kimi Code 的原生插件适配器，面向**昇腾（Ascend）NPU 上的 AI Infra 设计、开发与测试流程**提供统一的 Agent 支撑。当前 `v0.1.23`（配套主产品 `0.1.12`）已交付 **`vLLM-Ascend` 特性开发与测试**、**`AscendC` 与 `Triton` 算子实现验证**、远端 NPU 执行及公开经验脱敏沉淀能力；更多昇腾基础软件方向按路线图持续扩展。
+**MindIE Agent for Kimi Code**（`mindie-agent-kimi`）是 [MindIE Agent](https://github.com/mindie-agent/mindie-agent) 面向 Kimi Code 的原生插件适配器，面向**昇腾（Ascend）NPU 上的 AI Infra 设计、开发与测试流程**提供统一的 Agent 支撑。当前 `v0.1.24`（配套主产品 `0.1.12`）已交付 **`vLLM-Ascend` 特性开发与测试**、**`AscendC` 与 `Triton` 算子实现验证**、远端 NPU 执行及公开经验脱敏沉淀能力；更多昇腾基础软件方向按路线图持续扩展。
 
 项目设计遵循 [MindIE Agent 工程设计原则](https://github.com/mindie-agent/mindie-agent/blob/main/docs/design-principles.md)：共享知识引擎与远端开发能力由独立组件承载，本仓库专注于 Kimi 会话身份绑定、`wire.jsonl` 公开对话提取、MCP 桥接与本地不可变版本更新。
 
-> **生态与版本说明**：当前 `v0.1.23`（配套主产品 `0.1.12`）支持 Claude Code（[`mindie-agent-cc`](https://github.com/mindie-agent/mindie-agent-cc)）、OpenAI Codex CLI（[`mindie-agent-codex`](https://github.com/mindie-agent/mindie-agent-codex)）、Kimi Code（本仓库）与 DeepSeek Harness（[`mindie-agent-dsh`](https://github.com/mindie-agent/mindie-agent-dsh)）四个宿主，共享同一套知识、远端开发与诊断组件。各宿主的实机验证范围详见[文档导航](#文档导航)。
+> **生态与版本说明**：当前 `v0.1.24`（配套主产品 `0.1.12`）支持 Claude Code（[`mindie-agent-cc`](https://github.com/mindie-agent/mindie-agent-cc)）、OpenAI Codex CLI（[`mindie-agent-codex`](https://github.com/mindie-agent/mindie-agent-codex)）、Kimi Code（本仓库）与 DeepSeek Harness（[`mindie-agent-dsh`](https://github.com/mindie-agent/mindie-agent-dsh)）四个宿主，共享同一套知识、远端开发与诊断组件。各宿主的实机验证范围详见[文档导航](#文档导航)。
 
 ---
 
@@ -108,7 +108,7 @@ MindIE Agent 采用**「领域知识与 Skill 手动按需触发 + 远端开发�
    GIT_CONFIG_KEY_0=core.longpaths GIT_CONFIG_VALUE_0=true \
    GIT_CONFIG_KEY_1=core.autocrlf GIT_CONFIG_VALUE_1=false \
    GIT_CONFIG_KEY_2=credential.https://github.com.helper GIT_CONFIG_VALUE_2="!gh auth git-credential" \
-   git clone --depth 1 --branch v0.1.23 https://github.com/mindie-agent/mindie-agent-kimi.git "$KIMI_SRC"
+   git clone --depth 1 --branch v0.1.24 https://github.com/mindie-agent/mindie-agent-kimi.git "$KIMI_SRC"
    SETUP_JSON=$(uv run --no-project --python 3.13 python "$KIMI_SRC/scripts/setup.py")
    echo "$SETUP_JSON"
    NATIVE_PKG=$(printf '%s' "$SETUP_JSON" | uv run --no-project --python 3.13 python -c "import json,sys; print(json.load(sys.stdin)['native_package'])")

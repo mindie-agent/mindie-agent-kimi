@@ -98,7 +98,8 @@ class UnsupportedSchema(ValueError):
 def kimi_bin():
     if explicit := os.environ.get("MINDIE_KIMI_BIN"):
         return explicit
-    if found := shutil.which("kimi"):
+    from paths import which_host_binary
+    if found := which_host_binary("kimi", which_fn=shutil.which):
         return found
     raise NativeStartError("kimi binary is not on PATH; the summary worker cannot run")
 
@@ -239,10 +240,12 @@ def prepare_isolated_home(base: Path) -> Path:
 
 
 def doctor_isolated(home: Path) -> str:
+    from paths import is_windows_or_wsl_drvfs
+
     config = Path(home) / "config.toml"
     if not config.is_file():
         raise RuntimeError("isolated organizer config is missing")
-    if config.stat().st_mode & 0o077:
+    if not is_windows_or_wsl_drvfs(config) and (config.stat().st_mode & 0o077):
         raise RuntimeError("isolated organizer config is not private")
     env = {**os.environ, "KIMI_CODE_HOME": str(home), "KIMI_DISABLE_TELEMETRY": "1"}
     return bounded.run([kimi_bin(), "doctor", "config", str(config)], "", timeout=20, env=env, cwd=str(home))

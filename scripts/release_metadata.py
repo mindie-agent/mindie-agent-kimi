@@ -13,6 +13,10 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import sys
+import urllib.error
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from mindie_knowledge.releases import (
     ReleaseValidationError, select_release, validate_compatibility, validate_release_metadata,
@@ -98,10 +102,39 @@ def typed_catalog_error(exc):
         error = CatalogError(code or "release catalog unavailable")
         if code:
             error.code = code
-        error.category = "rate_limited" if payload.get("status") == 429 else "temporary_network"
+        error.category = (
+            "certificate" if code == "release_certificate_error"
+            else "rate_limited" if payload.get("status") == 429
+            else "temporary_network"
+        )
     if (returncode := getattr(exc, "returncode", None)) is not None:
         error.returncode = returncode
     return error
+
+
+def _transport_select_error(exc):
+    if isinstance(exc, TimeoutError):
+        return None
+    from bounded import classify_transport_exception
+    from mindie_knowledge.release_http import ReleaseResponseTooLarge
+
+    if isinstance(exc, urllib.error.HTTPError):
+        err = CatalogError("release_http_error")
+        err.code = "release_http_error"
+        err.status = exc.code
+        return err
+    if isinstance(exc, ReleaseResponseTooLarge):
+        err = CatalogError("release_transport_unavailable")
+        err.code = "release_transport_unavailable"
+        return err
+    classified = classify_transport_exception(exc)
+    if classified is None:
+        return None
+    category, _ = classified
+    code = "release_certificate_error" if category == "certificate" else "release_transport_unavailable"
+    err = CatalogError(code)
+    err.code = code
+    return err
 
 
 def main():
@@ -117,9 +150,33 @@ def main():
     try:
         result = (metadata(args.source, args.revision) if args.command == "build"
                   else select_candidate(args.kimi_bin, args.installed_version))
-    except (ReleaseFetchError, ReleaseValidationError, FileNotFoundError,
+    except ReleaseFetchError as exc:
+        if getattr(exc, "code", None) == "release_transport_unavailable" and exc.__cause__ is not None:
+            import http.client
+
+            cause = exc.__cause__
+            if isinstance(
+                cause,
+                (
+                    TimeoutError,
+                    http.client.InvalidURL,
+                    http.client.ImproperConnectionState,
+                    http.client.NotConnected,
+                    http.client.UnimplementedFileMode,
+                ),
+            ):
+                raise cause from exc
+            if (mapped := _transport_select_error(cause)) is not None:
+                emit_select_error(mapped)
+        emit_select_error(exc)
+    except (ReleaseValidationError, FileNotFoundError,
             subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         emit_select_error(exc)
+    except Exception as exc:
+        mapped = _transport_select_error(exc)
+        if mapped is not None:
+            emit_select_error(mapped)
+        raise
     print(json.dumps(result, sort_keys=True))
 
 

@@ -110,7 +110,7 @@ def _config_path() -> Path:
 
 def _load_config():
     try:
-        data = json.loads(_config_path().read_text(encoding="utf-8"))
+        data = json.loads(_config_path().read_text(encoding="utf-8-sig"))
     except TimeoutError:
         raise
     except (OSError, ValueError):
@@ -128,7 +128,7 @@ def _state_dir(config=None) -> Path:
         engine = config.get("engine_config")
         if isinstance(engine, str):
             try:
-                root = json.loads(Path(engine).read_text(encoding="utf-8")).get("root")
+                root = json.loads(Path(engine).read_text(encoding="utf-8-sig")).get("root")
                 if isinstance(root, str):
                     return Path(root) / "kimi-adapter"
             except TimeoutError:
@@ -144,7 +144,7 @@ def _sharing_enabled() -> bool:
     if not path.is_file():
         return False
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except TimeoutError:
         raise
     except (OSError, ValueError):
@@ -160,7 +160,7 @@ def _sharing_enabled() -> bool:
     if not community_path.is_file():
         return False
     try:
-        raw = json.loads(community_path.read_text(encoding="utf-8"))
+        raw = json.loads(community_path.read_text(encoding="utf-8-sig"))
     except TimeoutError:
         raise
     except (OSError, ValueError):
@@ -325,8 +325,8 @@ def _read_hook_stdin(deadline):
                     if not chunk.rstrip().endswith((b"}", b"]")):
                         continue
                     try:
-                        json.loads(bytes(buf))
-                    except ValueError:
+                        json.loads(bytes(buf).removeprefix(b"\xef\xbb\xbf").decode("utf-8"))
+                    except (UnicodeDecodeError, ValueError):
                         continue
                     return
         finally:
@@ -338,7 +338,7 @@ def _read_hook_stdin(deadline):
     if not finished.is_set():
         return b""
     with lock:
-        return bytes(buf)
+        return bytes(buf).removeprefix(b"\xef\xbb\xbf")
 
 
 def _hook(op: str) -> int:
@@ -572,16 +572,37 @@ def _read_mcp_line(stdin):
     return line.rstrip(b"\r\n") if line else False
 
 
+def _reexec_stdio(stream):
+    import subprocess
+
+    return subprocess.DEVNULL if stream is None else stream
+
+
 def _mcp(surface: str) -> int:
+    from paths import same_interpreter
+
     current = _current(_state_dir())
     # Old controllers copy a fixed launcher file set. Enter the complete
     # selected payload/interpreter before importing its transport dependencies.
-    if Path(current["python"]).absolute() != Path(sys.executable).absolute():
+    if not same_interpreter(current["python"], sys.executable):
         environment = _child_env(current, surface)
         environment.pop("PYTHONPATH", None)
-        os.execve(current["python"], [
+        argv = [
             current["python"], str(Path(__file__).resolve()), "--config", str(_config_path()), "mcp", surface,
-        ], environment)
+        ]
+        if os.name == "nt":
+            import subprocess
+
+            return subprocess.run(
+                argv,
+                stdin=_reexec_stdio(sys.stdin),
+                stdout=_reexec_stdio(sys.stdout),
+                stderr=_reexec_stdio(sys.stderr),
+                env=environment,
+                check=False,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            ).returncode
+        os.execve(current["python"], argv, environment)
     import importlib.util
     transport = Path(__file__).with_name("native_mcp.py")
     if not transport.is_file():
@@ -611,7 +632,9 @@ def _updater(rest) -> int:
 
             return subprocess.run(
                 [current["python"], str(script), *rest],
-                stdin=sys.stdin, stdout=sys.stdout, stderr=sys.stderr,
+                stdin=_reexec_stdio(sys.stdin),
+                stdout=_reexec_stdio(sys.stdout),
+                stderr=_reexec_stdio(sys.stderr),
                 env=_child_env(current), timeout=1210, check=False,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             ).returncode

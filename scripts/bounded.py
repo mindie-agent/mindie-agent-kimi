@@ -322,7 +322,15 @@ def classify_transport_exception(exc):
         if _is_cert_verification_error(getattr(exc, "__cause__", None)):
             return ("certificate", None)
         return ("temporary_network", None)
-    if isinstance(exc, (http.client.InvalidURL, http.client.UnimplementedFileMode)):
+    if isinstance(
+        exc,
+        (
+            http.client.InvalidURL,
+            http.client.ImproperConnectionState,
+            http.client.NotConnected,
+            http.client.UnimplementedFileMode,
+        ),
+    ):
         return None
     if isinstance(exc, (ConnectionError, http.client.HTTPException, socket.gaierror, socket.herror)):
         return ("temporary_network", None)
