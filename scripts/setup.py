@@ -260,9 +260,11 @@ def _resolve_sharing_python(config: Path, knowledge_python: str | None) -> str |
     for candidate_cfg in (config, default_config_path()):
         if candidate_cfg.is_file():
             try:
-                configured = json.loads(candidate_cfg.read_text(encoding="utf-8")).get("python")
+                configured = json.loads(candidate_cfg.read_text(encoding="utf-8-sig")).get("python")
                 if isinstance(configured, str) and Path(configured).is_file():
                     return configured
+            except TimeoutError:
+                raise
             except (OSError, ValueError):
                 pass
     if importlib.util.find_spec("mindie_knowledge") is not None:

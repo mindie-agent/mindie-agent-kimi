@@ -66,6 +66,24 @@ class WslAndWindowsParityTests(unittest.TestCase):
                 linux_kimi.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
                 linux_kimi.chmod(0o755)
 
+                uv_console = linux_dir / "mindie-profiler"
+                uv_console.write_text(
+                    "#!/mnt/c/proj/.venv/bin/python3\n"
+                    "import sys\n"
+                    'if sys.argv[0].endswith(".exe"):\n'
+                    "    sys.argv[0] = sys.argv[0][:-4]\n",
+                    encoding="utf-8",
+                )
+                uv_console.chmod(0o755)
+                posix_wrap = linux_dir / "kimi-wrap"
+                posix_wrap.write_text(
+                    '#!/bin/sh\nbasedir=$(dirname "$0")\nexec "$basedir/linux-kimi" "$@"\n',
+                    encoding="utf-8",
+                )
+                posix_wrap.chmod(0o755)
+                self.assertTrue(paths._is_wsl_linux_executable(uv_console))
+                self.assertTrue(paths._is_wsl_linux_executable(posix_wrap))
+
                 combined_path = f"/mnt/c/Users/demo/.kimi-code/bin{os.pathsep}{pe_dir}{os.pathsep}{linux_dir}"
                 with patch.dict(os.environ, {"WSL_DISTRO_NAME": "Ubuntu-24.04", "PATH": combined_path}):
                     self.assertTrue(paths.in_wsl())

@@ -150,7 +150,26 @@ def main():
     try:
         result = (metadata(args.source, args.revision) if args.command == "build"
                   else select_candidate(args.kimi_bin, args.installed_version))
-    except (ReleaseFetchError, ReleaseValidationError, FileNotFoundError,
+    except ReleaseFetchError as exc:
+        if getattr(exc, "code", None) == "release_transport_unavailable" and exc.__cause__ is not None:
+            import http.client
+
+            cause = exc.__cause__
+            if isinstance(
+                cause,
+                (
+                    TimeoutError,
+                    http.client.InvalidURL,
+                    http.client.ImproperConnectionState,
+                    http.client.NotConnected,
+                    http.client.UnimplementedFileMode,
+                ),
+            ):
+                raise cause from exc
+            if (mapped := _transport_select_error(cause)) is not None:
+                emit_select_error(mapped)
+        emit_select_error(exc)
+    except (ReleaseValidationError, FileNotFoundError,
             subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         emit_select_error(exc)
     except Exception as exc:

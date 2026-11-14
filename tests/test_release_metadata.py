@@ -192,6 +192,35 @@ class ReleaseSelectionTests(unittest.TestCase):
             self.assertIsNone(bounded.classify_transport_exception(local_bug))
             self.assertIsNone(release_metadata._transport_select_error(local_bug))
 
+        from mindie_knowledge.releases_io import ReleaseFetchError
+        import urllib.error
+
+        def raise_wrapped_cert(*_a, **_kw):
+            try:
+                raise urllib.error.URLError(ssl.SSLCertVerificationError(1, "self signed"))
+            except Exception as inner:
+                raise ReleaseFetchError("release_transport_unavailable") from inner
+
+        buf = io.StringIO()
+        with patch.object(sys, "argv", ["release_metadata.py", "select", "--kimi-bin", "kimi", "--installed-version", "0.1.0"]), \
+             patch.object(release_metadata, "select_candidate", side_effect=raise_wrapped_cert), \
+             patch("sys.stdout", buf):
+            with self.assertRaises(SystemExit) as ctx:
+                release_metadata.main()
+        self.assertEqual(ctx.exception.code, 1)
+        self.assertIn('"code": "release_certificate_error"', buf.getvalue())
+
+        def raise_wrapped_local_bug(*_a, **_kw):
+            try:
+                raise http.client.CannotSendRequest("Request-sent")
+            except Exception as inner:
+                raise ReleaseFetchError("release_transport_unavailable") from inner
+
+        with patch.object(sys, "argv", ["release_metadata.py", "select", "--kimi-bin", "kimi", "--installed-version", "0.1.0"]), \
+             patch.object(release_metadata, "select_candidate", side_effect=raise_wrapped_local_bug):
+            with self.assertRaises(http.client.CannotSendRequest):
+                release_metadata.main()
+
 
 if __name__ == "__main__":
     unittest.main()
