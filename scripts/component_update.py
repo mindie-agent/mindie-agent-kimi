@@ -21,16 +21,21 @@ class CatalogError(RuntimeError):
     """Expected catalog miss; static codes only, never raw feed text."""
 
 
-def _catalog_error(code, *, category="temporary_network", status=None):
+def _catalog_error(code, *, category="temporary_network", status=None, retry_after=None):
     error = CatalogError(code)
     error.code = code
     error.category = category
     if type(status) is int and 100 <= status <= 599:
         error.status = status
+    if retry_after is not None:
+        error.retry_after = retry_after
     return error
 
 
 def typed_catalog_error(exc):
+    if isinstance(exc, TimeoutError):
+        return exc
+    from bounded import classify_transport_exception
     from mindie_knowledge.release_http import ReleaseResponseTooLarge
     from mindie_knowledge.releases_io import ReleaseFetchError
 
@@ -41,15 +46,21 @@ def typed_catalog_error(exc):
             status=exc.status,
         )
     if isinstance(exc, urllib.error.HTTPError):
+        classified = classify_transport_exception(exc)
         return _catalog_error(
             "release_http_error",
-            category="rate_limited" if exc.code == 429 else "temporary_network",
+            category=classified[0] if classified else ("rate_limited" if exc.code == 429 else "temporary_network"),
             status=exc.code,
+            retry_after=classified[1] if classified else None,
         )
     if isinstance(exc, json.JSONDecodeError):
         return _catalog_error("release_catalog_invalid")
-    if isinstance(exc, (urllib.error.URLError, ConnectionError, ReleaseResponseTooLarge)):
+    if isinstance(exc, ReleaseResponseTooLarge):
         return _catalog_error("release_transport_unavailable")
+    if (classified := classify_transport_exception(exc)) is not None:
+        category, retry_after = classified
+        code = "release_certificate_error" if category == "certificate" else "release_transport_unavailable"
+        return _catalog_error(code, category=category, retry_after=retry_after)
     return exc
 
 
@@ -61,7 +72,10 @@ def _discover_catalog(*args, **kwargs):
     except TimeoutError:
         raise
     except Exception as exc:
-        raise typed_catalog_error(exc) from None
+        typed = typed_catalog_error(exc)
+        if typed is exc:
+            raise
+        raise typed from None
 
 
 @contextmanager
