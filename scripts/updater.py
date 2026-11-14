@@ -50,7 +50,7 @@ if str(HERE) not in sys.path:
 import diagnostic_support
 
 try:
-    from bounded import CommandTimedOut, _scrub_reason_line
+    from bounded import CommandTimedOut, _scrub_reason_line, classify_transport_exception
     from bounded import run as bounded_run
     from genstate import (
         LockTimeout,
@@ -553,7 +553,19 @@ def _restore_stopped_service(adapter, final, deadline):
     _record(adapter, service_handoff=result)
 
 
+def _stamp_transport(exc):
+    if getattr(exc, "category", None) is None and (kind := classify_transport_exception(exc)) is not None:
+        try:
+            exc.category = kind[0]
+            if kind[1] is not None and getattr(exc, "retry_after", None) is None:
+                exc.retry_after = kind[1]
+        except (AttributeError, TypeError):
+            pass
+    return exc
+
+
 def _update_diagnostic(stage, exc, revision=None):
+    _stamp_transport(exc)
     return diagnostic_support.failure(
         "updater", stage, "update", exception=exc, revision=revision,
         exit_code=getattr(exc, "returncode", None),
@@ -613,6 +625,7 @@ def _retry_delay(count, retry_after=None):
 
 
 def _failure_category(exc):
+    _stamp_transport(exc)
     category = getattr(exc, "category", None)
     if isinstance(exc, CommandTimedOut) and category == "temporary_network":
         return "deadline"
@@ -690,15 +703,9 @@ def _note_resolve_failure(adapter, exc, current_sha):
     error = _STATIC_FAILURE[category] if category else _failure_detail(exc)
     result = "action-required" if category in _ACTIONABLE else "check-failed"
     return _record(
-        adapter,
-        current_sha=current_sha,
-        result=result,
-        error=error,
-        resolve_failures=count,
-        resolve_failure_at=first,
-        resolve_wait=True,
-        resolve_failure_class=category,
-        failure_class=category,
+        adapter, current_sha=current_sha, result=result, error=error,
+        resolve_failures=count, resolve_failure_at=first, resolve_wait=True,
+        resolve_failure_class=category, failure_class=category,
         next_retry_at=time.time() + _retry_delay(count, getattr(exc, "retry_after", None) if category else None),
         diagnostic=_update_diagnostic("resolve_release", exc),
     )
@@ -731,17 +738,10 @@ def status() -> int:
     generations = sorted(
         p.name for p in base.iterdir() if p.is_dir() and not p.name.startswith(".")
     ) if base.is_dir() else []
-    print(
-        json.dumps(
-            {
-                "current": read_current(adapter),
-                "status": read_status(adapter),
-                "failed": read_json(failed_path(adapter)),
-                "generations": generations,
-            },
-            indent=2,
-        )
-    )
+    print(json.dumps({
+        "current": read_current(adapter), "status": read_status(adapter),
+        "failed": read_json(failed_path(adapter)), "generations": generations,
+    }, indent=2))
     return 0
 
 
@@ -783,6 +783,6 @@ if __name__ == "__main__":
     except TimeoutError:
         raise
     except Exception as exc:
-        diagnostic = diagnostic_support.failure("updater", "entry", "update", exception=exc)
+        diagnostic = _update_diagnostic("entry", exc)
         print(json.dumps({"result": "failed", "error_type": type(exc).__name__, "diagnostic": diagnostic}))
         raise SystemExit(1)

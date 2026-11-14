@@ -3,8 +3,8 @@
 [Role]
 Executes a single subprocess attempt (`run`) with an absolute deadline, bounded
 combined stdout/stderr byte cap (`MAX_OUTPUT`), non-blocking temp-file stdin,
-process-group/Job tree termination on exit or timeout, and optional static
-transport error classification (`classify_transport_text`).
+process-group/Job tree termination on exit or timeout, and static transport
+error classification (`classify_transport_text`, `classify_transport_exception`).
 
 [Invariants]
 - Never retries failed or timed-out commands.
@@ -32,12 +32,16 @@ transport error classification (`classify_transport_text`).
 from __future__ import annotations
 
 import atexit
+import http.client
 import os
 import re
+import socket
+import ssl
 import subprocess
 import tempfile
 import threading
 import time
+import urllib.error
 
 POSIX = os.name == "posix"
 
@@ -239,6 +243,9 @@ _CERT_PHRASES = (
     "certificate verify failed", "sslcertverificationerror", "certificate has expired",
     "self-signed certificate", "self signed certificate", "unable to get local issuer certificate",
     "certificate_verify_failed", "ssl: certificate", "ssl certificate problem", "unknown ca", "curl: (60)",
+    "invalid peer certificate", "alert bad certificate", "alert certificate expired",
+    "alert certificate revoked", "alert certificate unknown",
+    "sec_e_untrusted_root", "sec_e_cert_expired", "sec_e_wrong_principal", "crypt_e_no_revocation_check",
 )
 _RESOLVER_PHRASES = (
     "resolutionimpossible", "conflicting dependencies", "package versions have conflicting",
@@ -258,8 +265,13 @@ _CONNECT_PHRASES = (
     "nodename nor servname", "temporary failure resolving", "network is unreachable",
     "connection timed out", "connection reset by peer", "connection refused", "connection aborted",
     "failed to connect", "operation timed out", "read operation timed out", "timed out",
-    "curl: (6)", "curl: (7)", "curl: (28)", "curl: (56)", "newconnectionerror",
-    "remote end closed connection", "unexpected eof", "connection broken", "bad gateway",
+    "curl: (6)", "curl: (7)", "curl: (28)", "curl: (35)", "curl: (56)", "newconnectionerror",
+    "remote end closed connection", "unexpected eof", "unexpected_eof_while_reading",
+    "eof occurred in violation of protocol", "ssl_error_syscall", "ssl_error_eof", "ssl_error_zero_return",
+    "tlsv1 alert", "sslv3 alert", "gnutls_handshake() failed",
+    "the tls connection was non-properly terminated", "without sending tls close_notify",
+    "tls handshake eof", "schannel: failed to receive handshake", "sec_e_context_expired",
+    "sec_e_message_altered", "incompleteread(", "connection broken", "bad gateway",
     "service unavailable", "gateway time-out", "gateway timeout", "error sending request",
     "dns error", "recv failure", "send failure", "max retries exceeded", "proxy connect aborted",
 )
@@ -277,6 +289,44 @@ def _finite_delay(value):
     if number != number or number in (float("inf"), float("-inf")) or number < 0:
         return None
     return number
+
+
+def _is_cert_verification_error(exc) -> bool:
+    if isinstance(exc, ssl.SSLCertVerificationError):
+        return True
+    return isinstance(exc, ssl.SSLError) and getattr(exc, "reason", None) == "CERTIFICATE_VERIFY_FAILED"
+
+
+def classify_transport_exception(exc):
+    """Classify typed stdlib HTTP/TLS/socket transport errors without free-text parsing.
+
+    `TimeoutError` and local URL/mode programming errors (`InvalidURL`,
+    `UnimplementedFileMode`) return `None` so deadlines and malformed URL
+    bugs are never masked as transient network failures.
+    """
+    if exc is None or isinstance(exc, TimeoutError):
+        return None
+    if isinstance(exc, urllib.error.HTTPError):
+        headers = getattr(exc, "headers", None)
+        raw_retry = headers.get("Retry-After") if headers is not None and hasattr(headers, "get") else None
+        retry_after = _finite_delay(raw_retry) if raw_retry is not None else None
+        return ("rate_limited" if exc.code == 429 else "temporary_network", retry_after)
+    if _is_cert_verification_error(exc):
+        return ("certificate", None)
+    if isinstance(exc, urllib.error.URLError):
+        reason = getattr(exc, "reason", None)
+        if _is_cert_verification_error(reason) or _is_cert_verification_error(getattr(exc, "__cause__", None)):
+            return ("certificate", None)
+        return ("temporary_network", None)
+    if isinstance(exc, ssl.SSLError):
+        if _is_cert_verification_error(getattr(exc, "__cause__", None)):
+            return ("certificate", None)
+        return ("temporary_network", None)
+    if isinstance(exc, (http.client.InvalidURL, http.client.UnimplementedFileMode)):
+        return None
+    if isinstance(exc, (ConnectionError, http.client.HTTPException, socket.gaierror, socket.herror)):
+        return ("temporary_network", None)
+    return None
 
 
 def classify_transport_text(text):
