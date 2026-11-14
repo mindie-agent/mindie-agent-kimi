@@ -153,6 +153,42 @@ class ReleaseSelectionTests(unittest.TestCase):
             with self.assertRaises(FileNotFoundError):
                 updater._release_catalog({}, current, deadline=125 + updater.RESERVE)
 
+    def test_select_main_maps_tls_and_stream_transport_errors_without_masking_local_http_bugs(self):
+        import http.client
+        import ssl
+        import bounded
+
+        for exc, expected_code, expected_category in (
+            (ssl.SSLError("EOF occurred in violation of protocol"), "release_transport_unavailable", "temporary_network"),
+            (ssl.SSLCertVerificationError(1, "self-signed certificate"), "release_certificate_error", "certificate"),
+            (http.client.IncompleteRead(b"{"), "release_transport_unavailable", "temporary_network"),
+        ):
+            stdout = io.StringIO()
+            with patch.object(release_metadata, "select_candidate", side_effect=exc), \
+                 patch.object(sys, "argv", ["release_metadata.py", "select",
+                                           "--kimi-bin", "/kimi", "--installed-version", "0.1.0"]), \
+                 patch("sys.stdout", stdout):
+                with self.assertRaises(SystemExit) as ctx:
+                    release_metadata.main()
+            self.assertEqual(ctx.exception.code, 1)
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(payload, {"error": {"code": expected_code, "type": "CatalogError"}})
+            child = RuntimeError("command failed (1)")
+            child.returncode = 1
+            child.mindie_output = stdout.getvalue()
+            rebuilt = release_metadata.typed_catalog_error(child)
+            self.assertIsInstance(rebuilt, release_metadata.CatalogError)
+            self.assertEqual(rebuilt.code, expected_code)
+            self.assertEqual(rebuilt.category, expected_category)
+
+        for local_bug in (
+            http.client.InvalidURL("http://bad host"),
+            http.client.ImproperConnectionState("double request"),
+            http.client.NotConnected("socket not open"),
+        ):
+            self.assertIsNone(bounded.classify_transport_exception(local_bug))
+            self.assertIsNone(release_metadata._transport_select_error(local_bug))
+
 
 if __name__ == "__main__":
     unittest.main()

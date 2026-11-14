@@ -20,10 +20,10 @@ from pathlib import Path
 SCRIPT = """
 import json, sys
 from mindie_knowledge.loop.settings import CommunityWriteContext
-request = json.load(sys.stdin)
+request = json.loads(sys.stdin.buffer.read().decode('utf-8-sig'))
 with CommunityWriteContext(request['path']) as context:
     result = context.configure(request['path'], request['settings'])
-print(json.dumps(result.raw))
+sys.stdout.buffer.write((json.dumps(result.raw) + '\\n').encode('utf-8'))
 """
 
 DEFAULT_REPOSITORY = "mindie-agent/knowledge-vllm-ascend"
@@ -154,7 +154,8 @@ def sharing_status(config: Path) -> dict:
 
 
 def _gh_quiet(*args: str, timeout: int = 15) -> str | None:
-    gh = shutil.which("gh")
+    from paths import which_host_binary
+    gh = which_host_binary("gh", which_fn=shutil.which)
     if not gh:
         return None
     try:
@@ -162,6 +163,8 @@ def _gh_quiet(*args: str, timeout: int = 15) -> str | None:
             [gh, *args],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             check=False,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
@@ -176,9 +179,10 @@ def _gh_quiet(*args: str, timeout: int = 15) -> str | None:
 
 
 def _resolve_gh_account_and_fork(repository: str, account: str | None, fork: str | None) -> tuple[str | None, str | None]:
+    from paths import which_host_binary
     if fork and not account:
         account = fork.split("/", 1)[0]
-    if not shutil.which("gh"):
+    if not which_host_binary("gh", which_fn=shutil.which):
         return account, fork
     if not account:
         login = _gh_quiet("api", "--hostname", "github.com", "user", "--jq", ".login")

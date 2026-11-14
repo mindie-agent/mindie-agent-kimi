@@ -44,7 +44,7 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 from bounded import run
-from paths import PLUGIN_ROOT, config_path as default_config_path
+from paths import PLUGIN_ROOT, config_path as default_config_path, which_host_binary
 
 from runtime_probe import (  # noqa: F401
     PROBE_MODULES,
@@ -215,7 +215,7 @@ def installer_environment():
 
 
 def create_venv(venv: Path, *, timeout) -> None:
-    uv = shutil.which("uv")
+    uv = which_host_binary("uv", which_fn=shutil.which)
     if uv is None:
         raise RuntimeError("uv is required to prepare the MindIE runtime")
     run([uv, "venv", "--python", sys.executable, str(venv)], "",
@@ -225,7 +225,7 @@ def create_venv(venv: Path, *, timeout) -> None:
 def build_bootstrap_runtime(domain_root: Path) -> str:
     venv = domain_root / "bootstrap-venv"
     python = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-    uv = shutil.which("uv")
+    uv = which_host_binary("uv", which_fn=shutil.which)
     if uv is None:
         raise RuntimeError("uv is required to prepare the MindIE runtime")
     if not python.is_file():

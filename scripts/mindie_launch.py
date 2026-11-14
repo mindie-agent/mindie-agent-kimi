@@ -325,8 +325,8 @@ def _read_hook_stdin(deadline):
                     if not chunk.rstrip().endswith((b"}", b"]")):
                         continue
                     try:
-                        json.loads(bytes(buf))
-                    except ValueError:
+                        json.loads(bytes(buf).removeprefix(b"\xef\xbb\xbf").decode("utf-8"))
+                    except (UnicodeDecodeError, ValueError):
                         continue
                     return
         finally:
@@ -338,7 +338,7 @@ def _read_hook_stdin(deadline):
     if not finished.is_set():
         return b""
     with lock:
-        return bytes(buf)
+        return bytes(buf).removeprefix(b"\xef\xbb\xbf")
 
 
 def _hook(op: str) -> int:
@@ -573,15 +573,27 @@ def _read_mcp_line(stdin):
 
 
 def _mcp(surface: str) -> int:
+    from paths import same_interpreter
+
     current = _current(_state_dir())
     # Old controllers copy a fixed launcher file set. Enter the complete
     # selected payload/interpreter before importing its transport dependencies.
-    if Path(current["python"]).absolute() != Path(sys.executable).absolute():
+    if not same_interpreter(current["python"], sys.executable):
         environment = _child_env(current, surface)
         environment.pop("PYTHONPATH", None)
-        os.execve(current["python"], [
+        argv = [
             current["python"], str(Path(__file__).resolve()), "--config", str(_config_path()), "mcp", surface,
-        ], environment)
+        ]
+        if os.name == "nt":
+            import subprocess
+
+            return subprocess.run(
+                argv,
+                env=environment,
+                check=False,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            ).returncode
+        os.execve(current["python"], argv, environment)
     import importlib.util
     transport = Path(__file__).with_name("native_mcp.py")
     if not transport.is_file():

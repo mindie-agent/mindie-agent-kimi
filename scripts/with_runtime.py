@@ -39,7 +39,18 @@ def main(argv=None):
         except (OSError, ValueError, TypeError):
             pass
     os.environ.pop("PYTHONPATH", None)
-    os.execv(python, [python, str(script), *argv[1:]])
+    command = [python, str(script), *argv[1:]]
+    if os.name == "nt":
+        import subprocess
+
+        raise SystemExit(
+            subprocess.run(
+                command,
+                check=False,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            ).returncode
+        )
+    os.execv(python, command)
 
 
 if __name__ == "__main__":

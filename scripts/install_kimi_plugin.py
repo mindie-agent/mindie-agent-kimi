@@ -191,9 +191,18 @@ def main():
     started = time.monotonic()
     process = None
     report = {}
+    if str(HERE) not in sys.path:
+        sys.path.insert(0, str(HERE))
+    from paths import which_host_binary
+
+    kimi_exe = (
+        KIMI
+        if (KIMI != "kimi" or os.environ.get("MINDIE_KIMI_BIN"))
+        else (which_host_binary("kimi") or KIMI)
+    )
     try:
         process = subprocess.Popen(
-            [KIMI, "web", "--no-open", "--port", str(port)],
+            [kimi_exe, "web", "--no-open", "--port", str(port)],
             cwd=str(home),
             env=env,
             stdout=subprocess.DEVNULL,

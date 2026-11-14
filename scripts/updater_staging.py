@@ -101,7 +101,8 @@ def build_runtime(generation: Path, deadline: float) -> Path:
         raise _h("CheckFailed")("runtime-requirements.txt must pin full commit SHAs, not @main")
     venv = generation / ".venv"
     python = _h("_venv_python")(venv)
-    uv = shutil.which("uv")
+    from paths import which_host_binary
+    uv = which_host_binary("uv", which_fn=shutil.which)
     from setup import installer_environment
 
     if uv is None:

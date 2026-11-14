@@ -50,6 +50,46 @@ class WindowsScheduleLaunchTests(unittest.TestCase):
                 self.assertTrue(process["has_console"])
                 self.assertFalse(process["visible"])
 
+    def test_headless_powershell_xml_export_has_no_bom_and_preserves_utf8_paths(self):
+        import xml.etree.ElementTree as ET
+        from xml.sax.saxutils import escape
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "中文 & 100% state"
+            root.mkdir()
+            pythonw = Path(sys.executable).with_name("pythonw.exe")
+            wrapper = root / "MindIEKimiUpdate.pyw"
+            xml_body = (
+                "<Task><Actions><Exec>"
+                f"<Command>{escape(str(pythonw))}</Command>"
+                f"<Arguments>{escape(subprocess.list2cmdline([str(wrapper)]))}</Arguments>"
+                "</Exec></Actions></Task>"
+            )
+            ps_script = (
+                "$ErrorActionPreference='Stop'; "
+                f"$xml = '{xml_body.replace(chr(39), chr(39) * 2)}'; "
+                "$bytes = [Text.UTF8Encoding]::new($false).GetBytes([string]$xml); "
+                "$out = [Console]::OpenStandardOutput(); "
+                "$out.Write($bytes, 0, $bytes.Length); $out.Flush()"
+            )
+            env = dict(os.environ, PYTHONUTF8="0")
+            result = subprocess.run(
+                ["powershell", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", ps_script],
+                capture_output=True,
+                timeout=15,
+                env=env,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(result.stdout.startswith(b"\xef\xbb\xbf"), result.stdout[:16])
+            actions = ET.fromstring(result.stdout.decode("utf-8")).findall("./{*}Actions/{*}Exec")
+            self.assertEqual(len(actions), 1)
+            self.assertEqual(actions[0].findtext("{*}Command"), str(pythonw))
+            self.assertEqual(
+                actions[0].findtext("{*}Arguments"),
+                subprocess.list2cmdline([str(wrapper)]),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
