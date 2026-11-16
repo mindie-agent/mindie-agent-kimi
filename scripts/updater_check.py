@@ -191,10 +191,29 @@ def _safe_component_check(adapter, deadline, *, force, idle, install, lock_timeo
         return None, 1
 
 
+def _cleanup_warning(adapter, deadline, phase="post-switch"):
+    from storage_gc import post_switch
+
+    try:
+        return post_switch(adapter, deadline)
+    except TimeoutError:
+        return {"status": "partial", "phase": phase, "warnings": ["budget exhausted"]}
+    except Exception as exc:
+        return {"status": "deferred", "phase": phase, "warnings": [type(exc).__name__]}
+
+
 def _check_once(adapter: dict, deadline: float, *, force, build, idle, install, lock_timeout) -> int:
     current = _h("read_current")(adapter)
     from updater_schedule import refresh_existing_wrapper
     refresh_existing_wrapper(adapter, current)
+    from storage_gc import pre_build
+
+    try:
+        pre_build(adapter, deadline)
+    except TimeoutError:
+        raise
+    except Exception:
+        pass
     remote = os.environ.get("MINDIE_KIMI_UPDATE_REMOTE") or adapter.get("update_remote") or _h("DEFAULT_REMOTE")
     if _h("_resolve_is_waiting")(adapter, force):
         status = _h("read_status")(adapter)
@@ -345,13 +364,8 @@ def _check_once(adapter: dict, deadline: float, *, force, build, idle, install, 
         return int(status["result"] == "degraded")
     try:
         generation, python, gen_adapter = _h("stage_generation")(
-            sha, remote, adapter, deadline, build=build, release=release,
+            sha, remote, adapter, deadline, build=build, release=release, force=force,
         )
-        from component_update import prepare as component_prepare
-        effective = component_prepare(adapter, generation, python, deadline, force=force)
-        if effective:
-            generation, python, gen_adapter = effective
-            _h("build_host_package")(generation, adapter, sha, config_file=gen_adapter)
     except TimeoutError:
         raise
     except Exception as exc:
@@ -403,8 +417,13 @@ def _check_once(adapter: dict, deadline: float, *, force, build, idle, install, 
         )
         return 1
     _h("_clear_active_failure")(adapter, sha)
+    cleanup = _cleanup_warning(adapter, deadline)
+    fields = {}
+    if cleanup.get("status") not in {"completed", "skipped"} or cleanup.get("warnings"):
+        fields["cleanup_warning"] = cleanup
     status = _h("_record")(
         adapter, current_sha=sha, result="switched", needs_host_reload=True, error=None,
+        **fields,
         note=(
             "This receipt records the committed dispatch generation, not what "
             "an already running host has loaded. New MCP processes/calls and "

@@ -10,6 +10,7 @@ never authorizes knowledge, reads a corpus or changes contribution consent.
 from __future__ import annotations
 from contextlib import contextmanager
 import json
+import os
 from pathlib import Path
 import time
 import urllib.error
@@ -109,12 +110,16 @@ def _step_timeout(deadline, cap, reserve):
     return min(cap, left)
 
 
-def prepare(adapter, source, python, deadline, *, force=False):
+def _resolve(adapter, source, python, deadline, *, force=False):
+    """Read the candidate floor and this interpreter's installed inventory."""
     import updater_check
+
     host = updater_check._HOST
+    if host is None:
+        import updater as host
     import mindie_knowledge.component_runtime as component_runtime
-    from mindie_knowledge.component_bindings import required_components, rebind_commands
-    from mindie_knowledge.component_runtime import build, source_baseline
+    from mindie_knowledge.component_bindings import required_components
+    from mindie_knowledge.component_runtime import source_baseline
     from mindie_knowledge.component_releases import Catalog
     from paths import profile_config_path
     current = host.read_current(adapter)
@@ -123,7 +128,10 @@ def prepare(adapter, source, python, deadline, *, force=False):
                if adapter.get("profile_config") or profile_path.is_file() else adapter)
     if not isinstance(profile, dict):
         raise ValueError("Kimi profile configuration must be one object")
-    baseline = source_baseline(source, active_overrides=True)
+    baseline = source_baseline(
+        source,
+        active_overrides=(Path(source) / "runtime" / "active-overrides.txt").is_file(),
+    )
     required = {
         name: version
         for name, version in required_components(profile).items()
@@ -153,15 +161,147 @@ def prepare(adapter, source, python, deadline, *, force=False):
                 }
                 retired_state["removed"] = True
                 break
+    return dict(profile=profile, baseline=baseline, selected=selected,
+                installed=installed, retired=retired_state["removed"])
+
+
+def resolve_targets(adapter, source, python, deadline, *, force=False):
+    """Return the merged component identities a candidate runtime must retain.
+
+    Unlike `prepare`, this never reduces the answer to "the given interpreter
+    already matches": it is the candidate floor (`max(installed inventory,
+    declared active-overrides, remote formal releases)`). A caller building a
+    fresh candidate venv uses it to pin the merged floor in one pass.
+    """
+    return dict(_resolve(adapter, source, python, deadline, force=force)["selected"]["runtime"])
+
+
+def candidate_overrides(source, python, *, timeout=15):
+    """Return the installed floor a fresh candidate venv must not downgrade.
+
+    Call only after `prepare` proved this interpreter needs no component build:
+    that proves the candidate's static pins are not newer than what is already
+    installed, so the installed revisions are safe to prefer. Returns
+    `{name: revision}` only when the candidate's `active-overrides.txt` alone
+    would build a different floor; `None` means the static pins are exact.
+    """
+    from mindie_knowledge.component_runtime import read_inventory, source_baseline
+
+    baseline = source_baseline(
+        source,
+        active_overrides=(Path(source) / "runtime" / "active-overrides.txt").is_file(),
+    )["runtime"]
+    installed = {
+        name: row["revision"]
+        for name, row in read_inventory(python, timeout=timeout).items()
+    }
+    merged = dict(baseline)
+    merged.update(installed)
+    return merged if merged != baseline else None
+
+
+def candidate_components(adapter, python, deadline):
+    """Return the component map installed in a freshly built candidate venv.
+
+    `prepare()` returning `None` proves only that the *active* interpreter
+    already meets the merged floor. The candidate venv was built with that same
+    floor, so its managed module commands must still be rebound to the
+    candidate interpreter; inheriting the active generation's
+    `component_commands` leaves stale paths and defers the switch CAS.
+    `None` means the profile declares no component commands; `{}` means only
+    custom (unmanaged) commands, which need a live snapshot but no inventory.
+    """
+    import updater_check
+
+    host = updater_check._HOST
+    if host is None:
+        import updater as host
+    from mindie_knowledge.component_bindings import managed_commands
+
+    profile = adapter
+    active = adapter
+    try:
+        current = host.read_current(adapter)
+        loaded = host.read_json(Path(current["adapter_config"])) if current else None
+        if isinstance(loaded, dict):
+            active = loaded
+    except TimeoutError:
+        raise
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    padapter, _ = host._profile_authority_sources(active)
+    if padapter is not None:
+        profile = padapter
+    commands = profile.get("component_commands")
+    if not isinstance(commands, dict) or not commands:
+        if padapter is not None and (
+            isinstance(commands, dict)
+            or "component_source_commands" in active
+            or "component_commands" in active
+        ):
+            return {}
+        return None
+    if not managed_commands(profile):
+        # Custom commands are not rebound, but the candidate still snapshots
+        # the live profile so the switch CAS compares like with like.
+        return {}
+    from mindie_knowledge.component_runtime import read_inventory
+
+    timeout = min(15, host._remaining(deadline, host.RESERVE))
+    if timeout <= 0:
+        raise TimeoutError("candidate component inventory budget exhausted")
+    return read_inventory(python, timeout=timeout)
+
+
+def candidate_commands_stale(active: dict, candidate: dict) -> bool:
+    """True when a reused candidate generation's command snapshot drifted from live profile."""
+    import updater_check
+
+    host = updater_check._HOST
+    if host is None:
+        import updater as host
+    padapter, _ = host._profile_authority_sources(active)
+    source_doc = active if padapter is None else padapter
+    raw = source_doc.get("component_commands")
+    live = dict(raw) if isinstance(raw, dict) else {}
+    tracked = padapter is not None and (
+        isinstance(raw, dict)
+        or "component_source_commands" in active
+        or "component_commands" in active
+        or "component_source_commands" in candidate
+        or "component_commands" in candidate
+    )
+    if not tracked:
+        return "component_source_commands" in candidate
+    return (
+        "component_source_commands" not in candidate
+        or candidate.get("component_source_commands") != live
+    )
+
+
+def prepare(adapter, source, python, deadline, *, force=False):
+    import updater_check
+
+    host = updater_check._HOST
+    if host is None:
+        import updater as host
+    from mindie_knowledge.component_bindings import rebind_commands
+    from mindie_knowledge.component_runtime import build
+
+    resolved = _resolve(adapter, source, python, deadline, force=force)
+    profile = resolved["profile"]
+    selected = resolved["selected"]
+    installed = resolved["installed"]
     needs_binding = bool(profile.get("component_commands")) and (
         rebind_commands(profile, python, selected["runtime"]) != profile["component_commands"])
-    needs_build = installed != selected["runtime"] or retired_state["removed"]
+    needs_build = installed != selected["runtime"] or resolved["retired"]
     # Older controllers can stage only the bootstrap trio. Declared source
     # pins are a required floor, not proof of this interpreter's contents.
     if not needs_build and not needs_binding:
         return None
     generation, python = Path(source), Path(python)
     if needs_build:
+        baseline = resolved["baseline"]
         artifact = build(source, host.update_dir(adapter) / "component-runtimes", baseline,
                          selected["runtime"], python=python,
                          timeout=_step_timeout(deadline, 420, host.RESERVE))
@@ -185,6 +325,17 @@ def check(adapter, deadline, *, force, idle, install, lock_timeout):
         host.build_host_package(generation, adapter, current["sha"], config_file=config)
     host.switch(adapter, current, generation, python, config, current.get("sha"), deadline,
                 idle, install, lock_timeout, update_native=False)
+    from storage_gc import post_switch
+
+    try:
+        cleanup = post_switch(adapter, deadline)
+    except TimeoutError:
+        cleanup = {"status": "partial", "phase": "post-switch", "warnings": ["budget exhausted"]}
+    except Exception as exc:
+        cleanup = {"status": "deferred", "phase": "post-switch", "warnings": [type(exc).__name__]}
+    extra = {}
+    if cleanup.get("status") not in {"completed", "skipped"} or cleanup.get("warnings"):
+        extra["cleanup_warning"] = cleanup
     handoff = host.read_status(adapter).get("service_handoff") or {}
     status = handoff.get("status")
     if status in {"failed", "pending"}:
@@ -193,5 +344,6 @@ def check(adapter, deadline, *, force, idle, install, lock_timeout):
             generation=str(generation),
             python=str(python),
             service_handoff=handoff,
+            **extra,
         )
-    return dict(status="active", generation=str(generation), python=str(python))
+    return dict(status="active", generation=str(generation), python=str(python), **extra)

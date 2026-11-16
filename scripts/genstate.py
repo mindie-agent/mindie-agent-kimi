@@ -127,7 +127,8 @@ def write_status(value: dict, config=None) -> None:
 
 
 class LockTimeout(RuntimeError):
-    pass
+    category = "busy"
+    reason_code = "operation_lock_busy"
 
 
 def _lock_once(descriptor, exclusive: bool) -> bool:

@@ -23,8 +23,9 @@ delegated to the thin C6 adapter in `organizer_distill.py`.
   `MAX_RESULT = 64 KiB`; `doctor_isolated` timeout: `20s`.
 
 [Side-Effect Policy]
-- Creates a disposable `tempfile.mkdtemp(prefix="mindie-kimi-summary-")` with
-  private `0o600` `config.toml` and removes it in `finally`.
+- Creates a disposable owner-marked summary scratch root through
+  `mindie_knowledge.loop.summary_scratch`, with private `0o600` `config.toml`,
+  and removes it deterministically in `finally`.
 """
 
 from __future__ import annotations
@@ -35,7 +36,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 
@@ -46,7 +46,7 @@ if str(HERE) not in sys.path:
 import bounded
 from bounded import CommandTimedOut, OutputLimitExceeded
 from mindie_knowledge.loop.process import AGENT_ERROR_EXIT_CODES
-from mindie_knowledge.loop import summary_budget
+from mindie_knowledge.loop import summary_budget, summary_scratch
 from mindie_knowledge.materials import summarizer
 
 MAX_REQUEST_BYTES = 128 * 1024
@@ -265,7 +265,7 @@ def _json_object(text):
 
 
 def _invoke_native(prompt, receipt, *, instruction=INSTRUCTION, agent_text=None, max_output=MAX_RESULT):
-    isolated = Path(tempfile.mkdtemp(prefix="mindie-kimi-summary-"))
+    isolated = summary_scratch.create_root()
     try:
         agent_file = isolated / "summary-agent.md"
         source_agent = AGENT_FILE.read_text(encoding="utf-8") if agent_text is None else agent_text

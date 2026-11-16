@@ -281,9 +281,12 @@ def test_sim_v090_compose_and_frontier_cli(sim_gate, tmp_path):
     ]})
     assert not eff["isError"], eff
     assert eff["structuredContent"]["result"]["schema"] == "mindie-sim.efficiency/1"
+    # sim 0.9.15's SLA frontier legitimately exceeds the default 64 KiB MCP
+    # budget; the caller raises its explicit output allowance instead of
+    # truncating a valid report.
     sla = sim_gate("sim", {"argv": [
         "sla", str(composed_path), "--sla-ms", "30", "--context", "4096",
-    ]})
+    ], "max_output_tokens": 65536})
     assert not sla["isError"], sla
     assert sla["structuredContent"]["result"]["sla_ms"] == 30.0
     pd = sim_gate("sim", {"argv": [

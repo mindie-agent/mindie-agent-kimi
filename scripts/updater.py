@@ -48,6 +48,7 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 import diagnostic_support
+import host_pin_refresh
 
 try:
     from bounded import CommandTimedOut, _scrub_reason_line, classify_transport_exception
@@ -97,6 +98,9 @@ class CheckFailed(RuntimeError):
 
 class Deferred(RuntimeError):
     """Not applied now; next normal scheduled check may retry."""
+
+    category = "deferred"
+    reason_code = "update_deferred"
 
 
 def _remaining(deadline: float, reserve: float = 0.0) -> float:
@@ -467,6 +471,7 @@ def switch(
                     receipts_dir(adapter) / f"{sha}.json",
                     generation / "host-package",
                 )
+            host_pin_refresh.refresh_and_record(adapter, current, final, deadline)
             _clear_switch_ghosts(adapter)
         except TimeoutError:
             raise
@@ -567,8 +572,8 @@ def _stamp_transport(exc):
 def _update_diagnostic(stage, exc, revision=None):
     _stamp_transport(exc)
     return diagnostic_support.failure(
-        "updater", stage, "update", exception=exc, revision=revision,
-        exit_code=getattr(exc, "returncode", None),
+        "updater", getattr(exc, "stage", None) or stage, "update", exception=exc,
+        revision=revision, exit_code=getattr(exc, "returncode", None),
     )
 
 
@@ -581,7 +586,8 @@ def _record(adapter, **fields) -> dict:
     return status
 
 
-_RETRYABLE = frozenset({"temporary_network", "rate_limited", "deadline", "resolver", "bad_content"})
+_RETRYABLE = frozenset({"temporary_network", "rate_limited", "deadline", "resolver",
+                        "bad_content", "prerequisite", "busy", "deferred"})
 _ACTIONABLE = frozenset({"authentication", "permission", "hook_trust", "certificate"})
 _STATIC_FAILURE = {
     "temporary_network": "temporary network failure",
@@ -593,6 +599,9 @@ _STATIC_FAILURE = {
     "certificate": "certificate verification failed",
     "resolver": "dependency resolver conflict",
     "bad_content": "package content rejected",
+    "prerequisite": "local prerequisite unavailable",
+    "busy": "operation lock busy",
+    "deferred": "update deferred",
 }
 
 
@@ -629,7 +638,9 @@ def _failure_category(exc):
     category = getattr(exc, "category", None)
     if isinstance(exc, CommandTimedOut) and category == "temporary_network":
         return "deadline"
-    return category if category in _RETRYABLE or category in _ACTIONABLE else None
+    if category in _RETRYABLE or category in _ACTIONABLE:
+        return category
+    return diagnostic_support.local_failure_category(exc)
 
 
 def _failure_history(previous, category):

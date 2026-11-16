@@ -135,6 +135,19 @@ def test_damaged_stable_profile_fails_before_component_selection(tmp_path):
     discover.assert_not_called()
 
 
+def test_plugin_candidate_snapshots_custom_commands_without_inventory(tmp_path):
+    import component_update
+
+    profile = tmp_path / "profile.json"
+    profile.write_text(json.dumps({"component_commands": {
+        "sim": ["/user/custom-simulator", "--mode"]}}))
+    with patch("mindie_knowledge.component_runtime.read_inventory") as read:
+        assert component_update.candidate_components(
+            {"profile_config": str(profile)}, sys.executable,
+            time.monotonic() + 60) == {}
+    read.assert_not_called()
+
+
 def test_plugin_candidate_rebinds_a_baseline_component_even_when_pins_do_not_change(tmp_path):
     import component_update
     from mindie_knowledge.component_runtime import read_inventory

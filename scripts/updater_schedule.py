@@ -37,7 +37,7 @@ import xml.etree.ElementTree as ET
 
 try:
     from bounded import run as bounded_run
-    from genstate import read_current, update_dir
+    from genstate import launch_dir, read_current, update_dir
     from paths import config_path, load_adapter_config, which_host_binary
 except ImportError:
     which_host_binary = None
@@ -112,7 +112,10 @@ def refresh_existing_wrapper(adapter, current):
     launcher = _h("launch_dir")(adapter) / (current.get("sha") or "bootstrap") / _h("LAUNCHER")
     if not launcher.is_file() or not (launcher.parent / "bounded.py").is_file():
         raise ValueError("committed scheduled launcher is unavailable")
-    command = [current["python"], str(launcher), "--config", str(profile_config_path()),
+    config_file = adapter.get("profile_config")
+    if not (isinstance(config_file, str) and os.path.isabs(config_file)):
+        config_file = str(profile_config_path())
+    command = [current["python"], str(launcher), "--config", config_file,
                "updater", "check"]
     if wrapper.read_text(encoding="utf-8") == _h("_wrapper_body")(command):
         return False

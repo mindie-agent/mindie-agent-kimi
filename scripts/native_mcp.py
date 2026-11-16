@@ -13,6 +13,17 @@ import time
 from pathlib import Path
 
 
+def lease_owning_runtime():
+    """Hold the shared lease for this interpreter's disposable generation."""
+    from contextlib import nullcontext
+    from mindie_knowledge.storage import acquire_runtime_lease, owning_dir
+
+    owner = owning_dir(sys.executable)
+    if owner is None:
+        return nullcontext()
+    return acquire_runtime_lease(owner)
+
+
 def serve_profile(surface):
     """Cover the native source manifest as well as updater-generated packages."""
     from remote_dev.mcp.catalog_refresh import serve_selected
@@ -28,9 +39,16 @@ def serve_profile(surface):
         return [config.get("python") or sys.executable,
                 str(Path(__file__).with_name("mcp_server.py")), surface, "--once"], {}
 
-    return serve_selected(select)
+    with lease_owning_runtime():
+        return serve_selected(select)
 
 def serve(surface: str, api) -> int:
+    """Resident MCP entry used by the stable launcher; hold the runtime lease."""
+    with lease_owning_runtime():
+        return _serve(surface, api)
+
+
+def _serve(surface: str, api) -> int:
     CONTROL_LIMIT = api.CONTROL_LIMIT
     CONTROL_TOOLS = api.CONTROL_TOOLS
     DispatchFailure = api.DispatchFailure

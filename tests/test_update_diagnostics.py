@@ -1,4 +1,5 @@
 """Updater resolver and component transport failures must use shared fault eligibility."""
+import errno
 import http.client
 import json
 import os
@@ -13,6 +14,7 @@ import urllib.error
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+import bounded
 import component_update
 import genstate
 import updater
@@ -243,6 +245,184 @@ def test_local_invalid_url_and_timeout_are_not_masked_as_transport(tmp_path):
     with patch('mindie_knowledge.component_runtime.discover', side_effect=timeout_exc), \
             pytest.raises(TimeoutError, match='budget exhausted'):
         component_update._discover_catalog(sys.executable, {})
+
+
+def _resolver_error():
+    error = RuntimeError('command failed (1)')
+    error.returncode = 1
+    error.reason_code = 'child_process_failed'
+    error.category = 'resolver'
+    return error
+
+
+def test_local_prerequisite_failures_are_never_reportable_internal(tmp_path):
+    policy, logs = diagnostic_support.reporting_config_path(), Path(os.environ['MINDIE_DIAGNOSTICS_ROOT'])
+    configure_reporting(True, config=policy, roots=[str(logs)])
+    queue = Outbox(tmp_path / 'queue.db')
+    errors = [
+        _resolver_error(),
+        genstate.LockTimeout('operation lock busy'),
+        updater.Deferred('knowledge service is active'),
+        OSError(errno.ENOSPC, 'No space left on device'),
+        PermissionError(errno.EACCES, 'Permission denied'),
+    ]
+    assert [updater._failure_category(error) for error in errors] == [
+        'resolver', 'busy', 'deferred', 'prerequisite', 'prerequisite']
+    for error in errors:
+        updater._update_diagnostic('stage_generation', error)
+
+    assert ingest(logs, queue, config=policy)['enqueued'] == 0
+    events = [
+        json.loads(line)
+        for path in sorted(Path(logs).glob('events/*/*.jsonl'))
+        for line in path.read_text(encoding='utf-8').splitlines()
+        if line.strip()
+    ]
+    assert len(events) == len(errors)
+    for event in events:
+        assert event['attributes']['category'] == 'prerequisite'
+        assert event['attributes']['reason_code'] in {
+            'child_process_failed', 'operation_lock_busy', 'update_deferred',
+            'update_prerequisite_unavailable',
+        }
+        assert event['reportable'] is False
+
+
+def test_lock_timeout_and_deferred_expose_local_categories():
+    assert genstate.LockTimeout('busy').category == 'busy'
+    assert updater.Deferred('deferred').category == 'deferred'
+    assert classify_transport_text(
+        'ERROR: ResolutionImpossible: conflicting dependencies') == ('resolver', None)
+    assert classify_transport_text(
+        'OSError: [Errno 28] No space left on device') == ('prerequisite', None)
+
+
+@pytest.mark.parametrize('stderr', [
+    'error: Requirements contain conflicting URLs for package `foo`',
+    'error: No solution found when resolving dependencies:',
+    'error: No solution found when resolving package dependencies',
+    'error: unsatisfiable requirements detected for package bar',
+    "error: your project's requirements are unsatisfiable",
+    'error: Because your project depends on mindie-profiler, we can conclude',
+])
+def test_real_uv_resolver_phrases_are_local(stderr):
+    assert classify_transport_text(stderr) == ('resolver', None)
+
+
+def test_uv_venv_disk_full_runs_through_transport_classification(tmp_path):
+    policy, logs = diagnostic_support.reporting_config_path(), Path(
+        os.environ['MINDIE_DIAGNOSTICS_ROOT'])
+    configure_reporting(True, config=policy, roots=[str(logs)])
+    script = (
+        "import sys\n"
+        "sys.stderr.write('error: failed to create virtual environment: "
+        "No space left on device (os error 28)\\n')\n"
+        "raise SystemExit(1)\n"
+    )
+    with pytest.raises(Exception) as caught:
+        bounded.run([sys.executable, '-c', script], '', timeout=30, transport=True)
+    error = caught.value
+    assert error.category == 'prerequisite'
+    assert diagnostic_support.local_failure_category(error) == 'prerequisite'
+    updater._update_diagnostic('stage_generation', error)
+    event = json.loads(next(Path(logs).glob('events/*/*.jsonl')).read_text().splitlines()[-1])
+    assert event['attributes']['category'] == 'prerequisite'
+    assert event['attributes']['reason_code'] == 'child_process_failed'
+    assert event['reportable'] is False
+
+
+def test_uv_venv_call_enables_transport_classification(tmp_path):
+    generation = tmp_path / 'generation'
+    generation.mkdir()
+    (generation / 'runtime-requirements.txt').write_text(
+        'mindie-knowledge @ git+https://github.com/mindie-agent/knowledge@' + 'a' * 40 + '\n')
+    transports = []
+
+    def run(argv, stdin='', **kwargs):
+        if 'venv' in argv:
+            transports.append(kwargs.get('transport'))
+            venv = Path(argv[-1])
+            (venv / 'bin').mkdir(parents=True)
+            (venv / 'bin' / 'python').write_text('')
+        return ''
+
+    with patch.object(updater.shutil, 'which', return_value='/usr/bin/uv'), \
+            patch.object(updater, 'bounded_run', side_effect=run):
+        updater.build_runtime(generation, time.monotonic() + 120)
+    assert transports == [True]
+
+
+def test_staging_subprocess_failure_preserves_stage_and_transport(tmp_path):
+    policy, logs = diagnostic_support.reporting_config_path(), Path(os.environ['MINDIE_DIAGNOSTICS_ROOT'])
+    configure_reporting(True, config=policy, roots=[str(logs)])
+    generation = tmp_path / 'generation'
+    generation.mkdir()
+    (generation / 'runtime-requirements.txt').write_text(
+        'mindie-knowledge @ git+https://github.com/mindie-agent/knowledge@' + 'a' * 40 + '\n')
+    calls = []
+
+    def run(argv, stdin='', **kwargs):
+        calls.append(list(argv))
+        if 'venv' in argv:
+            venv = Path(argv[-1])
+            (venv / 'bin').mkdir(parents=True)
+            (venv / 'bin' / 'python').write_text('')
+            return ''
+        error = RuntimeError('command failed (1)')
+        error.returncode = 1
+        error.reason = 'fatal: could not resolve host: github.com'
+        error.category = 'temporary_network'
+        error.reason_code = 'child_process_failed'
+        raise error
+
+    with patch.object(updater.shutil, 'which', return_value='/usr/bin/uv'), \
+            patch.object(updater, 'bounded_run', side_effect=run), \
+            pytest.raises(RuntimeError) as caught:
+        updater.build_runtime(generation, time.monotonic() + 120)
+    error = caught.value
+    assert error.stage == 'candidate_runtime'
+    assert error.reason_code == 'child_process_failed'
+    assert error.returncode == 1
+
+    updater._update_diagnostic('stage_generation', error)
+    event = json.loads(next(Path(logs).glob('events/*/*.jsonl')).read_text().splitlines()[-1])
+    assert event['attributes']['stage'] == 'candidate_runtime'
+    assert event['attributes']['category'] == 'connectivity'
+    assert event['attributes']['error_code'] == 'update_transport_unavailable'
+    assert event['attributes']['reason_code'] == 'child_process_failed'
+    assert event['reportable'] is False
+
+
+def test_staging_resolver_failure_is_prerequisite_not_internal(tmp_path):
+    policy, logs = diagnostic_support.reporting_config_path(), Path(os.environ['MINDIE_DIAGNOSTICS_ROOT'])
+    configure_reporting(True, config=policy, roots=[str(logs)])
+    error = _resolver_error()
+    error.stage = 'candidate_runtime'
+    updater._update_diagnostic('stage_generation', error)
+    event = json.loads(next(Path(logs).glob('events/*/*.jsonl')).read_text().splitlines()[-1])
+    assert event['attributes']['stage'] == 'candidate_runtime'
+    assert event['attributes']['category'] == 'prerequisite'
+    assert event['attributes']['reason_code'] == 'child_process_failed'
+    assert event['reportable'] is False
+
+
+def test_setup_child_failure_payload_preserves_stage_and_local_category():
+    import setup as setup_module
+
+    space = OSError(errno.ENOSPC, 'No space left on device')
+    space.stage = 'bootstrap_runtime'
+    payload = json.loads(setup_module._failure_payload(space))
+    assert payload == {
+        'stage': 'bootstrap_runtime', 'category': 'prerequisite',
+        'reason_code': None,
+    }
+
+    resolver = _resolver_error()
+    payload = json.loads(setup_module._failure_payload(resolver))
+    assert payload == {
+        'stage': 'setup', 'category': 'prerequisite',
+        'reason_code': 'child_process_failed',
+    }
 
 
 def test_subprocess_tls_reset_and_certificate_phrases_classify_accurately():

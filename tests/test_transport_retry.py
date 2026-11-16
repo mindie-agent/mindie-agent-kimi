@@ -245,7 +245,7 @@ class RetryTests(unittest.TestCase):
             self.calls["resolve"] += 1
             return {"candidate": {"metadata": {"source": {"sha": SHA}}}}
 
-        def stage(sha, remote, adapter, deadline, build=None, release=None):
+        def stage(sha, remote, adapter, deadline, build=None, release=None, force=False):
             self.calls["stage"] += 1
             if self.calls["stage"] <= 4:
                 _run(NET, transport=True)
@@ -309,7 +309,7 @@ class RetryTests(unittest.TestCase):
         self.assertNotEqual(entry._updater_view().get("recovery"), "manual")
 
     def test_certificate_retries_after_backoff_without_quarantine(self):
-        def stage(sha, remote, adapter, deadline, build=None, release=None):
+        def stage(sha, remote, adapter, deadline, build=None, release=None, force=False):
             self.calls["stage"] += 1
             _run(CERT, transport=True)
 
