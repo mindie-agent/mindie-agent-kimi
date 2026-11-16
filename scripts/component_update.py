@@ -38,11 +38,12 @@ def typed_catalog_error(exc):
     from bounded import classify_transport_exception
     from mindie_knowledge.release_http import ReleaseResponseTooLarge
     from mindie_knowledge.releases_io import ReleaseFetchError
+    from release_metadata import _catalog_category
 
     if isinstance(exc, ReleaseFetchError):
         return _catalog_error(
             exc.code,
-            category="rate_limited" if exc.status == 429 else "temporary_network",
+            category=_catalog_category(exc.code, exc.status, getattr(exc, "category", None)),
             status=exc.status,
         )
     if isinstance(exc, urllib.error.HTTPError):
@@ -53,8 +54,6 @@ def typed_catalog_error(exc):
             status=exc.code,
             retry_after=classified[1] if classified else None,
         )
-    if isinstance(exc, json.JSONDecodeError):
-        return _catalog_error("release_catalog_invalid")
     if isinstance(exc, ReleaseResponseTooLarge):
         return _catalog_error("release_transport_unavailable")
     if (classified := classify_transport_exception(exc)) is not None:
