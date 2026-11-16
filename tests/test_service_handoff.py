@@ -18,7 +18,7 @@ from mindie_knowledge.loop.locks import StartLock, lock_held
 
 class ServiceHandoffTests(unittest.TestCase):
     def test_real_stop_releases_lifetime_and_allows_restart(self):
-        with tempfile.TemporaryDirectory() as temp:
+        with tempfile.TemporaryDirectory() as temp, tempfile.TemporaryFile() as service_stderr:
             adapter = make_config(Path(temp))
             engine_path = json.loads(adapter.read_text())["engine_config"]
             config = json.loads(Path(engine_path).read_text())
@@ -26,14 +26,20 @@ class ServiceHandoffTests(unittest.TestCase):
             processes = []
             try:
                 for _ in range(2):
+                    service_stderr.seek(0)
+                    service_stderr.truncate(0)
                     process = subprocess.Popen(
                         [sys.executable, "-m", "mindie_knowledge.loop.cli", "serve", "--config", engine_path],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL, stderr=service_stderr,
                     )
                     processes.append(process)
                     deadline = time.monotonic() + 8
                     while time.monotonic() < deadline:
-                        self.assertIsNone(process.poll(), "service exited before readiness")
+                        returncode = process.poll()
+                        if returncode is not None:
+                            service_stderr.seek(0)
+                            detail = service_stderr.read(4096).decode("utf-8", "replace")
+                            self.fail(f"service exited before readiness ({returncode}): {detail}")
                         if lock_held(consumer) is True:
                             try:
                                 connection = service_handoff.connect(config)

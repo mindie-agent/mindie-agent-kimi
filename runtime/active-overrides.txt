@@ -4,7 +4,7 @@
 mindie-coordinator @ git+https://github.com/mindie-agent/coordinator@d8977114e8cd0e5b7befa59a5ff5e53f40a74521
 mindie-debugger @ git+https://github.com/mindie-agent/debugger@d40a250e4048ac63d4a478a5dbfa993702ceddd0
 mindie-diagnostics @ git+https://github.com/mindie-agent/diagnostics@171623584aa812677df907518dcb55b06493241b
-mindie-knowledge @ git+https://github.com/mindie-agent/knowledge@3aa71f979f8af82ea93ba6936c45545183033f89
+mindie-knowledge @ git+https://github.com/mindie-agent/knowledge@bd63272c16502f3b46a2fd7ff5b4fdb4cb0fe17d
 mindie-profiler @ git+https://github.com/mindie-agent/profiler@79d97e75bff7351b0472b93c03b072c1cf47f5e7
 mindie-sim @ git+https://github.com/mindie-agent/sim@6f1d5a871a7b1ef20ff7a8cab33aaf4637fb3f66
 remote-dev @ git+https://github.com/mindie-agent/remote-dev@3556df571450dab481a25e0157167f1c3727dc6c
