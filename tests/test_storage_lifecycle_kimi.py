@@ -36,6 +36,7 @@ from support import SCRIPTS, make_config, write_json
 sys.path.insert(0, str(SCRIPTS))
 
 import component_update  # noqa: E402
+import capture_config  # noqa: E402
 import genstate  # noqa: E402
 import host_pin_refresh  # noqa: E402
 import organizer  # noqa: E402
@@ -406,23 +407,27 @@ def test_component_switch_rebinds_host_pins_and_next_gc_reclaims_old_generation(
         force=True, data_home=str(tmp_path / "data"), temp_root=str(tmp_path / "tmp"),
     )
     # The replaced scheduler command is still loaded: both its interpreter's
-    # generation and its launcher stay protected until the pin ring rotates.
+    # generation and its launcher stay protected.
     assert stale_gen.is_dir()
     assert (update / "launch" / stale).is_dir()
     assert current_gen.is_dir() and rollback_gen.is_dir() and filler.is_dir()
 
     host_pin_refresh.remember_scheduled_pins(
         adapter, [str(tmp_path / "newer-a"), str(tmp_path / "newer-b")])
-    assert host_pin_refresh.scheduled_pins(adapter) == [
-        str(tmp_path / "newer-a"), str(tmp_path / "newer-b")]
+    pins = host_pin_refresh.scheduled_pins(adapter)
+    # The first replaced command is the permanent anchor; newer replacements
+    # only fill the bounded recent ring and can never evict it.
+    assert pins[:2] == [str(old_python), old_launcher]
+    assert str(tmp_path / "newer-a") in pins
+    assert str(tmp_path / "newer-b") in pins
     os.utime(stale_gen, (OLD, OLD))
     os.utime(update / "launch" / stale, (OLD, OLD))
     storage_gc.run(
         adapter, genstate.read_current(adapter), phase="test-2", budget_seconds=30,
         force=True, data_home=str(tmp_path / "data"), temp_root=str(tmp_path / "tmp"),
     )
-    assert not stale_gen.exists()
-    assert not (update / "launch" / stale).exists()
+    assert stale_gen.is_dir()
+    assert (update / "launch" / stale).is_dir()
     assert current_gen.is_dir() and rollback_gen.is_dir() and filler.is_dir()
 
 
@@ -568,6 +573,82 @@ def test_candidate_build_pins_the_installed_component_floor_in_one_pass(tmp_path
     assert (target / updater.COMPLETE).is_file()
 
 
+def test_prepare_none_binds_candidate_components_and_switch_succeeds(tmp_path):
+    adapter, bare, sha, config_path = _upgrade_fixture(tmp_path)
+    update = genstate.update_dir(adapter)
+    target = update / "generations" / sha
+    (target / "runtime").mkdir(parents=True)
+    (target / "runtime-requirements.txt").write_text(_pin("mindie-profiler", "a" * 40))
+    (target / "runtime" / "active-overrides.txt").write_text(
+        _pin("mindie-profiler", "a" * 40))
+    (target / updater_staging.SOURCE).write_text(sha + "\n")
+    candidate_python = target / ".venv" / "bin" / "python"
+    candidate_python.parent.mkdir(parents=True)
+    candidate_python.write_text("")
+
+    active = genstate.read_current(adapter)
+    old_python = tmp_path / "old-python"
+    old_python.write_text("")
+    # The active generation was itself a component switch: its config still
+    # records the pre-rebind source snapshot while the live profile already
+    # publishes the bound commands. Copying the stale source snapshot into the
+    # plugin candidate makes the switch CAS defer forever.
+    old_bound = {"profiler": [
+        sys.executable, "-I", "-X", "utf8", "-m", "mindie_profiler"]}
+    old_source = {"profiler": [
+        str(old_python), "-I", "-X", "utf8", "-m", "mindie_profiler"]}
+    active_adapter = json.loads(Path(active["adapter_config"]).read_text())
+    active_adapter.update(
+        component_commands=old_bound, component_source_commands=old_source)
+    write_json(Path(active["adapter_config"]), active_adapter)
+    profile = json.loads(config_path.read_text())
+    profile.update(
+        component_commands=old_bound, component_source_commands=old_source)
+    write_json(config_path, profile)
+    installed = {"mindie-profiler": {
+        "repository": "mindie-agent/profiler",
+        "version": "1.0.0",
+        "revision": "b" * 40,
+    }}
+    built = []
+
+    def build(generation, _deadline, *, component_overrides=None):
+        built.append(component_overrides)
+        return candidate_python
+
+    with patch("mindie_knowledge.component_runtime.read_inventory",
+               return_value=installed), \
+            patch("mindie_knowledge.component_bindings.required_components",
+                  return_value={}), \
+            patch("component_update.prepare", return_value=None), \
+            patch.object(updater, "probe_runtime"), \
+            patch("capture_config.prepare",
+                  return_value={"capture_mode": "public-transcript"}), \
+            patch("capture_config.prepare_domains", return_value={}), \
+            patch.object(updater, "build_host_package"):
+        generation, python, gen_adapter = updater.stage_generation(
+            sha, str(bare), adapter, time.monotonic() + 120, build=build)
+        candidate = json.loads(Path(gen_adapter).read_text())
+        published = {"profiler": [
+            str(candidate_python), "-I", "-X", "utf8", "-m", "mindie_profiler"]}
+        # `prepare()` proved the active interpreter already meets the floor;
+        # the candidate config must still bind its own commands and keep the
+        # live profile snapshot for the switch CAS.
+        assert built == [{"mindie-profiler": "b" * 40}]
+        assert candidate["component_source_commands"] == old_bound
+        assert candidate["component_source_commands"] != old_source
+        assert candidate["component_commands"] == published
+        assert candidate["component_commands"] != old_bound
+
+        updater.switch(
+            adapter, active, generation, Path(python), gen_adapter, sha,
+            time.monotonic() + 120,
+            lambda *_: {"service": "absent"}, Mock(), 5, update_native=False,
+        )
+    assert genstate.read_current(adapter)["sha"] == sha
+    assert json.loads(config_path.read_text())["component_commands"] == published
+
+
 def test_candidate_overrides_only_return_a_differing_floor(tmp_path):
     source = tmp_path / "source"
     (source / "runtime").mkdir(parents=True)
@@ -622,20 +703,157 @@ def test_candidate_runtime_build_installs_and_verifies_the_merged_floor(tmp_path
     assert python == generation / ".venv" / "bin" / "python"
 
 
-def test_scheduled_pin_ring_keeps_only_the_last_two_replaced_paths(tmp_path):
+def test_scheduled_pins_keep_the_anchor_and_a_bounded_replacement_ring(tmp_path):
     adapter = _adapter(tmp_path)
-    paths = [tmp_path / f"python-{index}" for index in range(4)]
-    for path in paths:
-        path.write_text("")
-    host_pin_refresh.remember_scheduled_pins(adapter, [str(paths[0])])
-    host_pin_refresh.remember_scheduled_pins(adapter, [str(paths[1]), "relative"])
-    host_pin_refresh.remember_scheduled_pins(adapter, [str(paths[2]), str(paths[3])])
-    assert host_pin_refresh.scheduled_pins(adapter) == [
-        str(paths[2]), str(paths[3])]
-    stored = json.loads(
-        (genstate.update_dir(adapter) / "scheduled-pins.json").read_text())
+    update = genstate.update_dir(adapter)
+    pairs = []
+    for index in range(12):
+        sha = _sha(100 + index)
+        generation = update / "generations" / sha
+        generation.mkdir(parents=True)
+        python = generation / ".venv" / "bin" / "python"
+        python.parent.mkdir(parents=True)
+        python.write_text("")
+        launcher = update / "launch" / sha / "mindie_launch.py"
+        launcher.parent.mkdir(parents=True)
+        launcher.write_text("# launcher\n")
+        pairs.append((str(python), str(launcher)))
+    for pair in pairs:
+        host_pin_refresh.remember_scheduled_pins(adapter, list(pair))
+    pins = host_pin_refresh.scheduled_pins(adapter)
+    assert pins[:2] == list(pairs[0])
+    assert pairs[-1][0] in pins and pairs[-1][1] in pins
+    assert len(pins) <= 2 + 2 * host_pin_refresh.MAX_REPLACED_RECORDS
+    stored = json.loads((update / "scheduled-pins.json").read_text())
     assert stored["schema"] == host_pin_refresh.SCHEDULED_PINS_SCHEMA
-    assert len(stored["pins"]) == 2
+    assert stored["anchor"]["python"] == pairs[0][0]
+    assert stored["anchor"]["launcher"] == pairs[0][1]
+    assert len(stored["records"]) == host_pin_refresh.MAX_REPLACED_RECORDS
+    assert len(json.dumps(stored)) < 4096
+
+
+def test_scheduled_pins_migrate_the_legacy_flat_ring_as_anchor(tmp_path):
+    adapter = _adapter(tmp_path)
+    update = genstate.update_dir(adapter)
+    legacy_sha = _sha(130)
+    legacy = _generation(adapter, legacy_sha)
+    legacy_python = legacy / ".venv" / "bin" / "python"
+    legacy_python.parent.mkdir(parents=True)
+    legacy_python.write_text("")
+    legacy_launcher = update / "launch" / legacy_sha / "mindie_launch.py"
+    write_json(update / "scheduled-pins.json", {
+        "schema": host_pin_refresh.LEGACY_SCHEDULED_PINS_SCHEMA,
+        "pins": [str(legacy_python), str(legacy_launcher)],
+        "updated_at": 1.0,
+    })
+    assert host_pin_refresh.scheduled_pins(adapter) == [
+        str(legacy_python), str(legacy_launcher)]
+    fresh = tmp_path / "python-fresh"
+    fresh.write_text("")
+    host_pin_refresh.remember_scheduled_pins(adapter, [str(fresh)])
+    pins = host_pin_refresh.scheduled_pins(adapter)
+    assert pins[:2] == [str(legacy_python), str(legacy_launcher)]
+    assert str(fresh) in pins
+    stored = json.loads((update / "scheduled-pins.json").read_text())
+    assert stored["anchor"]["python"] == str(legacy_python)
+    assert stored["anchor"]["launcher"] == str(legacy_launcher)
+
+
+def test_storage_gc_strips_windows_verbatim_prefixes():
+    assert storage_gc._strip_verbatim(
+        "\\\\?\\C:\\Users\\mindie\\runtime", windows=True) == "C:\\Users\\mindie\\runtime"
+    assert storage_gc._strip_verbatim(
+        "\\\\?\\UNC\\server\\share\\runtime",
+        windows=True) == "\\\\server\\share\\runtime"
+    assert storage_gc._strip_verbatim(
+        "\\\\?\\C:\\runtime", windows=False) == "\\\\?\\C:\\runtime"
+
+
+def test_keep_paths_deduplicates_equivalent_host_spellings(tmp_path):
+    adapter = _adapter(tmp_path)
+    sha = _sha(139)
+    generation = _generation(adapter, sha)
+    python = generation / ".venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text("")
+    current = _write_current(adapter, sha, generation)
+    current["python"] = str(python)
+    host_pin_refresh.remember_scheduled_pins(adapter, [str(python) + os.sep])
+    kept = [str(path) for path in storage_gc.keep_paths(adapter, current)]
+    assert kept.count(str(python)) == 1
+
+
+def test_three_upgrades_without_scheduler_reload_keep_original_and_latest_runtime(tmp_path):
+    adapter = _adapter(tmp_path)
+    update = genstate.update_dir(adapter)
+    shas = [_sha(140 + index) for index in range(4)]
+    generations = [_generation(adapter, sha) for sha in shas]
+    pythons = []
+    for generation in generations:
+        python = generation / ".venv" / "bin" / "python"
+        python.parent.mkdir(parents=True)
+        python.write_text("")
+        pythons.append(python)
+    values = [
+        {"generation": str(generation), "python": str(python),
+         "adapter_config": str(generation / "config" / "kimi.adapter.json"),
+         "sha": sha}
+        for sha, generation, python in zip(shas, generations, pythons)
+    ]
+    plist = Path.home() / "Library" / "LaunchAgents" / "agent.mindie.kimi-update.plist"
+    plist.parent.mkdir(parents=True)
+    plist.write_bytes(plistlib.dumps({
+        "Label": "agent.mindie.kimi-update",
+        "ProgramArguments": [str(pythons[0]),
+                             str(update / "launch" / shas[0] / "mindie_launch.py"),
+                             "--config", values[0]["adapter_config"],
+                             "updater", "check"],
+        "StartInterval": 300,
+    }))
+    for index in (1, 2, 3):
+        genstate.write_current(values[index], adapter)
+        result = host_pin_refresh.refresh_after_switch(
+            adapter, values[index - 1], values[index], time.monotonic() + 30)
+        assert result["status"] == "ok", result
+        # No `launchctl` runs here: the on-disk plist changes every upgrade
+        # while launchd still dispatches the command it loaded at boot.
+        assert str(pythons[0]) in host_pin_refresh.scheduled_pins(adapter)
+
+    keep = {str(path) for path in storage_gc.keep_paths(adapter, values[3])}
+    assert str(generations[0]) in keep
+    assert str(update / "launch" / shas[0]) in keep
+    assert str(generations[2]) in keep
+    assert str(update / "launch" / shas[2]) in keep
+    assert str(generations[3]) in keep
+    stored = json.loads((update / "scheduled-pins.json").read_text())
+    assert stored["anchor"]["python"] == str(pythons[0])
+    assert stored["anchor"]["launcher"] == str(
+        update / "launch" / shas[0] / "mindie_launch.py")
+    latest = [slot for slot in stored["records"]
+              if slot["python"] == str(pythons[2])]
+    assert latest and latest[0]["launcher"] == str(
+        update / "launch" / shas[2] / "mindie_launch.py")
+
+    for path in (generations[0], update / "launch" / shas[0],
+                 generations[1], update / "launch" / shas[1]):
+        os.utime(path, (OLD, OLD))
+    extra = _generation(adapter, _sha(199))
+    os.utime(extra, (OLD, OLD))
+    write_json(update / "receipts" / f"{shas[3]}.json", {
+        "sha": shas[3], "previous": values[2]})
+    storage_gc.run(
+        adapter, genstate.read_current(adapter), phase="test", budget_seconds=30,
+        force=True, data_home=str(tmp_path / "data"), temp_root=str(tmp_path / "tmp"),
+    )
+    # The anchor (first replaced command) and the current runtime survive;
+    # only the unprotected legacy generation is reclaimed.
+    assert generations[0].is_dir()
+    assert (update / "launch" / shas[0]).is_dir()
+    assert generations[2].is_dir()
+    assert (update / "launch" / shas[2]).is_dir()
+    assert generations[3].is_dir()
+    assert (update / "launch" / shas[3]).is_dir()
+    assert not extra.exists()
 
 
 def test_scheduled_pins_keep_replaced_generation_and_launcher(tmp_path):
@@ -731,6 +949,8 @@ def test_guarded_session_retention_defers_unresolved_remote_records(tmp_path):
                      "authorization": {"token": "tok", "job_id": "job-1"}}})
     uncertain = _remote_session(root, "gate-v1-uncertain", {
         "result.json": {"state": "succeeded", "submission_state": "uncertain"}})
+    nested_running = _remote_session(root, "runtime-nested-result-running", {
+        "result.json": {"result": {"state": "running"}}})
     submitting = _remote_session(root, "runtime-submitting", {
         "result.json": {"state": "succeeded", "submission_state": "submitting"}})
     terminal = _remote_session(root, "session-terminal", {
@@ -742,11 +962,42 @@ def test_guarded_session_retention_defers_unresolved_remote_records(tmp_path):
         root, now=time.time(), max_age_seconds=60)
     assert report["status"] == "partial"
     assert set(report["removed"]) == {terminal.name, acknowledged.name}
-    for path in (running, pre_reply, uncertain, submitting):
+    for path in (running, pre_reply, uncertain, nested_running, submitting):
         assert path.is_dir()
-    assert report["skipped"]["non_terminal_state"] == 1
+    assert report["skipped"]["non_terminal_state"] == 2
     assert report["skipped"]["pre_reply_job"] == 1
     assert report["skipped"]["unresolved_submission"] == 2
+
+
+def test_unresolved_state_inspects_nested_records_and_null_submission(tmp_path):
+    def state_for(name, payload):
+        directory = tmp_path / name
+        directory.mkdir()
+        (directory / "record.json").write_text(json.dumps(payload))
+        return remote_state_guard.unresolved_state(directory)
+
+    assert state_for("nested-running", {
+        "result": {"state": "running"}})["reason"] == "non_terminal_state"
+    assert state_for("nested-list-running", [
+        {"job": [{"state": "running"}]}])["reason"] == "non_terminal_state"
+    assert state_for("nested-uncertain", {
+        "payload": {"submission_state": "uncertain"}})["reason"] == "unresolved_submission"
+    for index, value in enumerate((None, "", 7, ["acknowledged"], "unknown")):
+        assert state_for(f"null-submission-{index}", {
+            "submission_state": value})["reason"] == "unresolved_submission"
+    assert state_for("nested-terminal", {
+        "result": {"state": "succeeded"},
+        "payload": {"submission_state": "acknowledged"}})["unresolved"] is False
+    # `authorization.state` is request metadata, never an execution outcome.
+    assert state_for("authorization-state", {
+        "schema_version": "remote-dev.job.v1",
+        "state": "succeeded",
+        "authorization": {"state": "running", "job_id": "job-1"},
+    })["unresolved"] is False
+    deep = {"state": "succeeded"}
+    for _ in range(14):
+        deep = {"result": deep}
+    assert state_for("too-deep", deep)["reason"] == "record_too_deep"
 
 
 def test_unresolved_state_defers_incomplete_oversized_and_invalid_records(tmp_path):

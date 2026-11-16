@@ -173,7 +173,8 @@ def build_runtime(generation: Path, deadline: float, *, component_overrides=None
     _stage_call(
         "candidate_venv", _h("bounded_run"),
         [uv, "venv", "--python", sys.executable, str(venv)], "",
-        timeout=min(180, _h("_remaining")(deadline, _h("RESERVE"))), env=env)
+        timeout=min(180, _h("_remaining")(deadline, _h("RESERVE"))), env=env,
+        transport=True)
     merged = None
     if component_overrides:
         merged = _component_override_file(generation, component_overrides)
@@ -262,8 +263,12 @@ def write_generation_configs(generation: Path, python: Path, adapter: dict, *, c
     if components is not None:
         from mindie_knowledge.component_bindings import rebind_commands, validate_command_floor
         validate_command_floor(padapter or adapter, components)
-        # A binding-only update must not rewrite the active generation's config.
-        config_dir /= hashlib.sha256(json.dumps(commands, sort_keys=True).encode()).hexdigest()[:16]
+        # A binding-only update must not rewrite the active generation's config;
+        # a fresh candidate keeps its stable `config/kimi.adapter.json` so a
+        # retry can reuse the completed generation.
+        if _same_path(generation, Path(current["generation"])):
+            config_dir /= hashlib.sha256(
+                json.dumps(commands, sort_keys=True).encode()).hexdigest()[:16]
     gen_engine = config_dir / "kimi.engine.json"
     gen_adapter = config_dir / "kimi.adapter.json"
     _h("atomic_write")(
@@ -615,6 +620,8 @@ def _discard_unpublished(sha, target, adapter, launch_existed):
         current = {}
     try:
         published = (target / _h("COMPLETE")).is_file()
+    except TimeoutError:
+        raise
     except OSError:
         published = False
     active = current.get("generation")
@@ -625,13 +632,15 @@ def _discard_unpublished(sha, target, adapter, launch_existed):
     if (not launch_existed and current.get("sha") != sha):
         try:
             exists = launch.exists()
+        except TimeoutError:
+            raise
         except OSError:
             exists = False
         if exists:
             _discard_quietly(launch)
 
 
-def _reuse_complete(target, sha, adapter, release):
+def _reuse_complete(target, sha, adapter, release, deadline):
     if release is not None:
         _h("_verify_generation_release")(target, sha, release)
     python = _h("_venv_python")(target / ".venv")
@@ -645,8 +654,12 @@ def _reuse_complete(target, sha, adapter, release):
             and candidate.get("domain_source_configs") != (active.get("domain_configs") or {})):
         # A refreshed but unpublished generation is complete only after both
         # its binding and host package were rebuilt.
+        from component_update import candidate_components
+
         (target / _h("COMPLETE")).unlink()
-        gen_adapter = _h("write_generation_configs")(target, python, active)
+        gen_adapter = _h("write_generation_configs")(
+            target, python, active,
+            components=candidate_components(active, python, deadline))
         _h("build_host_package")(target, active, sha, config_file=gen_adapter)
         (target / _h("COMPLETE")).write_text(f"{sha}\n")
     return target, python, gen_adapter
@@ -678,7 +691,19 @@ def _finalize_target(sha, target, adapter, deadline, build, force):
     """Build exactly one runtime: a merged component runtime wins over a venv."""
     current = _h("read_current")(adapter)
     usable = _usable_python(current)
-    from component_update import candidate_overrides, prepare as component_prepare
+    from component_update import candidate_components, candidate_overrides
+    from component_update import prepare as component_prepare
+
+    def candidate_config(python):
+        # `prepare()` returning `None` proves the active interpreter already
+        # carries the merged floor, not that the candidate needs no binding:
+        # its managed commands must still point at the candidate `.venv`.
+        # Inheriting the active generation's commands defers the switch CAS
+        # ("component commands changed during preparation") and every retry
+        # then reuses the same broken candidate.
+        return _h("write_generation_configs")(
+            target, python, adapter,
+            components=candidate_components(adapter, python, deadline))
 
     if usable is None:
         python = build(target, deadline)
@@ -689,7 +714,7 @@ def _finalize_target(sha, target, adapter, deadline, build, force):
             _h("build_host_package")(generation, adapter, sha, config_file=config)
             return generation, python, config
         config = (prepared[2] if prepared is not None
-                  else _h("write_generation_configs")(target, python, adapter))
+                  else candidate_config(python))
         _h("build_host_package")(target, adapter, sha, config_file=config)
         (target / _h("COMPLETE")).write_text(f"{sha}\n")
         return target, python, config
@@ -718,10 +743,10 @@ def _finalize_target(sha, target, adapter, deadline, build, force):
             generation, python, config = prepared
             _h("build_host_package")(generation, adapter, sha, config_file=config)
             return generation, python, config
-        config = prepared[2] if prepared is not None else _h("write_generation_configs")(
-            target, python, adapter)
+        config = (prepared[2] if prepared is not None
+                  else candidate_config(python))
     else:
-        config = _h("write_generation_configs")(target, python, adapter)
+        config = candidate_config(python)
     _h("build_host_package")(target, adapter, sha, config_file=config)
     (target / _h("COMPLETE")).write_text(f"{sha}\n")
     try:
@@ -742,7 +767,7 @@ def stage_generation(
     launch_existed = (_h("launch_dir")(adapter) / sha).exists()
     try:
         if (target / _h("COMPLETE")).is_file():
-            reused = _reuse_complete(target, sha, adapter, release)
+            reused = _reuse_complete(target, sha, adapter, release, deadline)
             if reused is not None:
                 return reused
         elif (target / _h("SOURCE")).is_file():

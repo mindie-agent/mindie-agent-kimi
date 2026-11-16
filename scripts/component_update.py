@@ -10,6 +10,7 @@ never authorizes knowledge, reads a corpus or changes contribution consent.
 from __future__ import annotations
 from contextlib import contextmanager
 import json
+import os
 from pathlib import Path
 import time
 import urllib.error
@@ -197,6 +198,50 @@ def candidate_overrides(source, python, *, timeout=15):
     merged = dict(baseline)
     merged.update(installed)
     return merged if merged != baseline else None
+
+
+def candidate_components(adapter, python, deadline):
+    """Return the component map installed in a freshly built candidate venv.
+
+    `prepare()` returning `None` proves only that the *active* interpreter
+    already meets the merged floor. The candidate venv was built with that same
+    floor, so its managed module commands must still be rebound to the
+    candidate interpreter; inheriting the active generation's
+    `component_commands` leaves stale paths and defers the switch CAS.
+    `None` means the profile declares no component commands; `{}` means only
+    custom (unmanaged) commands, which need a live snapshot but no inventory.
+    """
+    import updater_check
+
+    host = updater_check._HOST
+    if host is None:
+        import updater as host
+    from mindie_knowledge.component_bindings import managed_commands
+
+    profile = adapter
+    profile_path = adapter.get("profile_config") if isinstance(adapter, dict) else None
+    if isinstance(profile_path, str) and os.path.isabs(profile_path):
+        try:
+            value = json.loads(Path(profile_path).read_text(encoding="utf-8"))
+        except TimeoutError:
+            raise
+        except (OSError, ValueError):
+            value = None
+        if isinstance(value, dict):
+            profile = value
+    commands = profile.get("component_commands")
+    if not isinstance(commands, dict) or not commands:
+        return None
+    if not managed_commands(profile):
+        # Custom commands are not rebound, but the candidate still snapshots
+        # the live profile so the switch CAS compares like with like.
+        return {}
+    from mindie_knowledge.component_runtime import read_inventory
+
+    timeout = min(15, host._remaining(deadline, host.RESERVE))
+    if timeout <= 0:
+        raise TimeoutError("candidate component inventory budget exhausted")
+    return read_inventory(python, timeout=timeout)
 
 
 def prepare(adapter, source, python, deadline, *, force=False):

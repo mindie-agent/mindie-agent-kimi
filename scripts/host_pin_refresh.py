@@ -11,8 +11,11 @@ entry (`mindie-front` + `kimi.plugin.json`) and an existing native record's
 - Only files that already exist and are recognizably MindIE-owned are touched;
   a foreign plist, wrapper or plugin directory is left byte-for-byte intact.
 - No scheduler is registered, reloaded, enabled or disabled here. Every
-  replaced scheduler path is persisted in a bounded `scheduled-pins.json` ring
-  before the host file changes, so a still-loaded job keeps its runtime.
+  replaced scheduler runtime is persisted in a bounded `scheduled-pins.json`
+  before the host file changes: the first replaced `(python, launcher)` pair is
+  the permanent `anchor`, plus at most `MAX_REPLACED_RECORDS` recent pairs. The
+  anchor keeps a launchd job that still holds the original command alive, while
+  the slot ring covers every intermediate reload.
 - A cleanup failure after a committed switch is reported as a receipt warning;
   it never rolls back the committed generation.
 
@@ -42,8 +45,12 @@ LABEL = "agent.mindie.kimi-update"
 LAUNCHER = "mindie_launch.py"
 PLUGIN_IDS = frozenset({"mindie-agent", "mindie"})
 SCHEDULED_PINS = "scheduled-pins.json"
-SCHEDULED_PIN_LIMIT = 2
-SCHEDULED_PINS_SCHEMA = "mindie-kimi-scheduled-pins/1"
+# The anchor covers the command launchd loaded at boot; four recent pairs cover
+# any reload between upgrades. This keeps the JSON file far below 4 KiB.
+MAX_REPLACED_RECORDS = 4
+SCHEDULED_PINS_SCHEMA = "mindie-kimi-scheduled-pins/2"
+LEGACY_SCHEDULED_PINS_SCHEMA = "mindie-kimi-scheduled-pins/1"
+PIN_KEYS = ("python", "launcher")
 
 
 def _same_path(first, second):
@@ -118,46 +125,162 @@ def scheduled_pins_path(adapter):
     return update_dir(adapter) / SCHEDULED_PINS
 
 
-def scheduled_pins(adapter):
-    """Return the bounded ring of scheduler interpreter paths this module replaced."""
+def _pin_key(value):
+    text = str(value)
+    if os.name == "nt" and text.startswith("\\\\?\\"):
+        # A `\\?\`-prefixed identity is the same file as its plain twin.
+        text = text[4:]
+        if text[:4].upper() == "UNC\\":
+            text = "\\\\" + text[4:]
+    return os.path.normcase(os.path.abspath(text))
+
+
+def _pin_slot(python, launcher, recorded_at):
+    return {"python": python, "launcher": launcher, "recorded_at": recorded_at}
+
+
+def _pin_value(value, now=None):
+    """Normalize one persisted slot, dropping non-absolute/foreign fields."""
+    if not isinstance(value, dict):
+        return None
+    python = value.get("python")
+    launcher = value.get("launcher")
+    python = python if isinstance(python, str) and os.path.isabs(python) else None
+    launcher = launcher if isinstance(launcher, str) and os.path.isabs(launcher) else None
+    if python is None and launcher is None:
+        return None
+    recorded_at = value.get("recorded_at")
+    if not isinstance(recorded_at, (int, float)) or isinstance(recorded_at, bool):
+        recorded_at = now
+    return _pin_slot(python, launcher, recorded_at)
+
+
+def _pin_records(paths, now):
+    """Pair replaced scheduler paths into bounded slot records."""
+    pythons, launchers = [], []
+    for item in paths:
+        if not isinstance(item, str) or not os.path.isabs(item):
+            continue
+        bucket = (launchers if os.path.basename(item).casefold() == LAUNCHER.casefold()
+                  else pythons)
+        if all(_pin_key(existing) != _pin_key(item) for existing in bucket):
+            bucket.append(item)
+    return [
+        _pin_slot(
+            pythons[index] if index < len(pythons) else None,
+            launchers[index] if index < len(launchers) else None,
+            now,
+        )
+        for index in range(max(len(pythons), len(launchers)))
+    ]
+
+
+def _legacy_state(pins):
+    """Migrate the 0.1.26 flat ring: its first path pair becomes the anchor."""
+    records = _pin_records(pins if isinstance(pins, list) else [], None)
+    anchor = records.pop(0) if records else None
+    return anchor, records[:MAX_REPLACED_RECORDS]
+
+
+def _pin_state(adapter):
     value = _read_json(scheduled_pins_path(adapter))
-    pins = value.get("pins") if isinstance(value, dict) else None
-    if not isinstance(pins, list):
-        return []
-    return [item for item in pins
-            if isinstance(item, str) and os.path.isabs(item)][:SCHEDULED_PIN_LIMIT]
+    if not isinstance(value, dict):
+        return None, []
+    if value.get("schema") == SCHEDULED_PINS_SCHEMA:
+        anchor = _pin_value(value.get("anchor"))
+        records = []
+        raw = value.get("records")
+        for item in raw if isinstance(raw, list) else []:
+            if (slot := _pin_value(item)) is not None:
+                records.append(slot)
+        return anchor, records
+    if value.get("schema") == LEGACY_SCHEDULED_PINS_SCHEMA or "pins" in value:
+        return _legacy_state(value.get("pins"))
+    return None, []
+
+
+def _flatten_pins(anchor, records):
+    values = []
+    for slot in ([anchor] if anchor is not None else []) + list(records):
+        for key in PIN_KEYS:
+            item = slot.get(key)
+            if isinstance(item, str) and os.path.isabs(item) and item not in values:
+                values.append(item)
+    return values
+
+
+def _pin_exists(value):
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        return Path(value).exists()
+    except TimeoutError:
+        raise
+    except OSError:
+        return False
+
+
+def _merge_record(records, candidate):
+    for slot in records:
+        if (slot.get("python") and candidate.get("python")
+                and _pin_key(slot["python"]) == _pin_key(candidate["python"])):
+            if slot.get("launcher") is None and candidate.get("launcher") is not None:
+                slot["launcher"] = candidate["launcher"]
+            slot["recorded_at"] = candidate["recorded_at"]
+            return
+    records.append(candidate)
+
+
+def scheduled_pins(adapter):
+    """Return every protected scheduler runtime path; the anchor comes first."""
+    anchor, records = _pin_state(adapter)
+    return _flatten_pins(anchor, records)
 
 
 def remember_scheduled_pins(adapter, paths):
-    """Persist replaced scheduler interpreters before their host file is rewritten.
+    """Persist replaced scheduler runtimes before their host file is rewritten.
 
-    A still-loaded launchd job or scheduled task keeps the previous interpreter
-    usable even though the on-disk host file now names the committed runtime.
-    The ring is deliberately tiny: at most the two most recently replaced
-    interpreter paths remain protected.
+    A still-loaded launchd job keeps dispatching the command it read at load
+    time even though the on-disk plist now names the committed runtime. The
+    first replaced pair is therefore an `anchor` that survives every later
+    upgrade (until its files disappear); the most recent
+    `MAX_REPLACED_RECORDS` pairs cover intermediate reloads. Both bounds are
+    tiny, so rapid upgrades can never evict the runtime the scheduler holds.
     """
-    fresh = []
-    for item in paths:
-        if isinstance(item, str) and os.path.isabs(item) and item not in fresh:
-            fresh.append(item)
+    now = time.time()
+    fresh = _pin_records(paths, now)
     if not fresh:
         return scheduled_pins(adapter)
-    current = scheduled_pins(adapter)
-    merged = []
-    for item in [*fresh, *current]:
-        if item not in merged:
-            merged.append(item)
-    merged = merged[:SCHEDULED_PIN_LIMIT]
-    if merged == current:
-        return current
+    previous_anchor, previous_records = _pin_state(adapter)
+    anchor = previous_anchor
+    if anchor is None:
+        anchor = dict(fresh[0])
+    records = [dict(slot) for slot in previous_records]
+    for candidate in fresh:
+        if (anchor.get("python") and candidate.get("python")
+                and _pin_key(anchor["python"]) == _pin_key(candidate["python"])):
+            if anchor.get("launcher") is None and candidate.get("launcher") is not None:
+                anchor["launcher"] = candidate["launcher"]
+            continue
+        _merge_record(records, candidate)
+    records = records[-MAX_REPLACED_RECORDS:]
+    if anchor is not None and not (
+            _pin_exists(anchor.get("python")) or _pin_exists(anchor.get("launcher"))):
+        # Only a vanished anchor is released. Running from a newer interpreter
+        # (including a manual run) never proves launchd reloaded its command.
+        anchor = None
+    flat = _flatten_pins(anchor, records)
+    if anchor == previous_anchor and records == previous_records:
+        return flat
     from genstate import atomic_write
 
     atomic_write(scheduled_pins_path(adapter), {
         "schema": SCHEDULED_PINS_SCHEMA,
-        "pins": merged,
-        "updated_at": time.time(),
+        "anchor": anchor,
+        "records": records,
+        "updated_at": now,
     })
-    return merged
+    return flat
 
 
 def _scheduler_paths(arguments, previous=None):
@@ -244,7 +367,7 @@ def _host_command(adapter, current, *, config=None):
 
 
 def _refresh_wrapper(adapter, current, previous=None):
-    from genstate import update_dir
+    from genstate import launch_dir, update_dir
 
     wrapper = update_dir(adapter) / "MindIEKimiUpdate.pyw"
     try:
@@ -258,7 +381,11 @@ def _refresh_wrapper(adapter, current, previous=None):
 
     old = previous.get("python") if isinstance(previous, dict) else None
     if isinstance(old, str) and os.path.isabs(old):
-        remember_scheduled_pins(adapter, [old])
+        replaced = [old]
+        sha = previous.get("sha")
+        if isinstance(sha, str) and sha:
+            replaced.append(str(launch_dir(adapter) / sha / LAUNCHER))
+        remember_scheduled_pins(adapter, replaced)
     return ["schedule-wrapper"] if refresh_existing_wrapper(adapter, current) else None
 
 

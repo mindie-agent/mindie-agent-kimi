@@ -10,10 +10,13 @@ an unresolved persisted outcome is deferred instead of removed.
 [Invariants]
 - Only terminal job states are reclaimable. `unknown`/`uncertain`/`running`/
   `prepared`/`stopping`/`lost` and any unrecognized state are unresolved.
-- A `remote-dev.job.v1` record without a top-level `state` is a pre-reply
-  record: nested `authorization.job_id` never substitutes for it.
+- `state`/`submission_state` are inspected recursively through nested dicts and
+  lists up to `MAX_JSON_DEPTH` (12); deeper documents are unresolved. Only
+  `authorization` subtrees are exempt from `state`, so `result.state` defers.
+- A `remote-dev.job.v1` object without its own `state` is a pre-reply record:
+  nested `authorization.job_id` never substitutes for it.
 - `submission_state` is resolved only for terminal states plus
-  `acknowledged`/`not_sent`/`not_executed`; everything else defers.
+  `acknowledged`/`not_sent`/`not_executed`; a present `None`/non-string/empty defers.
 - An incomplete walk (>400 entries), an oversized record (>512 KiB), an
   unreadable directory/file, or malformed JSON/JSONL is unresolved.
 - Deletion always goes through `mindie_knowledge.storage.retire_directory`;
@@ -48,9 +51,11 @@ UNRESOLVED_SUBMISSION_STATES = frozenset({
     "uncertain", "unknown", "pending", "submitting",
 })
 JOB_SCHEMA = "remote-dev.job.v1"
+AUTHORIZATION_KEY = "authorization"
 MAX_FILES = 400
 MAX_RECORD_BYTES = 512 * 1024
 MAX_WALK_DEPTH = 8
+MAX_JSON_DEPTH = 12
 SESSION_MAX_AGE_SECONDS = 24 * 60 * 60
 MAX_SESSION_ROOTS = 8
 MAX_ENDPOINT_ROOTS = 16
@@ -66,36 +71,56 @@ def _expired(deadline):
     return deadline is not None and time.monotonic() >= deadline
 
 
-def _record_unresolved(value):
-    """Return a static reason when one persisted record is not terminal."""
+def _normalized(value):
+    return value.strip().lower() if isinstance(value, str) else ""
+
+
+def _record_unresolved(value, *, skip_state=False):
+    """Return a static reason when one persisted record object is not terminal."""
     if not isinstance(value, dict):
         return None
     if value.get("schema_version") == JOB_SCHEMA and ("state" not in value
                                                       or value.get("state") is None):
         return "pre_reply_job"
-    if "state" in value:
-        state = value.get("state")
-        normalized = state.strip().lower() if isinstance(state, str) else ""
-        if normalized not in TERMINAL_JOB_STATES:
+    if "state" in value and not skip_state:
+        if _normalized(value.get("state")) not in TERMINAL_JOB_STATES:
             return "non_terminal_state"
     if value.get("unknown") is True:
         return "unknown_outcome"
-    submission = value.get("submission_state")
-    if submission is not None:
-        normalized = submission.strip().lower() if isinstance(submission, str) else ""
-        if normalized not in RESOLVED_SUBMISSION_STATES \
-                and normalized not in TERMINAL_JOB_STATES:
+    if "submission_state" in value:
+        # The key is present, so `None`/non-string/empty is an unconfirmed
+        # persisted outcome, not an absent field.
+        submission = _normalized(value.get("submission_state"))
+        if submission not in RESOLVED_SUBMISSION_STATES \
+                and submission not in TERMINAL_JOB_STATES:
             return "unresolved_submission"
     return None
 
 
 def _scan_document(value):
-    if isinstance(value, list):
-        for item in value:
-            if (reason := _record_unresolved(item)) is not None:
+    """Walk nested dictionaries/lists with a strict depth bound.
+
+    Only an `authorization` subtree is exempt from the job `state` check:
+    authorization metadata may carry its own `state` while `result.state`,
+    `job.state` and any nested `submission_state` still defer reclamation.
+    """
+    pending = [(value, 0, False)]
+    while pending:
+        current, depth, skip_state = pending.pop()
+        if depth > MAX_JSON_DEPTH:
+            return "record_too_deep"
+        if isinstance(current, dict):
+            if (reason := _record_unresolved(current, skip_state=skip_state)) is not None:
                 return reason
-        return None
-    return _record_unresolved(value)
+            for key, item in current.items():
+                if isinstance(item, (dict, list)):
+                    pending.append((item, depth + 1,
+                                    skip_state or key == AUTHORIZATION_KEY))
+        elif isinstance(current, list):
+            for item in current:
+                if isinstance(item, (dict, list)):
+                    pending.append((item, depth + 1, skip_state))
+    return None
 
 
 def unresolved_state(directory, *, deadline=None):
@@ -109,56 +134,62 @@ def unresolved_state(directory, *, deadline=None):
             return _unresolved(result, "incomplete_walk")
         current, depth = pending.pop()
         try:
-            entries = list(os.scandir(current))
+            entries = os.scandir(current)
         except TimeoutError:
             raise
         except OSError:
             return _unresolved(result, "unreadable_directory")
-        for entry in entries:
-            if _expired(deadline):
-                return _unresolved(result, "incomplete_walk")
-            observations += 1
-            if observations > MAX_FILES:
-                return _unresolved(result, "incomplete_walk")
-            try:
-                if entry.is_dir(follow_symlinks=False):
-                    if depth >= MAX_WALK_DEPTH:
+        try:
+            with entries:
+                for entry in entries:
+                    if _expired(deadline):
                         return _unresolved(result, "incomplete_walk")
-                    pending.append((Path(entry.path), depth + 1))
-                    continue
-                if not entry.is_file(follow_symlinks=False):
-                    continue
-                info = entry.stat(follow_symlinks=False)
-            except TimeoutError:
-                raise
-            except OSError:
-                return _unresolved(result, "unreadable_entry")
-            result["files"] += 1
-            name = entry.name.casefold()
-            if not (name.endswith(".json") or name.endswith(".jsonl")):
-                continue
-            if info.st_size > MAX_RECORD_BYTES:
-                return _unresolved(result, "oversized_record")
-            try:
-                text = Path(entry.path).read_text(encoding="utf-8")
-            except TimeoutError:
-                raise
-            except (OSError, UnicodeError):
-                return _unresolved(result, "unreadable_record")
-            if name.endswith(".jsonl"):
-                documents = [line for line in text.splitlines() if line.strip()]
-            else:
-                documents = [text]
-            for document in documents:
-                try:
-                    value = json.loads(document)
-                except ValueError:
-                    return _unresolved(result, "invalid_record")
-                result["records"] += 1
-                if (reason := _scan_document(value)) is not None:
-                    return _unresolved(result, reason)
-            if _expired(deadline):
-                return _unresolved(result, "incomplete_walk")
+                    observations += 1
+                    if observations > MAX_FILES:
+                        return _unresolved(result, "incomplete_walk")
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            if depth >= MAX_WALK_DEPTH:
+                                return _unresolved(result, "incomplete_walk")
+                            pending.append((Path(entry.path), depth + 1))
+                            continue
+                        if not entry.is_file(follow_symlinks=False):
+                            continue
+                        info = entry.stat(follow_symlinks=False)
+                    except TimeoutError:
+                        raise
+                    except OSError:
+                        return _unresolved(result, "unreadable_entry")
+                    result["files"] += 1
+                    name = entry.name.casefold()
+                    if not (name.endswith(".json") or name.endswith(".jsonl")):
+                        continue
+                    if info.st_size > MAX_RECORD_BYTES:
+                        return _unresolved(result, "oversized_record")
+                    try:
+                        text = Path(entry.path).read_text(encoding="utf-8")
+                    except TimeoutError:
+                        raise
+                    except (OSError, UnicodeError):
+                        return _unresolved(result, "unreadable_record")
+                    if name.endswith(".jsonl"):
+                        documents = [line for line in text.splitlines() if line.strip()]
+                    else:
+                        documents = [text]
+                    for document in documents:
+                        try:
+                            value = json.loads(document)
+                        except (ValueError, RecursionError):
+                            return _unresolved(result, "invalid_record")
+                        result["records"] += 1
+                        if (reason := _scan_document(value)) is not None:
+                            return _unresolved(result, reason)
+                    if _expired(deadline):
+                        return _unresolved(result, "incomplete_walk")
+        except TimeoutError:
+            raise
+        except OSError:
+            return _unresolved(result, "unreadable_directory")
     return result
 
 

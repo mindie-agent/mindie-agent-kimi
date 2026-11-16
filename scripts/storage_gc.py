@@ -58,6 +58,20 @@ def _storage():
     return storage
 
 
+def _strip_verbatim(text, *, windows=None):
+    """Drop a Windows `\\\\?\\` verbatim prefix (and restore `\\\\` for UNC)."""
+    if (os.name == "nt" if windows is None else windows) and text.startswith("\\\\?\\"):
+        text = text[4:]
+        if text[:4].upper() == "UNC\\":
+            text = "\\\\" + text[4:]
+    return text
+
+
+def _norm_path(value):
+    """Host path identity; strips a Windows `\\\\?\\` verbatim prefix first."""
+    return os.path.normcase(os.path.abspath(_strip_verbatim(str(value))))
+
+
 def _remaining(deadline, ceiling):
     left = deadline - time.monotonic()
     if left <= 0:
@@ -87,10 +101,14 @@ def keep_paths(adapter, current):
 
     storage = _storage()
     keep = []
+    seen = set()
 
     def add(value):
         if isinstance(value, str) and value:
-            keep.append(Path(value))
+            key = _norm_path(value)
+            if key not in seen:
+                seen.add(key)
+                keep.append(Path(value))
 
     def add_reference(value):
         add(value)
@@ -123,8 +141,8 @@ def keep_paths(adapter, current):
     for name in ("bootstrap-venv", "bootstrap-package"):
         candidate = state / name
         if candidate.is_dir():
-            keep.append(candidate)
-    keep.append(update_dir(adapter) / "launch" / "bootstrap")
+            add(str(candidate))
+    add(str(update_dir(adapter) / "launch" / "bootstrap"))
     return keep
 
 
@@ -151,7 +169,7 @@ def _leased_directories(adapter, current):
     owned = update_dir(adapter)
     directories, seen = [], set()
     for path in keep_paths(adapter, current):
-        key = os.path.normcase(os.path.abspath(str(path)))
+        key = _norm_path(path)
         if key in seen:
             continue
         try:

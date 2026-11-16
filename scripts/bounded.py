@@ -251,6 +251,12 @@ _CERT_PHRASES = (
 _RESOLVER_PHRASES = (
     "resolutionimpossible", "conflicting dependencies", "package versions have conflicting",
     "the conflict is caused by", "resolver conflict",
+    # Real `uv` resolver output (pip-compile/pip style phrases above stay valid).
+    "requirements contain conflicting urls", "conflicting urls",
+    "no solution found when resolving dependencies",
+    "no solution found when resolving package dependencies",
+    "unsatisfiable requirements", "requirements are unsatisfiable",
+    "version solving failed", "because your project depends on",
 )
 _HASH_PHRASES = ("these packages do not match the hashes", "does not match the hashes", "hash mismatch")
 _GENERIC_CONTENT_PHRASES = ("no matching distribution", "could not find a version that satisfies")
@@ -263,7 +269,12 @@ _RATE_PHRASES = ("rate limit", "too many requests", "secondary rate limit")
 _HOOK_PHRASES = ("hook trust", "requires native trust", "changed hooks require")
 _PREREQUISITE_PHRASES = (
     "no space left on device", "disk quota exceeded", "read-only file system",
-    "too many open files", "file system is full", "not enough space",
+    "too many open files", "file system is full", "not enough space", "disk full",
+    "os error 28", "errno 28", "enospc",
+    # `uv venv`/`uv pip` cache and local-directory failures.
+    "failed to create virtual environment", "failed to initialize cache",
+    "cache directory is not writable", "failed to write to the cache",
+    "failed to read from the cache", "failed to create cache",
 )
 _CONNECT_PHRASES = (
     "could not resolve host", "temporary failure in name resolution", "name or service not known",

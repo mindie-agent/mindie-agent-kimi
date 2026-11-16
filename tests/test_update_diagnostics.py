@@ -14,6 +14,7 @@ import urllib.error
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+import bounded
 import component_update
 import genstate
 import updater
@@ -294,6 +295,61 @@ def test_lock_timeout_and_deferred_expose_local_categories():
         'ERROR: ResolutionImpossible: conflicting dependencies') == ('resolver', None)
     assert classify_transport_text(
         'OSError: [Errno 28] No space left on device') == ('prerequisite', None)
+
+
+@pytest.mark.parametrize('stderr', [
+    'error: Requirements contain conflicting URLs for package `foo`',
+    'error: No solution found when resolving dependencies:',
+    'error: No solution found when resolving package dependencies',
+    'error: unsatisfiable requirements detected for package bar',
+    "error: your project's requirements are unsatisfiable",
+    'error: Because your project depends on mindie-profiler, we can conclude',
+])
+def test_real_uv_resolver_phrases_are_local(stderr):
+    assert classify_transport_text(stderr) == ('resolver', None)
+
+
+def test_uv_venv_disk_full_runs_through_transport_classification(tmp_path):
+    policy, logs = diagnostic_support.reporting_config_path(), Path(
+        os.environ['MINDIE_DIAGNOSTICS_ROOT'])
+    configure_reporting(True, config=policy, roots=[str(logs)])
+    script = (
+        "import sys\n"
+        "sys.stderr.write('error: failed to create virtual environment: "
+        "No space left on device (os error 28)\\n')\n"
+        "raise SystemExit(1)\n"
+    )
+    with pytest.raises(Exception) as caught:
+        bounded.run([sys.executable, '-c', script], '', timeout=30, transport=True)
+    error = caught.value
+    assert error.category == 'prerequisite'
+    assert diagnostic_support.local_failure_category(error) == 'prerequisite'
+    updater._update_diagnostic('stage_generation', error)
+    event = json.loads(next(Path(logs).glob('events/*/*.jsonl')).read_text().splitlines()[-1])
+    assert event['attributes']['category'] == 'prerequisite'
+    assert event['attributes']['reason_code'] == 'child_process_failed'
+    assert event['reportable'] is False
+
+
+def test_uv_venv_call_enables_transport_classification(tmp_path):
+    generation = tmp_path / 'generation'
+    generation.mkdir()
+    (generation / 'runtime-requirements.txt').write_text(
+        'mindie-knowledge @ git+https://github.com/mindie-agent/knowledge@' + 'a' * 40 + '\n')
+    transports = []
+
+    def run(argv, stdin='', **kwargs):
+        if 'venv' in argv:
+            transports.append(kwargs.get('transport'))
+            venv = Path(argv[-1])
+            (venv / 'bin').mkdir(parents=True)
+            (venv / 'bin' / 'python').write_text('')
+        return ''
+
+    with patch.object(updater.shutil, 'which', return_value='/usr/bin/uv'), \
+            patch.object(updater, 'bounded_run', side_effect=run):
+        updater.build_runtime(generation, time.monotonic() + 120)
+    assert transports == [True]
 
 
 def test_staging_subprocess_failure_preserves_stage_and_transport(tmp_path):

@@ -57,6 +57,9 @@ def _isolate_host_environment(tmp_path, monkeypatch):
             value.mkdir(parents=True, exist_ok=True)
         monkeypatch.setenv(name, str(value))
     monkeypatch.setenv("PYTHONUSERBASE", _PYTHON_USER_BASE)
+    # A test that writes its own profile config must not leak that pointer into
+    # the next test's `profile_config_path()` resolution.
+    monkeypatch.delenv("MINDIE_KIMI_CONFIG", raising=False)
     previous_tempdir = tempfile.tempdir
     tempfile.tempdir = None
     try:
