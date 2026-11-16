@@ -57,6 +57,7 @@ MIN_PYTHON = (3, 12) if os.name == "nt" else (3, 11)
 RESERVE = 113.0
 SHA = r"[0-9a-f]{40}"
 COMPLETE = ".mindie-generation-complete"
+SOURCE = ".mindie-generation-source"
 LAUNCHER = "mindie_launch.py"
 # Kimi's host schema names the per-server tool deadline `toolTimeoutMs`
 # (observed in the host's own mcp.json and plugin API). Legacy 0.1.2/0.1.3
@@ -108,6 +109,9 @@ def build_runtime(generation: Path, deadline: float) -> Path:
     if uv is None:
         raise _h("CheckFailed")("uv is required to prepare the MindIE runtime")
     env = installer_environment()
+    from mindie_knowledge.storage import configure_same_volume_uv_cache
+
+    env = configure_same_volume_uv_cache(generation, env)
     _h("bounded_run")([uv, "venv", "--python", sys.executable, str(venv)], "",
                       timeout=min(180, _h("_remaining")(deadline, _h("RESERVE"))), env=env)
     install_argv = [uv, "pip", "install", "--python", str(python), "-r", str(requirements)]
@@ -489,32 +493,88 @@ def _remove_owned_tree(path):
     shutil.rmtree(path, onerror=retry_readonly)
 
 
-def stage_generation(
-    sha: str, remote: str, adapter: dict, deadline: float,
-    build=None, release=None,
-) -> tuple[Path, Path, Path]:
-    build = build or _h("build_runtime")
-    target = _h("generations_dir")(adapter) / sha
-    if (target / _h("COMPLETE")).is_file():
-        if release is not None:
-            _h("_verify_generation_release")(target, sha, release)
-        python = _h("_venv_python")(target / ".venv")
-        gen_adapter = target / "config" / "kimi.adapter.json"
-        if python.exists() and gen_adapter.is_file():
-            current = _h("read_current")(adapter)
-            active, candidate = _h("read_json")(Path(current['adapter_config'])), _h("read_json")(gen_adapter)
-            if (current.get('sha') != sha and active is not None and candidate is not None
-                    and candidate.get('domain_source_configs') != (active.get('domain_configs') or {})):
-                # A refreshed but unpublished generation is complete only
-                # after both its binding and host package were rebuilt.
-                (target / _h("COMPLETE")).unlink()
-                gen_adapter = _h("write_generation_configs")(target, python, active)
-                _h("build_host_package")(target, active, sha, config_file=gen_adapter)
-                (target / _h("COMPLETE")).write_text(f"{sha}\n")
-            return target, python, gen_adapter
+def _same_path(first, second):
+    from mindie_knowledge.filesystem import path_identity
+
+    try:
+        return path_identity(Path(first)) == path_identity(Path(second))
+    except TimeoutError:
+        raise
+    except (OSError, RuntimeError, ValueError):
+        return os.path.normcase(os.path.abspath(str(first))) == os.path.normcase(
+            os.path.abspath(str(second)))
+
+
+def _usable_python(current):
+    value = current.get("python") if isinstance(current, dict) else None
+    if not isinstance(value, str) or not value:
+        return None
+    path = Path(value)
+    try:
+        return path if path.is_file() else None
+    except TimeoutError:
+        raise
+    except OSError:
+        return None
+
+
+def _discard_quietly(path):
+    try:
+        _h("_remove_owned_tree")(path)
+    except TimeoutError:
+        raise
+    except Exception:
+        pass
+
+
+def _discard_unpublished(sha, target, adapter, launch_existed):
+    """Remove only candidate artifacts this failed staging may have created."""
+    try:
+        current = _h("read_current")(adapter)
+    except TimeoutError:
+        raise
+    except Exception:
+        current = {}
+    try:
+        published = (target / _h("COMPLETE")).is_file()
+    except OSError:
+        published = False
+    active = current.get("generation")
+    if target.exists() and not published and not (
+            isinstance(active, str) and _same_path(active, target)):
+        _discard_quietly(target)
+    launch = _h("launch_dir")(adapter) / sha
+    if (not launch_existed and current.get("sha") != sha):
+        try:
+            exists = launch.exists()
+        except OSError:
+            exists = False
+        if exists:
+            _discard_quietly(launch)
+
+
+def _reuse_complete(target, sha, adapter, release):
+    if release is not None:
+        _h("_verify_generation_release")(target, sha, release)
+    python = _h("_venv_python")(target / ".venv")
+    gen_adapter = target / "config" / "kimi.adapter.json"
+    if not python.exists() or not gen_adapter.is_file():
         _h("_remove_owned_tree")(target)
-    elif target.exists():
-        _h("_remove_owned_tree")(target)
+        return None
+    current = _h("read_current")(adapter)
+    active, candidate = _h("read_json")(Path(current["adapter_config"])), _h("read_json")(gen_adapter)
+    if (current.get("sha") != sha and active is not None and candidate is not None
+            and candidate.get("domain_source_configs") != (active.get("domain_configs") or {})):
+        # A refreshed but unpublished generation is complete only after both
+        # its binding and host package were rebuilt.
+        (target / _h("COMPLETE")).unlink()
+        gen_adapter = _h("write_generation_configs")(target, python, active)
+        _h("build_host_package")(target, active, sha, config_file=gen_adapter)
+        (target / _h("COMPLETE")).write_text(f"{sha}\n")
+    return target, python, gen_adapter
+
+
+def _stage_checkout(sha, remote, adapter, deadline):
     staging = _h("generations_dir")(adapter) / f".staging-{sha}-{os.getpid()}"
     staging.mkdir(parents=True, exist_ok=False)
     try:
@@ -522,27 +582,97 @@ def stage_generation(
         _h("_git")(["remote", "add", "origin", remote], timeout=15, deadline=deadline, cwd=staging)
         _h("_git")(["fetch", "--depth", "1", "origin", sha], timeout=180, deadline=deadline, cwd=staging, transport=True)
         _h("_git")(["checkout", "-q", "--detach", "FETCH_HEAD"], timeout=60, deadline=deadline, cwd=staging)
-        os.replace(staging, target)
     except TimeoutError:
-        _h("_remove_owned_tree")(staging)
+        _discard_quietly(staging)
         raise
     except Exception:
-        _h("_remove_owned_tree")(staging)
+        _discard_quietly(staging)
         raise
-    try:
-        if release is not None:
-            _h("_verify_generation_release")(target, sha, release)
+    target = _h("generations_dir")(adapter) / sha
+    os.replace(staging, target)
+    return target
+
+
+def _finalize_target(sha, target, adapter, deadline, build, force):
+    """Build exactly one runtime: a merged component runtime wins over a venv."""
+    current = _h("read_current")(adapter)
+    usable = _usable_python(current)
+    from component_update import prepare as component_prepare
+
+    if usable is None:
         python = build(target, deadline)
         _h("probe_runtime")(python, deadline, target)
-        gen_adapter = _h("write_generation_configs")(target, python, adapter)
-        _h("build_host_package")(target, adapter, sha, config_file=gen_adapter)
+        prepared = component_prepare(adapter, target, python, deadline, force=force)
+        if prepared is not None and not _same_path(prepared[0], target):
+            generation, python, config = prepared
+            _h("build_host_package")(generation, adapter, sha, config_file=config)
+            return generation, python, config
+        config = (prepared[2] if prepared is not None
+                  else _h("write_generation_configs")(target, python, adapter))
+        _h("build_host_package")(target, adapter, sha, config_file=config)
         (target / _h("COMPLETE")).write_text(f"{sha}\n")
-        return target, python, gen_adapter
+        return target, python, config
+    prepared = component_prepare(adapter, target, usable, deadline, force=force)
+    if prepared is not None and not _same_path(prepared[0], target):
+        # A merged component runtime already owns a complete .venv; do not
+        # also materialize generations/<sha>/.venv for the same update.
+        generation, python, config = prepared
+        _h("build_host_package")(generation, adapter, sha, config_file=config)
+        return generation, python, config
+    python = build(target, deadline)
+    _h("probe_runtime")(python, deadline, target)
+    if prepared is not None:
+        # The first pass could prove only a command-binding change against the
+        # active runtime. Re-evaluate against the candidate interpreter; a
+        # component build is still allowed if its inventory differs.
+        prepared = component_prepare(adapter, target, python, deadline, force=force)
+        if prepared is not None and not _same_path(prepared[0], target):
+            generation, python, config = prepared
+            _h("build_host_package")(generation, adapter, sha, config_file=config)
+            return generation, python, config
+        config = prepared[2] if prepared is not None else _h("write_generation_configs")(
+            target, python, adapter)
+    else:
+        config = _h("write_generation_configs")(target, python, adapter)
+    _h("build_host_package")(target, adapter, sha, config_file=config)
+    (target / _h("COMPLETE")).write_text(f"{sha}\n")
+    try:
+        (target / _h("SOURCE")).unlink(missing_ok=True)
     except TimeoutError:
-        _h("_remove_owned_tree")(target)
+        raise
+    except OSError:
+        pass
+    return target, python, config
+
+
+def stage_generation(
+    sha: str, remote: str, adapter: dict, deadline: float,
+    build=None, release=None, force=False,
+) -> tuple[Path, Path, Path]:
+    build = build or _h("build_runtime")
+    target = _h("generations_dir")(adapter) / sha
+    launch_existed = (_h("launch_dir")(adapter) / sha).exists()
+    try:
+        if (target / _h("COMPLETE")).is_file():
+            reused = _reuse_complete(target, sha, adapter, release)
+            if reused is not None:
+                return reused
+        elif (target / _h("SOURCE")).is_file():
+            if release is not None:
+                _h("_verify_generation_release")(target, sha, release)
+        elif target.exists():
+            _h("_remove_owned_tree")(target)
+        if not target.exists():
+            _stage_checkout(sha, remote, adapter, deadline)
+            if release is not None:
+                _h("_verify_generation_release")(target, sha, release)
+            (target / _h("SOURCE")).write_text(f"{sha}\n")
+        return _finalize_target(sha, target, adapter, deadline, build, force)
+    except TimeoutError:
+        _discard_unpublished(sha, target, adapter, launch_existed)
         raise
     except Exception:
-        _h("_remove_owned_tree")(target)
+        _discard_unpublished(sha, target, adapter, launch_existed)
         raise
 
 

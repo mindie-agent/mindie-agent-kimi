@@ -664,6 +664,13 @@ def handle(surface, message):
 
 
 def serve(surface):
+    from native_mcp import lease_owning_runtime
+
+    with lease_owning_runtime():
+        return _serve(surface)
+
+
+def _serve(surface):
     stdin = sys.stdin.buffer
     while True:
         raw = stdin.readline()

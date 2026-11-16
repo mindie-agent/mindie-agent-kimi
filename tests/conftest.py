@@ -26,6 +26,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import site
+import tempfile
 
 import pytest
 
@@ -41,6 +42,10 @@ _ISOLATED_PATHS = {
     "KIMI_CODE_HOME": "kimi-home",
     "MINDIE_DIAGNOSTICS_ROOT": "diag-root",
     "MINDIE_DIAGNOSTICS_CONFIG": "diagnostics.json",
+    "TMPDIR": "tmp",
+    "TEMP": "tmp",
+    "TMP": "tmp",
+    "UV_CACHE_DIR": "uv-cache",
 }
 
 
@@ -52,8 +57,13 @@ def _isolate_host_environment(tmp_path, monkeypatch):
             value.mkdir(parents=True, exist_ok=True)
         monkeypatch.setenv(name, str(value))
     monkeypatch.setenv("PYTHONUSERBASE", _PYTHON_USER_BASE)
-    yield
-    _close_failure_recorders()
+    previous_tempdir = tempfile.tempdir
+    tempfile.tempdir = None
+    try:
+        yield
+    finally:
+        tempfile.tempdir = previous_tempdir
+        _close_failure_recorders()
 
 
 def _close_failure_recorders():

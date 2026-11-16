@@ -48,6 +48,7 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 import diagnostic_support
+import host_pin_refresh
 
 try:
     from bounded import CommandTimedOut, _scrub_reason_line, classify_transport_exception
@@ -467,6 +468,7 @@ def switch(
                     receipts_dir(adapter) / f"{sha}.json",
                     generation / "host-package",
                 )
+            host_pin_refresh.refresh_and_record(adapter, current, final, deadline)
             _clear_switch_ghosts(adapter)
         except TimeoutError:
             raise

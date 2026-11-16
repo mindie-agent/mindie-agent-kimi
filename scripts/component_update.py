@@ -185,6 +185,17 @@ def check(adapter, deadline, *, force, idle, install, lock_timeout):
         host.build_host_package(generation, adapter, current["sha"], config_file=config)
     host.switch(adapter, current, generation, python, config, current.get("sha"), deadline,
                 idle, install, lock_timeout, update_native=False)
+    from storage_gc import post_switch
+
+    try:
+        cleanup = post_switch(adapter, deadline)
+    except TimeoutError:
+        cleanup = {"status": "partial", "phase": "post-switch", "warnings": ["budget exhausted"]}
+    except Exception as exc:
+        cleanup = {"status": "deferred", "phase": "post-switch", "warnings": [type(exc).__name__]}
+    extra = {}
+    if cleanup.get("status") not in {"completed", "skipped"} or cleanup.get("warnings"):
+        extra["cleanup_warning"] = cleanup
     handoff = host.read_status(adapter).get("service_handoff") or {}
     status = handoff.get("status")
     if status in {"failed", "pending"}:
@@ -193,5 +204,6 @@ def check(adapter, deadline, *, force, idle, install, lock_timeout):
             generation=str(generation),
             python=str(python),
             service_handoff=handoff,
+            **extra,
         )
-    return dict(status="active", generation=str(generation), python=str(python))
+    return dict(status="active", generation=str(generation), python=str(python), **extra)
