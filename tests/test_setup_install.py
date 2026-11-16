@@ -12,6 +12,38 @@ from pathlib import Path
 from support import SCRIPTS, env_for
 
 
+def _teardown_sharing_worker(tmp: Path, env: dict) -> None:
+    subprocess.run(
+        [sys.executable, "-c", "from mindie_diagnostics.service import remove_service; remove_service()"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
+    )
+    if os.name != "nt":
+        return
+    for health_file in tmp.rglob("worker-health.json"):
+        try:
+            pid = int(json.loads(health_file.read_text(encoding="utf-8")).get("pid") or 0)
+        except (OSError, ValueError, TypeError):
+            pid = 0
+        if pid > 1 and pid != os.getpid():
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                capture_output=True,
+                timeout=10,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+    deadline = time.monotonic() + 3.0
+    for state_dir in list(tmp.rglob("diagnostics.state")):
+        while state_dir.exists() and time.monotonic() < deadline:
+            try:
+                shutil.rmtree(state_dir)
+            except PermissionError:
+                time.sleep(0.1)
+
+
 class SetupInstallTests(unittest.TestCase):
     def test_setup_stamps_kimi_bin_and_service_launch_context(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -172,50 +204,53 @@ class SetupInstallTests(unittest.TestCase):
             project.mkdir()
             env = env_for(extra={"MINDIE_DIAGNOSTICS_ROOT": str(tmp / "diag-root"),
                                  "MINDIE_DIAGNOSTICS_CONFIG": str(tmp / "diagnostics.json")})
-            first = subprocess.run(
-                [
-                    sys.executable,
-                    str(SCRIPTS / "setup.py"),
-                    "--knowledge-python",
-                    sys.executable,
-                    "--config",
-                    str(config),
-                    "--root",
-                    str(tmp / "data"),
-                    "--no-schedule",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=90,
-                env=env,
-            )
-            self.assertEqual(first.returncode, 0, first.stderr)
-            second = subprocess.run(
-                [
-                    sys.executable,
-                    str(SCRIPTS / "setup.py"),
-                    "--knowledge-python",
-                    sys.executable,
-                    "--config",
-                    str(config),
-                    "--root",
-                    str(tmp / "data"),
-                    "--community-repository",
-                    "owner/repo",
-                    "--community-project-root",
-                    str(project),
-                    "--community-visibility",
-                    "public",
-                    "--no-schedule",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=90,
-                env=env,
-            )
-            self.assertEqual(second.returncode, 0, second.stderr)
-            payload = json.loads(second.stdout)
-            self.assertEqual(payload["sharing"], "enabled")
+            try:
+                first = subprocess.run(
+                    [
+                        sys.executable,
+                        str(SCRIPTS / "setup.py"),
+                        "--knowledge-python",
+                        sys.executable,
+                        "--config",
+                        str(config),
+                        "--root",
+                        str(tmp / "data"),
+                        "--no-schedule",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=90,
+                    env=env,
+                )
+                self.assertEqual(first.returncode, 0, first.stderr)
+                second = subprocess.run(
+                    [
+                        sys.executable,
+                        str(SCRIPTS / "setup.py"),
+                        "--knowledge-python",
+                        sys.executable,
+                        "--config",
+                        str(config),
+                        "--root",
+                        str(tmp / "data"),
+                        "--community-repository",
+                        "owner/repo",
+                        "--community-project-root",
+                        str(project),
+                        "--community-visibility",
+                        "public",
+                        "--no-schedule",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=90,
+                    env=env,
+                )
+                self.assertEqual(second.returncode, 0, second.stderr)
+                payload = json.loads(second.stdout)
+                self.assertEqual(payload["sharing"], "enabled")
+            finally:
+                _teardown_sharing_worker(tmp, env)
 
     def test_unconfigured_with_runtime_stays_on_this_python(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -565,65 +600,68 @@ class SetupInstallTests(unittest.TestCase):
             project.mkdir()
             env = env_for(extra={"MINDIE_DIAGNOSTICS_ROOT": str(tmp / "diag-root"),
                                  "MINDIE_DIAGNOSTICS_CONFIG": str(tmp / "diagnostics.json")})
-            first = subprocess.run(
-                [
-                    sys.executable,
-                    str(SCRIPTS / "setup.py"),
-                    "--knowledge-python",
-                    sys.executable,
-                    "--config",
-                    str(config),
-                    "--root",
-                    str(tmp / "data"),
-                    "--no-schedule",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=90,
-                env=env,
-            )
-            self.assertEqual(first.returncode, 0, first.stderr)
-            sys.path.insert(0, str(SCRIPTS))
-            import genstate
+            try:
+                first = subprocess.run(
+                    [
+                        sys.executable,
+                        str(SCRIPTS / "setup.py"),
+                        "--knowledge-python",
+                        sys.executable,
+                        "--config",
+                        str(config),
+                        "--root",
+                        str(tmp / "data"),
+                        "--no-schedule",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=90,
+                    env=env,
+                )
+                self.assertEqual(first.returncode, 0, first.stderr)
+                sys.path.insert(0, str(SCRIPTS))
+                import genstate
 
-            adapter = json.loads(config.read_text())
-            generation = Path(genstate.read_current(adapter)["generation"])
-            launcher = genstate.launch_dir(adapter) / "bootstrap" / "mindie_launch.py"
-            gen_stat = (generation / "scripts" / "organizer.py").stat()
-            launch_bytes = launcher.read_bytes()
-            launch_stat = launcher.stat()
-            second = subprocess.run(
-                [
-                    sys.executable,
-                    str(SCRIPTS / "setup.py"),
-                    "--knowledge-python",
-                    sys.executable,
-                    "--config",
-                    str(config),
-                    "--root",
-                    str(tmp / "data"),
-                    "--community-repository",
-                    "owner/repo",
-                    "--community-project-root",
-                    str(project),
-                    "--community-visibility",
-                    "public",
-                    "--no-schedule",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=90,
-                env=env,
-            )
-            self.assertEqual(second.returncode, 0, second.stderr)
-            after_gen = (generation / "scripts" / "organizer.py").stat()
-            self.assertEqual(after_gen.st_mtime_ns, gen_stat.st_mtime_ns)
-            self.assertEqual(launcher.read_bytes(), launch_bytes)
-            self.assertEqual(launcher.stat().st_mtime_ns, launch_stat.st_mtime_ns)
-            self.assertEqual(
-                Path(genstate.read_current(adapter)["generation"]),
-                generation,
-            )
+                adapter = json.loads(config.read_text())
+                generation = Path(genstate.read_current(adapter)["generation"])
+                launcher = genstate.launch_dir(adapter) / "bootstrap" / "mindie_launch.py"
+                gen_stat = (generation / "scripts" / "organizer.py").stat()
+                launch_bytes = launcher.read_bytes()
+                launch_stat = launcher.stat()
+                second = subprocess.run(
+                    [
+                        sys.executable,
+                        str(SCRIPTS / "setup.py"),
+                        "--knowledge-python",
+                        sys.executable,
+                        "--config",
+                        str(config),
+                        "--root",
+                        str(tmp / "data"),
+                        "--community-repository",
+                        "owner/repo",
+                        "--community-project-root",
+                        str(project),
+                        "--community-visibility",
+                        "public",
+                        "--no-schedule",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=90,
+                    env=env,
+                )
+                self.assertEqual(second.returncode, 0, second.stderr)
+                after_gen = (generation / "scripts" / "organizer.py").stat()
+                self.assertEqual(after_gen.st_mtime_ns, gen_stat.st_mtime_ns)
+                self.assertEqual(launcher.read_bytes(), launch_bytes)
+                self.assertEqual(launcher.stat().st_mtime_ns, launch_stat.st_mtime_ns)
+                self.assertEqual(
+                    Path(genstate.read_current(adapter)["generation"]),
+                    generation,
+                )
+            finally:
+                _teardown_sharing_worker(tmp, env)
 
     def test_retained_bootstrap_deploys_the_c6_worker_helper(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -834,3 +872,4 @@ class SetupInstallTests(unittest.TestCase):
             self.assertNotEqual(bad_reenable.returncode, 0)
             consent_doc = json.loads(config.with_name("mindie-consent.json").read_text())
             self.assertEqual(consent_doc["choice"], "disabled")
+            _teardown_sharing_worker(tmp, env)

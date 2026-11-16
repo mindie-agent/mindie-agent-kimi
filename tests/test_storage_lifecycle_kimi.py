@@ -200,6 +200,7 @@ def test_legacy_sweep_reclaims_field_backlog_and_keeps_rollback_bootstrap_lease(
     assert all(not path.exists() for path in dead)
     assert fresh.is_dir()
 
+    is_lease_held(held)
     os.utime(held, (OLD, OLD))
     storage_gc.run(
         adapter, genstate.read_current(adapter), phase="test-2", budget_seconds=30,
