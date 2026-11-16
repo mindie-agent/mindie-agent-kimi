@@ -35,11 +35,15 @@ from support import SCRIPTS, make_config, write_json
 
 sys.path.insert(0, str(SCRIPTS))
 
+import component_update  # noqa: E402
 import genstate  # noqa: E402
 import host_pin_refresh  # noqa: E402
 import organizer  # noqa: E402
+import remote_state_guard  # noqa: E402
 import storage_gc  # noqa: E402
 import updater  # noqa: E402
+import updater_staging  # noqa: E402
+from mindie_knowledge.storage import is_lease_held  # noqa: E402
 
 OLD = time.time() - 7200
 SHA = "a" * 40
@@ -47,7 +51,7 @@ CORE_MODULES = (
     "entry.py", "updater.py", "mcp_server.py", "updater_check.py",
     "updater_staging.py", "component_update.py", "organizer.py",
     "native_mcp.py", "updater_schedule.py", "storage_gc.py",
-    "host_pin_refresh.py",
+    "host_pin_refresh.py", "remote_state_guard.py",
 )
 
 
@@ -242,7 +246,7 @@ def test_upgrade_with_current_python_skips_generation_venv_for_merged_runtime(tm
         calls.append(_kwargs)
         return merged, merged_python, config
 
-    def fake_build(generation, _deadline):
+    def fake_build(generation, _deadline, **_kwargs):
         built.append(generation)
         return Path(sys.executable)
 
@@ -265,7 +269,7 @@ def test_upgrade_without_merged_runtime_builds_one_generation_venv(tmp_path):
     config = tmp_path / "generation-config.json"
     config.write_text("{}\n")
 
-    def fake_build(generation, _deadline):
+    def fake_build(generation, _deadline, **_kwargs):
         built.append(generation)
         (generation / ".venv").mkdir()
         return Path(sys.executable)
@@ -288,7 +292,7 @@ def test_failed_staging_removes_orphan_launch_and_generation(tmp_path):
     config = tmp_path / "generation-config.json"
     config.write_text("{}\n")
 
-    def fake_build(generation, _deadline):
+    def fake_build(generation, _deadline, **_kwargs):
         return Path(sys.executable)
 
     def fail_host_package(generation, adapter_value, sha_value, config_file=None):
@@ -391,11 +395,30 @@ def test_component_switch_rebinds_host_pins_and_next_gc_reclaims_old_generation(
     assert json.loads(installed.read_text())["plugins"][0]["originalSource"] == str(
         current_gen / "host-package")
 
+    pins = host_pin_refresh.scheduled_pins(adapter)
+    assert str(old_python) in pins
+    assert old_launcher in pins
     filler = _generation(adapter, _sha(4), mtime=time.time())
     os.utime(stale_gen, (OLD, OLD))
     os.utime(update / "launch" / stale, (OLD, OLD))
     storage_gc.run(
         adapter, genstate.read_current(adapter), phase="test", budget_seconds=30,
+        force=True, data_home=str(tmp_path / "data"), temp_root=str(tmp_path / "tmp"),
+    )
+    # The replaced scheduler command is still loaded: both its interpreter's
+    # generation and its launcher stay protected until the pin ring rotates.
+    assert stale_gen.is_dir()
+    assert (update / "launch" / stale).is_dir()
+    assert current_gen.is_dir() and rollback_gen.is_dir() and filler.is_dir()
+
+    host_pin_refresh.remember_scheduled_pins(
+        adapter, [str(tmp_path / "newer-a"), str(tmp_path / "newer-b")])
+    assert host_pin_refresh.scheduled_pins(adapter) == [
+        str(tmp_path / "newer-a"), str(tmp_path / "newer-b")]
+    os.utime(stale_gen, (OLD, OLD))
+    os.utime(update / "launch" / stale, (OLD, OLD))
+    storage_gc.run(
+        adapter, genstate.read_current(adapter), phase="test-2", budget_seconds=30,
         force=True, data_home=str(tmp_path / "data"), temp_root=str(tmp_path / "tmp"),
     )
     assert not stale_gen.exists()
@@ -435,7 +458,7 @@ def test_binding_only_component_change_keeps_the_candidate_generation_venv(tmp_p
     config.write_text("{}\n")
     built = []
 
-    def fake_build(generation, _deadline):
+    def fake_build(generation, _deadline, **_kwargs):
         built.append(generation)
         return candidate_python
 
@@ -497,6 +520,308 @@ def test_committed_switch_rebinds_an_installed_plist(tmp_path):
         "--config", str(config_path), "updater", "check"]
 
 
+def _pin(name, revision):
+    repository = "mindie-agent/" + name.removeprefix("mindie-")
+    return f"{name} @ git+https://github.com/{repository}@{revision}\n"
+
+
+_KNOWLEDGE = "mindie-knowledge"
+
+
+def _knowledge_target(revision):
+    return {
+        "repository": "mindie-agent/knowledge",
+        "version": "0.14.0",
+        "revision": revision,
+    }
+
+
+def test_candidate_build_pins_the_installed_component_floor_in_one_pass(tmp_path):
+    adapter, bare, sha, _config = _upgrade_fixture(tmp_path)
+    target = genstate.generations_dir(adapter) / sha
+    (target / "runtime").mkdir(parents=True)
+    (target / "runtime-requirements.txt").write_text(_pin(_KNOWLEDGE, "a" * 40))
+    (target / "runtime" / "active-overrides.txt").write_text(_pin(_KNOWLEDGE, "a" * 40))
+    (target / updater_staging.SOURCE).write_text(sha + "\n")
+    config = tmp_path / "candidate-config.json"
+    config.write_text("{}\n")
+    builds = []
+
+    def build(generation, _deadline, *, component_overrides=None):
+        builds.append((generation, component_overrides))
+        (generation / ".venv").mkdir()
+        return Path(sys.executable)
+
+    installed = {_KNOWLEDGE: _knowledge_target("b" * 40)}
+    with patch("mindie_knowledge.component_runtime.read_inventory", return_value=installed), \
+            patch("component_update.prepare", return_value=None), \
+            patch.object(updater, "probe_runtime"), \
+            patch.object(updater, "write_generation_configs", return_value=config), \
+            patch.object(updater, "build_host_package"):
+        generation, python, adapter_config = updater.stage_generation(
+            sha, str(bare), adapter, time.monotonic() + 120, build=build)
+    assert generation == target
+    assert len(builds) == 1
+    assert builds[0][1] == {_KNOWLEDGE: "b" * 40}
+    assert python == Path(sys.executable)
+    assert adapter_config == config
+    assert (target / updater.COMPLETE).is_file()
+
+
+def test_candidate_overrides_only_return_a_differing_floor(tmp_path):
+    source = tmp_path / "source"
+    (source / "runtime").mkdir(parents=True)
+    (source / "runtime-requirements.txt").write_text(_pin(_KNOWLEDGE, "a" * 40))
+    (source / "runtime" / "active-overrides.txt").write_text(_pin(_KNOWLEDGE, "a" * 40))
+    installed = {_KNOWLEDGE: _knowledge_target("a" * 40)}
+    with patch("mindie_knowledge.component_runtime.read_inventory", return_value=installed):
+        assert component_update.candidate_overrides(source, sys.executable) is None
+    installed[_KNOWLEDGE] = _knowledge_target("b" * 40)
+    with patch("mindie_knowledge.component_runtime.read_inventory", return_value=installed):
+        assert component_update.candidate_overrides(source, sys.executable) == {
+            _KNOWLEDGE: "b" * 40}
+
+
+def test_candidate_runtime_build_installs_and_verifies_the_merged_floor(tmp_path):
+    generation = tmp_path / "generation"
+    generation.mkdir()
+    (generation / "runtime-requirements.txt").write_text(_pin(_KNOWLEDGE, "a" * 40))
+    seen = {}
+    calls = []
+
+    def run(argv, stdin="", **kwargs):
+        calls.append(list(argv))
+        if "venv" in argv:
+            venv = Path(argv[-1])
+            (venv / "bin").mkdir(parents=True)
+            (venv / "bin" / "python").write_text("")
+            return ""
+        if "install" in argv:
+            overlay = Path(argv[argv.index("--overrides") + 1])
+            seen["overlay"] = overlay.read_text()
+            seen["exists_during_install"] = overlay.is_file()
+        return ""
+
+    installed = {_KNOWLEDGE: _knowledge_target("b" * 40)}
+    with patch.object(updater.shutil, "which", return_value="/usr/bin/uv"), \
+            patch.object(updater, "bounded_run", side_effect=run), \
+            patch("mindie_knowledge.component_runtime.read_inventory",
+                  return_value=installed) as read:
+        python = updater.build_runtime(
+            generation, time.monotonic() + 120,
+            component_overrides={_KNOWLEDGE: "b" * 40})
+    install = next(argv for argv in calls if "install" in argv)
+    overlay_arg = Path(install[install.index("--overrides") + 1])
+    assert overlay_arg.name.startswith(".component-overrides-")
+    assert install[install.index("--overrides") + 1] == str(overlay_arg)
+    assert install.count("-r") == 2 and str(overlay_arg) in install
+    assert seen["exists_during_install"] is True
+    assert seen["overlay"] == _pin(_KNOWLEDGE, "b" * 40)
+    assert not overlay_arg.exists()
+    assert read.call_args.args[0] == python
+    assert python == generation / ".venv" / "bin" / "python"
+
+
+def test_scheduled_pin_ring_keeps_only_the_last_two_replaced_paths(tmp_path):
+    adapter = _adapter(tmp_path)
+    paths = [tmp_path / f"python-{index}" for index in range(4)]
+    for path in paths:
+        path.write_text("")
+    host_pin_refresh.remember_scheduled_pins(adapter, [str(paths[0])])
+    host_pin_refresh.remember_scheduled_pins(adapter, [str(paths[1]), "relative"])
+    host_pin_refresh.remember_scheduled_pins(adapter, [str(paths[2]), str(paths[3])])
+    assert host_pin_refresh.scheduled_pins(adapter) == [
+        str(paths[2]), str(paths[3])]
+    stored = json.loads(
+        (genstate.update_dir(adapter) / "scheduled-pins.json").read_text())
+    assert stored["schema"] == host_pin_refresh.SCHEDULED_PINS_SCHEMA
+    assert len(stored["pins"]) == 2
+
+
+def test_scheduled_pins_keep_replaced_generation_and_launcher(tmp_path):
+    adapter = _adapter(tmp_path)
+    update = genstate.update_dir(adapter)
+    old, new, rollback = _sha(10), _sha(11), _sha(12)
+    stale = _generation(adapter, old)
+    current = _generation(adapter, new)
+    previous = _generation(adapter, rollback)
+    _write_current(adapter, new, current, previous=(rollback, previous))
+    stale_python = stale / ".venv" / "bin" / "python"
+    stale_python.parent.mkdir(parents=True)
+    stale_python.write_text("")
+    stale_launcher = update / "launch" / old / "mindie_launch.py"
+    host_pin_refresh.remember_scheduled_pins(
+        adapter, [str(stale_python), str(stale_launcher)])
+    for path in (stale, update / "launch" / old, stale_launcher):
+        os.utime(path, (OLD, OLD))
+    storage_gc.run(
+        adapter, genstate.read_current(adapter), phase="test", budget_seconds=30,
+        force=True, data_home=str(tmp_path / "data"), temp_root=str(tmp_path / "tmp"),
+    )
+    assert stale.is_dir()
+    assert (update / "launch" / old).is_dir()
+    assert current.is_dir() and previous.is_dir()
+
+
+def test_storage_gc_holds_leases_and_keep_paths_for_scheduler_runtimes(tmp_path):
+    adapter = _adapter(tmp_path)
+    update = genstate.update_dir(adapter)
+    active_sha, rollback_sha, scheduled_sha = _sha(13), _sha(14), _sha(15)
+    active = _generation(adapter, active_sha)
+    rollback = _generation(adapter, rollback_sha)
+    scheduled = _generation(adapter, scheduled_sha)
+    _write_current(adapter, active_sha, active, previous=(rollback_sha, rollback))
+    scheduled_python = scheduled / ".venv" / "bin" / "python"
+    scheduled_python.parent.mkdir(parents=True)
+    scheduled_python.write_text("")
+    host_pin_refresh.remember_scheduled_pins(adapter, [str(scheduled_python)])
+    observed = {}
+
+    def legacy(**_kwargs):
+        observed["leases"] = {
+            name: is_lease_held(path) for name, path in (
+                ("active", active), ("rollback", rollback), ("scheduled", scheduled))
+        }
+        return {"status": "completed"}
+
+    def component(root, *, keep_paths, **_kwargs):
+        observed["keep"] = {str(path) for path in keep_paths}
+        observed["root"] = root
+        return {"status": "completed"}
+
+    with patch("mindie_knowledge.storage.sweep_legacy_installations", side_effect=legacy), \
+            patch("mindie_knowledge.storage.prune_component_runtimes", side_effect=component):
+        result = storage_gc.run(
+            adapter, genstate.read_current(adapter), phase="test", budget_seconds=30,
+            force=True, data_home=str(tmp_path / "data"), temp_root=str(tmp_path / "tmp"),
+        )
+    assert result["status"] == "completed"
+    assert observed["leases"] == {"active": True, "rollback": True, "scheduled": True}
+    assert str(scheduled) in observed["keep"]
+    assert str(update / "launch" / scheduled_sha) in observed["keep"]
+
+
+def _dead_pid():
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    process.wait(timeout=10)
+    return process.pid
+
+
+def _remote_session(root, name, records, *, files=None):
+    path = root / name
+    path.mkdir(parents=True)
+    (path / "pid").write_text(str(_dead_pid()) + "\n")
+    for filename, payload in records.items():
+        target = path / filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(payload if isinstance(payload, str) else json.dumps(payload))
+    for filename in files or ():
+        (path / filename).write_text("")
+    os.utime(path, (OLD, OLD))
+    return path
+
+
+def test_guarded_session_retention_defers_unresolved_remote_records(tmp_path):
+    root = tmp_path / "sessions"
+    root.mkdir()
+    running = _remote_session(root, "runtime-running", {
+        "job.json": {"schema_version": "remote-dev.job.v1", "state": "running"}})
+    pre_reply = _remote_session(root, "session-prereply", {
+        "job.json": {"schema_version": "remote-dev.job.v1",
+                     "authorization": {"token": "tok", "job_id": "job-1"}}})
+    uncertain = _remote_session(root, "gate-v1-uncertain", {
+        "result.json": {"state": "succeeded", "submission_state": "uncertain"}})
+    submitting = _remote_session(root, "runtime-submitting", {
+        "result.json": {"state": "succeeded", "submission_state": "submitting"}})
+    terminal = _remote_session(root, "session-terminal", {
+        "job.json": {"schema_version": "remote-dev.job.v1", "state": "succeeded"}})
+    acknowledged = _remote_session(root, "gate-v1-acknowledged", {
+        "result.json": {"state": "failed", "submission_state": "acknowledged"}})
+
+    report = remote_state_guard.guarded_session_retention(
+        root, now=time.time(), max_age_seconds=60)
+    assert report["status"] == "partial"
+    assert set(report["removed"]) == {terminal.name, acknowledged.name}
+    for path in (running, pre_reply, uncertain, submitting):
+        assert path.is_dir()
+    assert report["skipped"]["non_terminal_state"] == 1
+    assert report["skipped"]["pre_reply_job"] == 1
+    assert report["skipped"]["unresolved_submission"] == 2
+
+
+def test_unresolved_state_defers_incomplete_oversized_and_invalid_records(tmp_path):
+    crowded = tmp_path / "crowded"
+    crowded.mkdir()
+    for index in range(401):
+        (crowded / f"entry-{index}.txt").write_text("")
+    assert remote_state_guard.unresolved_state(crowded)["reason"] == "incomplete_walk"
+
+    oversized = tmp_path / "oversized"
+    oversized.mkdir()
+    (oversized / "job.json").write_text("x" * (512 * 1024 + 1))
+    assert remote_state_guard.unresolved_state(oversized)["reason"] == "oversized_record"
+
+    invalid = tmp_path / "invalid"
+    invalid.mkdir()
+    (invalid / "job.jsonl").write_text('{"state": "succeeded"}\n{not json\n')
+    assert remote_state_guard.unresolved_state(invalid)["reason"] == "invalid_record"
+
+    null_job = tmp_path / "null-job"
+    null_job.mkdir()
+    (null_job / "job.json").write_text(
+        '{"schema_version": "remote-dev.job.v1", "state": null}')
+    assert remote_state_guard.unresolved_state(null_job)["reason"] == "pre_reply_job"
+
+    assert remote_state_guard.unresolved_state(
+        tmp_path / "absent")["reason"] == "unreadable_directory"
+    assert remote_state_guard.unresolved_state(tmp_path / "invalid")["unresolved"] is True
+
+
+def test_guarded_endpoint_retention_skips_an_unresolved_submission(tmp_path):
+    endpoint = tmp_path / "endpoint"
+    (endpoint / "jobs").mkdir(parents=True)
+    record = endpoint / "jobs" / "job-abc.json"
+    record.write_text(json.dumps({
+        "schema_version": "remote-dev.job.v1",
+        "state": "succeeded",
+        "submission_state": "uncertain",
+    }))
+    outcome = remote_state_guard.guarded_endpoint_retention(endpoint)
+    assert outcome["status"] == "deferred"
+    assert record.is_file()
+    assert remote_state_guard.has_unresolved_state(endpoint) is True
+
+
+def test_storage_gc_remote_phase_defers_unresolved_session_and_endpoint_state(tmp_path):
+    adapter = _adapter(tmp_path)
+    current_sha = _sha(20)
+    current = _generation(adapter, current_sha)
+    _write_current(adapter, current_sha, current)
+    session = Path(adapter["state_dir"]) / "remote" / "session-a"
+    unresolved = _remote_session(session, "runtime-live", {
+        "job.json": {"schema_version": "remote-dev.job.v1", "state": "unknown"}})
+    terminal = _remote_session(session, "runtime-done", {
+        "job.json": {"schema_version": "remote-dev.job.v1", "state": "succeeded"}})
+    expired = time.time() - 3 * 24 * 60 * 60
+    for path in (unresolved, terminal):
+        os.utime(path, (expired, expired))
+    endpoint = session / "endpoints" / "id-a"
+    (endpoint / "jobs").mkdir(parents=True)
+    endpoint_job = endpoint / "jobs" / "job-a.json"
+    endpoint_job.write_text(json.dumps({
+        "schema_version": "remote-dev.job.v1", "state": "running"}))
+
+    result = storage_gc.run(
+        adapter, genstate.read_current(adapter), phase="test", budget_seconds=30,
+        force=True, data_home=str(tmp_path / "data"), temp_root=str(tmp_path / "tmp"),
+    )
+    assert unresolved.is_dir()
+    assert not terminal.exists()
+    assert endpoint_job.is_file()
+    assert result["reports"]["remote"]["deferred_dirs"] >= 1
+    assert result["status"] == "partial"
+
+
 def test_core_modules_stay_below_eight_hundred_lines():
     for name in CORE_MODULES:
         path = SCRIPTS / name
@@ -505,7 +830,7 @@ def test_core_modules_stay_below_eight_hundred_lines():
 
 
 def test_new_lifecycle_modules_declare_contract_header():
-    for name in ("storage_gc.py", "host_pin_refresh.py"):
+    for name in ("storage_gc.py", "host_pin_refresh.py", "remote_state_guard.py"):
         head = "\n".join((SCRIPTS / name).read_text(encoding="utf-8").splitlines()[:30])
         for marker in ("[Role]", "[Invariants]", "[Timeouts & Locks]",
                        "[Side-Effect Policy]"):

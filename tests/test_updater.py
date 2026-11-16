@@ -120,7 +120,7 @@ def make_remote(tmp: Path):
     return src, bare, sha
 
 
-def fake_build(generation: Path, deadline: float) -> Path:
+def fake_build(generation: Path, deadline: float, **_kwargs) -> Path:
     # Only dependency installation is replaced. Probe, idle handshake,
     # manifest and transaction paths still execute the real pinned runtime.
     return Path(sys.executable)

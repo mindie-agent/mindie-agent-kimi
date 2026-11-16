@@ -109,12 +109,16 @@ def _step_timeout(deadline, cap, reserve):
     return min(cap, left)
 
 
-def prepare(adapter, source, python, deadline, *, force=False):
+def _resolve(adapter, source, python, deadline, *, force=False):
+    """Read the candidate floor and this interpreter's installed inventory."""
     import updater_check
+
     host = updater_check._HOST
+    if host is None:
+        import updater as host
     import mindie_knowledge.component_runtime as component_runtime
-    from mindie_knowledge.component_bindings import required_components, rebind_commands
-    from mindie_knowledge.component_runtime import build, source_baseline
+    from mindie_knowledge.component_bindings import required_components
+    from mindie_knowledge.component_runtime import source_baseline
     from mindie_knowledge.component_releases import Catalog
     from paths import profile_config_path
     current = host.read_current(adapter)
@@ -123,7 +127,10 @@ def prepare(adapter, source, python, deadline, *, force=False):
                if adapter.get("profile_config") or profile_path.is_file() else adapter)
     if not isinstance(profile, dict):
         raise ValueError("Kimi profile configuration must be one object")
-    baseline = source_baseline(source, active_overrides=True)
+    baseline = source_baseline(
+        source,
+        active_overrides=(Path(source) / "runtime" / "active-overrides.txt").is_file(),
+    )
     required = {
         name: version
         for name, version in required_components(profile).items()
@@ -153,15 +160,68 @@ def prepare(adapter, source, python, deadline, *, force=False):
                 }
                 retired_state["removed"] = True
                 break
+    return dict(profile=profile, baseline=baseline, selected=selected,
+                installed=installed, retired=retired_state["removed"])
+
+
+def resolve_targets(adapter, source, python, deadline, *, force=False):
+    """Return the merged component identities a candidate runtime must retain.
+
+    Unlike `prepare`, this never reduces the answer to "the given interpreter
+    already matches": it is the candidate floor (`max(installed inventory,
+    declared active-overrides, remote formal releases)`). A caller building a
+    fresh candidate venv uses it to pin the merged floor in one pass.
+    """
+    return dict(_resolve(adapter, source, python, deadline, force=force)["selected"]["runtime"])
+
+
+def candidate_overrides(source, python, *, timeout=15):
+    """Return the installed floor a fresh candidate venv must not downgrade.
+
+    Call only after `prepare` proved this interpreter needs no component build:
+    that proves the candidate's static pins are not newer than what is already
+    installed, so the installed revisions are safe to prefer. Returns
+    `{name: revision}` only when the candidate's `active-overrides.txt` alone
+    would build a different floor; `None` means the static pins are exact.
+    """
+    from mindie_knowledge.component_runtime import read_inventory, source_baseline
+
+    baseline = source_baseline(
+        source,
+        active_overrides=(Path(source) / "runtime" / "active-overrides.txt").is_file(),
+    )["runtime"]
+    installed = {
+        name: row["revision"]
+        for name, row in read_inventory(python, timeout=timeout).items()
+    }
+    merged = dict(baseline)
+    merged.update(installed)
+    return merged if merged != baseline else None
+
+
+def prepare(adapter, source, python, deadline, *, force=False):
+    import updater_check
+
+    host = updater_check._HOST
+    if host is None:
+        import updater as host
+    from mindie_knowledge.component_bindings import rebind_commands
+    from mindie_knowledge.component_runtime import build
+
+    resolved = _resolve(adapter, source, python, deadline, force=force)
+    profile = resolved["profile"]
+    selected = resolved["selected"]
+    installed = resolved["installed"]
     needs_binding = bool(profile.get("component_commands")) and (
         rebind_commands(profile, python, selected["runtime"]) != profile["component_commands"])
-    needs_build = installed != selected["runtime"] or retired_state["removed"]
+    needs_build = installed != selected["runtime"] or resolved["retired"]
     # Older controllers can stage only the bootstrap trio. Declared source
     # pins are a required floor, not proof of this interpreter's contents.
     if not needs_build and not needs_binding:
         return None
     generation, python = Path(source), Path(python)
     if needs_build:
+        baseline = resolved["baseline"]
         artifact = build(source, host.update_dir(adapter) / "component-runtimes", baseline,
                          selected["runtime"], python=python,
                          timeout=_step_timeout(deadline, 420, host.RESERVE))

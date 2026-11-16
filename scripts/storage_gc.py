@@ -3,39 +3,52 @@
 
 [Role]
 Runs the updater's pre-build and post-switch storage maintenance: the shared
-cross-harness legacy sweep, component-runtime pruning, and reclamation of
-abandoned `mindie-kimi-summary-*` scratch profiles under the host temp root.
+cross-harness legacy sweep, component-runtime pruning, guarded remote
+session/endpoint retention, and reclamation of abandoned
+`mindie-kimi-summary-*` scratch profiles under the host temp root.
 
 [Invariants]
 - The shared storage layer is the only deletion authority; this module only
-  supplies the current/rollback/bootstrap keep pins and aggregates its report.
-- A live interpreter, lease, host wrapper or external plist keeps its
-  generation. Unverified or incomplete process inspection only preserves more.
+  supplies current/rollback/bootstrap/scheduler keep pins and aggregates data.
+- A live interpreter, lease, host wrapper or replaced scheduler path keeps its
+  generation. Unverified or unresolved state only preserves more.
 - Cleanup never changes the committed update result; every failure is returned
   as data for the caller's `cleanup_warning`, never raised as a stage fault.
 
 [Timeouts & Locks]
-- One absolute monotonic deadline bounds each phase. The sweep acquires no
-  caller lock; shared storage returns deferred entries instead of waiting.
+- One absolute monotonic deadline bounds each phase. Keep-path leases are held
+  in one `ExitStack` for the whole sweep; no caller lock is acquired.
 
 [Side-Effect Policy]
-- Deletes only shared-storage classified disposable directories and abandoned
-  legacy summary scratch roots. No config, host registration or current pointer
-  is written here.
+- Deletes only shared-retention-classified directories and abandoned legacy
+  summary scratch roots. No config, host registration or current pointer is
+  written here; endpoint pruning writes only its own cooldown marker.
 """
 
 from __future__ import annotations
 
+import os
 import stat
 import tempfile
 import time
+from contextlib import ExitStack
 from pathlib import Path
+
+from remote_state_guard import (
+    MAX_ENDPOINT_ROOTS,
+    MAX_SESSION_ROOTS,
+    guarded_endpoint_retention,
+    guarded_session_retention,
+    has_unresolved_state,
+    unresolved_state,
+)
 
 SCHEMA = "mindie-kimi-storage-gc/1"
 PRE_BUILD_CEILING = 5.0
 POST_SWITCH_CEILING = 8.0
 SUMMARY_GRACE_SECONDS = 3600.0
 LEGACY_SUMMARY_PREFIX = "mindie-kimi-summary-"
+REMOTE_CEILING = 2.0
 _MAX_WARNINGS = 8
 
 
@@ -69,30 +82,43 @@ def _read_receipt_previous(adapter, current):
 
 
 def keep_paths(adapter, current):
-    """Union the active generation, rollback receipt, bootstrap and runtime."""
+    """Union the active, rollback, bootstrap and replaced scheduler runtimes."""
     from genstate import launch_dir, update_dir
 
+    storage = _storage()
     keep = []
 
     def add(value):
         if isinstance(value, str) and value:
             keep.append(Path(value))
 
+    def add_reference(value):
+        add(value)
+        if not (isinstance(value, str) and value):
+            return
+        owner = storage.owning_dir(value)
+        if owner is None:
+            return
+        add(str(owner))
+        if owner.parent.name == "generations":
+            add(str(owner.parent.parent / "launch" / owner.name))
+        elif owner.parent.name == "launch":
+            add(str(owner.parent.parent / "generations" / owner.name))
+
     if isinstance(current, dict):
-        add(current.get("generation"))
-        add(current.get("adapter_config"))
-        add(current.get("python"))
-        owner = _storage().owning_dir(str(current.get("python") or ""))
-        if owner is not None:
-            add(str(owner))
+        add_reference(current.get("generation"))
+        add_reference(current.get("adapter_config"))
+        add_reference(current.get("python"))
         sha = current.get("sha")
         if isinstance(sha, str) and sha:
             add(str(launch_dir(adapter) / sha))
         previous = _read_receipt_previous(adapter, current)
         if previous is not None:
-            add(previous.get("generation"))
-            add(previous.get("adapter_config"))
-            add(previous.get("python"))
+            add_reference(previous.get("generation"))
+            add_reference(previous.get("adapter_config"))
+            add_reference(previous.get("python"))
+    for pin in _scheduled_pins(adapter):
+        add_reference(pin)
     state = update_dir(adapter).parent
     for name in ("bootstrap-venv", "bootstrap-package"):
         candidate = state / name
@@ -100,6 +126,46 @@ def keep_paths(adapter, current):
             keep.append(candidate)
     keep.append(update_dir(adapter) / "launch" / "bootstrap")
     return keep
+
+
+def _scheduled_pins(adapter):
+    try:
+        from host_pin_refresh import scheduled_pins
+
+        return scheduled_pins(adapter)
+    except TimeoutError:
+        raise
+    except Exception:
+        return []
+
+
+def _leased_directories(adapter, current):
+    """Existing keep-path directories protected for the whole sweep.
+
+    An external Git source checkout is already protected by the legacy sweep's
+    ancestor rule; leasing it would create a lock file in the user's working
+    tree. Only generated trees under `update/` may be leased there.
+    """
+    from genstate import update_dir
+
+    owned = update_dir(adapter)
+    directories, seen = [], set()
+    for path in keep_paths(adapter, current):
+        key = os.path.normcase(os.path.abspath(str(path)))
+        if key in seen:
+            continue
+        try:
+            if not path.is_dir():
+                continue
+            if (path / ".git").exists() and not path.is_relative_to(owned):
+                continue
+            seen.add(key)
+            directories.append(path)
+        except TimeoutError:
+            raise
+        except OSError:
+            continue
+    return directories
 
 
 def _merge(result, report, label):
@@ -207,6 +273,71 @@ def _sweep_legacy_summary(temp_root, deadline):
     return report
 
 
+def reclaim_remote_state(adapter, deadline):
+    """Guard and reclaim abandoned remote session/endpoint state.
+
+    The adapter keeps each Kimi session's `remote-dev` state under
+    `<state_dir>/remote/<session>`. Session runtime trees are only reclaimed
+    after the shared retention dry run and a bounded record scan prove every
+    persisted outcome is terminal; endpoint pruning is skipped entirely when
+    any record inside is unresolved.
+    """
+    from genstate import update_dir
+
+    root = update_dir(adapter).parent / "remote"
+    report = {"status": "absent", "root": str(root), "reclaimed_dirs": 0,
+              "deferred_dirs": 0, "scanned_sessions": 0, "scanned_endpoints": 0,
+              "warnings": [], "reports": {}}
+    try:
+        sessions = [entry for entry in root.iterdir()
+                    if entry.is_dir() and not entry.is_symlink()]
+    except TimeoutError:
+        raise
+    except OSError:
+        return report
+    report["status"] = "completed"
+    for session in sorted(sessions)[:MAX_SESSION_ROOTS]:
+        if time.monotonic() >= deadline:
+            report["status"] = "partial"
+            report["warnings"].append("remote sweep budget exhausted")
+            break
+        report["scanned_sessions"] += 1
+        endpoints = session / "endpoints"
+        try:
+            endpoint_dirs = [entry for entry in endpoints.iterdir()
+                             if entry.is_dir() and not entry.is_symlink()]
+        except TimeoutError:
+            raise
+        except OSError:
+            endpoint_dirs = []
+        for endpoint in sorted(endpoint_dirs)[:MAX_ENDPOINT_ROOTS]:
+            if time.monotonic() >= deadline:
+                break
+            report["scanned_endpoints"] += 1
+            outcome = guarded_endpoint_retention(
+                endpoint, force=True, deadline=min(deadline, time.monotonic() + 1.0))
+            report["reports"][f"endpoint:{endpoint.name[:64]}"] = {
+                "status": outcome.get("status"),
+                **({"reason": outcome.get("reason")} if outcome.get("reason") else {}),
+            }
+        outcome = guarded_session_retention(
+            session, deadline=min(deadline, time.monotonic() + 1.5))
+        report["reclaimed_dirs"] += len(outcome.get("removed") or [])
+        report["deferred_dirs"] += len(outcome.get("deferred") or [])
+        if outcome.get("status") not in (None, "completed", "absent"):
+            report["status"] = "partial"
+        for warning in (outcome.get("errors") or [])[:2]:
+            report["warnings"].append(str(warning)[:160])
+        report["reports"][f"session:{session.name[:64]}"] = {
+            key: outcome.get(key)
+            for key in ("status", "scanned", "skipped")
+            if key in outcome
+        }
+    if report["warnings"]:
+        report["status"] = "partial"
+    return report
+
+
 def run(adapter, current, *, phase, budget_seconds=POST_SWITCH_CEILING,
         deadline=None, force=False, config_home=None, data_home=None,
         codex_home=None, temp_root=None):
@@ -220,49 +351,69 @@ def run(adapter, current, *, phase, budget_seconds=POST_SWITCH_CEILING,
         "reclaimed_files": 0, "warnings": [], "reports": {},
     }
     storage = _storage()
-    if time.monotonic() < limit:
-        kwargs = {"budget_seconds": max(0.1, limit - time.monotonic()),
-                  "force": bool(force), "deadline": limit}
-        if config_home is not None:
-            kwargs["config_home"] = config_home
-        if data_home is not None:
-            kwargs["data_home"] = data_home
-        if codex_home is not None:
-            kwargs["codex_home"] = codex_home
-        try:
-            _merge(result, storage.sweep_legacy_installations(**kwargs), "legacy")
-        except TimeoutError:
+    with ExitStack() as leases:
+        leased = True
+        for directory in _leased_directories(adapter, current):
+            try:
+                leases.enter_context(storage.acquire_runtime_lease(directory))
+            except TimeoutError:
+                raise
+            except (OSError, RuntimeError):
+                leased = False
+                result["warnings"].append("lease: " + directory.name[:32])
+        if leased and time.monotonic() < limit:
+            kwargs = {"budget_seconds": max(0.1, limit - time.monotonic()),
+                      "force": bool(force), "deadline": limit}
+            if config_home is not None:
+                kwargs["config_home"] = config_home
+            if data_home is not None:
+                kwargs["data_home"] = data_home
+            if codex_home is not None:
+                kwargs["codex_home"] = codex_home
+            try:
+                _merge(result, storage.sweep_legacy_installations(**kwargs), "legacy")
+            except TimeoutError:
+                result["status"] = "partial"
+                result["warnings"].append("legacy sweep budget exhausted")
+            except Exception as exc:
+                result["warnings"].append("legacy sweep: " + type(exc).__name__)
+        elif leased:
             result["status"] = "partial"
-            result["warnings"].append("legacy sweep budget exhausted")
-        except Exception as exc:
-            result["warnings"].append("legacy sweep: " + type(exc).__name__)
-    else:
-        result["status"] = "partial"
-        result["warnings"].append("budget exhausted")
+            result["warnings"].append("budget exhausted")
 
-    component_root = _component_root(adapter)
-    if time.monotonic() < limit:
-        try:
-            _merge(result, storage.prune_component_runtimes(
-                component_root,
-                keep_paths=keep_paths(adapter, current),
-                budget_seconds=max(0.1, limit - time.monotonic()),
-                deadline=limit,
-            ), "components")
-        except TimeoutError:
-            result["status"] = "partial"
-            result["warnings"].append("component prune budget exhausted")
-        except Exception as exc:
-            result["warnings"].append("component prune: " + type(exc).__name__)
+        component_root = _component_root(adapter)
+        if leased and time.monotonic() < limit:
+            try:
+                _merge(result, storage.prune_component_runtimes(
+                    component_root,
+                    keep_paths=keep_paths(adapter, current),
+                    budget_seconds=max(0.1, limit - time.monotonic()),
+                    deadline=limit,
+                ), "components")
+            except TimeoutError:
+                result["status"] = "partial"
+                result["warnings"].append("component prune budget exhausted")
+            except Exception as exc:
+                result["warnings"].append("component prune: " + type(exc).__name__)
 
-    if time.monotonic() < limit:
-        try:
-            _merge(result, _sweep_legacy_summary(temp_root, limit), "summary")
-        except TimeoutError:
-            result["status"] = "partial"
-            result["warnings"].append("summary scratch budget exhausted")
-        except Exception as exc:
-            result["warnings"].append("summary scratch: " + type(exc).__name__)
+        if time.monotonic() < limit:
+            try:
+                _merge(result, _sweep_legacy_summary(temp_root, limit), "summary")
+            except TimeoutError:
+                result["status"] = "partial"
+                result["warnings"].append("summary scratch budget exhausted")
+            except Exception as exc:
+                result["warnings"].append("summary scratch: " + type(exc).__name__)
+
+        if time.monotonic() < limit:
+            try:
+                _merge(result, reclaim_remote_state(
+                    adapter, min(limit, time.monotonic() + REMOTE_CEILING)), "remote")
+            except TimeoutError:
+                result["status"] = "partial"
+                result["warnings"].append("remote state budget exhausted")
+            except Exception as exc:
+                result["warnings"].append("remote state: " + type(exc).__name__)
 
     if result["warnings"]:
         result["status"] = "partial"

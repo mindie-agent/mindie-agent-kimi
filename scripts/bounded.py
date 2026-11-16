@@ -62,6 +62,7 @@ class CommandCancelled(RuntimeError):
     """The caller cancelled this attempt; owned children are reaped."""
 
     category = "cancelled"
+    reason_code = "child_process_cancelled"
 
 
 class CommandTimedOut(RuntimeError):
@@ -260,6 +261,10 @@ _AUTH_PHRASES = (
 )
 _RATE_PHRASES = ("rate limit", "too many requests", "secondary rate limit")
 _HOOK_PHRASES = ("hook trust", "requires native trust", "changed hooks require")
+_PREREQUISITE_PHRASES = (
+    "no space left on device", "disk quota exceeded", "read-only file system",
+    "too many open files", "file system is full", "not enough space",
+)
 _CONNECT_PHRASES = (
     "could not resolve host", "temporary failure in name resolution", "name or service not known",
     "nodename nor servname", "temporary failure resolving", "network is unreachable",
@@ -364,6 +369,8 @@ def classify_transport_text(text):
         return ("permission", None)
     if _has_phrase(lower, _HOOK_PHRASES):
         return ("hook_trust", None)
+    if _has_phrase(lower, _PREREQUISITE_PHRASES):
+        return ("prerequisite", None)
     if (codes & {500, 502, 503, 504}) or _has_phrase(lower, _CONNECT_PHRASES):
         return ("temporary_network", retry_after)
     if _has_phrase(lower, _GENERIC_CONTENT_PHRASES):
@@ -423,6 +430,12 @@ def _failed_result(exc, output, errors, returncode):
     exc.mindie_output = bytes(output).decode("utf-8", "replace")
     exc.mindie_stderr = bytes(errors).decode("utf-8", "replace")
     exc.returncode = returncode
+    if not getattr(exc, "reason_code", None):
+        exc.reason_code = (
+            "child_process_timed_out"
+            if isinstance(exc, (TimeoutError, subprocess.TimeoutExpired))
+            else "child_process_failed"
+        )
     if (reason := _failure_reason(errors)) is not None:
         exc.reason = reason
     return exc
@@ -684,7 +697,8 @@ def run(
             if transport and category is None:
                 category = "temporary_network"
             error = CommandTimedOut(message, category=category, retry_after=retry_after)
-            for name in ("mindie_output", "mindie_stderr", "returncode", "reason", "cleanup_error"):
+            for name in ("mindie_output", "mindie_stderr", "returncode", "reason",
+                         "reason_code", "cleanup_error"):
                 if hasattr(exc, name):
                     setattr(error, name, getattr(exc, name))
             raise error from exc

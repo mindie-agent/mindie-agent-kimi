@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import errno
 import io
 import json
 import os
@@ -219,7 +220,7 @@ def create_venv(venv: Path, *, timeout) -> None:
     if uv is None:
         raise RuntimeError("uv is required to prepare the MindIE runtime")
     run([uv, "venv", "--python", sys.executable, str(venv)], "",
-        timeout=timeout, env=installer_environment())
+        timeout=timeout, env=installer_environment(), transport=True)
 
 
 def build_bootstrap_runtime(domain_root: Path) -> str:
@@ -237,6 +238,7 @@ def build_bootstrap_runtime(domain_root: Path) -> str:
          "-r", str(overrides),
          "--overrides", str(overrides)],
         "", timeout=600, max_output=512 * 1024, env=installer_environment(),
+        transport=True,
     )
     return str(python)
 
@@ -270,6 +272,30 @@ def _resolve_sharing_python(config: Path, knowledge_python: str | None) -> str |
     if importlib.util.find_spec("mindie_knowledge") is not None:
         return sys.executable
     return None
+
+
+_NON_PRODUCT_CATEGORIES = frozenset({
+    "temporary_network", "rate_limited", "deadline", "resolver", "busy",
+    "deferred", "prerequisite", "permission", "authentication", "certificate",
+    "hook_trust", "cancelled",
+})
+_LOCAL_ERRNOS = frozenset({errno.ENOSPC, errno.EROFS, errno.EMFILE, errno.ENFILE})
+
+
+def _failure_payload(exc):
+    """Preserve the observed stage/category/reason across the child boundary."""
+    category = getattr(exc, "category", None)
+    if (category in _NON_PRODUCT_CATEGORIES or isinstance(exc, (PermissionError, TimeoutError))
+            or (isinstance(exc, OSError) and exc.errno in _LOCAL_ERRNOS)):
+        category = "prerequisite"
+    elif not isinstance(category, str) or not category:
+        category = type(exc).__name__
+    stage = getattr(exc, "stage", None)
+    return json.dumps({
+        "stage": stage if isinstance(stage, str) and stage else "setup",
+        "category": category,
+        "reason_code": getattr(exc, "reason_code", None),
+    }, separators=(",", ":"))
 
 
 def main(argv: list[str] | None = None):
@@ -463,7 +489,8 @@ def main(argv: list[str] | None = None):
 
         try:
             receipt = run([python, str(PLUGIN_ROOT / "scripts" / "diagnostic_support.py"),
-                           "--config", str(config), "--record-setup-failure", type(exc).__name__],
+                           "--config", str(config),
+                           "--record-setup-failure", _failure_payload(exc)],
                           "", timeout=5)
             print("MindIE setup diagnostic: " + receipt.strip(), file=sys.stderr)
         except TimeoutError:

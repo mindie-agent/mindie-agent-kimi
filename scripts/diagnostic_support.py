@@ -38,6 +38,9 @@ REPOSITORY = "mindie-agent/mindie-agent"
 _STORAGE = "MindIE diagnostic storage unavailable; original outcome unchanged."
 _warned = False
 _VERSION_RE = re.compile(r"[0-9A-Za-z][0-9A-Za-z.+-]{0,79}")
+_LOCAL_CATEGORIES = frozenset({"resolver", "busy", "deferred", "prerequisite"})
+_LOCAL_EXCEPTION_NAMES = frozenset({"LockTimeout", "Deferred"})
+_LOCAL_ERRNOS = frozenset({errno.ENOSPC, errno.EROFS, errno.EMFILE, errno.ENFILE})
 
 
 def _hex(value, length):
@@ -231,6 +234,29 @@ def _chain_inner_diagnostic(exc):
     return None
 
 
+def local_failure_category(exception):
+    """Return `prerequisite` for local/operational failures, else `None`."""
+    seen: set[int] = set()
+    pending = [exception]
+    while pending and len(seen) < 16:
+        current = pending.pop(0)
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        if (getattr(current, "category", None) in _LOCAL_CATEGORIES
+                or type(current).__name__ in _LOCAL_EXCEPTION_NAMES
+                or isinstance(current, PermissionError)
+                or (isinstance(current, OSError) and current.errno in _LOCAL_ERRNOS)):
+            return "prerequisite"
+        if (cause := getattr(current, "__cause__", None)) is not None:
+            pending.append(cause)
+        if not getattr(current, "__suppress_context__", False):
+            context = getattr(current, "__context__", None)
+            if context is not None:
+                pending.append(context)
+    return None
+
+
 def failure(operation, stage, category, *, exception=None, revision=None,
             elapsed_ms=None, exit_code=None, reportable=True, incident_id=None,
             reason_code=None, substage=None):
@@ -238,10 +264,19 @@ def failure(operation, stage, category, *, exception=None, revision=None,
         return {"incident_id": trusted, "logging_failed": False}
     if (inner := _chain_inner_diagnostic(exception)) is not None:
         return inner
+    if isinstance(exception, BaseException):
+        declared_stage = getattr(exception, "stage", None)
+        if isinstance(declared_stage, str) and 0 < len(declared_stage) <= 120:
+            stage = declared_stage
+    local = local_failure_category(exception)
+    if local is not None or category in _LOCAL_CATEGORIES:
+        category, reportable = "prerequisite", False
     child_build = _project_build(getattr(exception, "mindie_failure_build", None))
     build = child_build or build_metadata()
     explicit = _hex(revision, 40)
     eff_reason = reason_code if reason_code is not None else getattr(exception, "reason_code", None)
+    if category == "prerequisite" and eff_reason is None:
+        eff_reason = "update_prerequisite_unavailable"
     eff_substage = substage if substage is not None else getattr(exception, "substage", None)
     try:
         raw = _invoke_record(
@@ -743,7 +778,14 @@ def main():
     args = parser.parse_args()
     os.environ["MINDIE_KIMI_CONFIG"] = args.config
     if args.record_setup_failure:
-        print(json.dumps(failure("setup", "setup", args.record_setup_failure)))
+        try:
+            payload = json.loads(args.record_setup_failure)
+        except ValueError:
+            payload = {"category": args.record_setup_failure}
+        print(json.dumps(failure(
+            "setup", payload.get("stage") or "setup",
+            payload.get("category") or "RuntimeError",
+            reason_code=payload.get("reason_code"))))
         return
     if args.choice:
         from consent import record_choice

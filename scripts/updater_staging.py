@@ -34,6 +34,7 @@ import shlex
 import shutil
 import stat
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -91,7 +92,64 @@ def _venv_python(venv: Path) -> Path:
     return venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
 
-def build_runtime(generation: Path, deadline: float) -> Path:
+def _stage_failure(exc, stage):
+    """Preserve the precise subprocess stage/reason on a propagated failure."""
+    try:
+        if not getattr(exc, "stage", None):
+            exc.stage = stage
+        if not getattr(exc, "reason_code", None):
+            exc.reason_code = stage + "_failed"
+    except (AttributeError, TypeError):
+        pass
+    return exc
+
+
+def _stage_call(stage, function, *args, **kwargs):
+    try:
+        return function(*args, **kwargs)
+    except TimeoutError:
+        raise
+    except Exception as exc:
+        _stage_failure(exc, stage)
+        raise
+
+
+def _component_override_file(generation: Path, overrides: dict) -> Path:
+    from mindie_knowledge.runtime_inventory import COMPONENTS, SHA
+
+    lines = []
+    for name in sorted(overrides):
+        revision = overrides[name]
+        if (name not in COMPONENTS or not isinstance(revision, str)
+                or SHA.fullmatch(revision) is None):
+            raise _h("CheckFailed")("candidate component floor is invalid")
+        lines.append(f"{name} @ git+https://github.com/{COMPONENTS[name]}@{revision}")
+    handle, name = tempfile.mkstemp(
+        prefix=".component-overrides-", suffix=".txt", dir=str(generation.parent))
+    with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as stream:
+        stream.write("\n".join(lines) + "\n")
+    return Path(name)
+
+
+def _verify_component_floor(python: Path, overrides: dict, deadline: float) -> None:
+    from mindie_knowledge.component_runtime import read_inventory
+
+    installed = read_inventory(
+        python, timeout=min(15, _h("_remaining")(deadline, _h("RESERVE"))))
+    for name, revision in overrides.items():
+        if installed.get(name, {}).get("revision") != revision:
+            raise _h("CheckFailed")(
+                f"candidate runtime did not retain the component floor: {name}")
+
+
+def build_runtime(generation: Path, deadline: float, *, component_overrides=None) -> Path:
+    """Build the candidate venv in one pass at the merged component floor.
+
+    `component_overrides` carries the already-resolved `{name: revision}` floor
+    when the active runtime is newer than the candidate's static
+    `active-overrides.txt`; the candidate is then installed with exactly those
+    pins and its resulting inventory is verified before the build is reported.
+    """
     if sys.version_info < _h("MIN_PYTHON"):
         raise _h("CheckFailed")(f"Python {_h('MIN_PYTHON')[0]}.{_h('MIN_PYTHON')[1]}+ is required")
     requirements = generation / "runtime-requirements.txt"
@@ -112,17 +170,34 @@ def build_runtime(generation: Path, deadline: float) -> Path:
     from mindie_knowledge.storage import configure_same_volume_uv_cache
 
     env = configure_same_volume_uv_cache(generation, env)
-    _h("bounded_run")([uv, "venv", "--python", sys.executable, str(venv)], "",
-                      timeout=min(180, _h("_remaining")(deadline, _h("RESERVE"))), env=env)
+    _stage_call(
+        "candidate_venv", _h("bounded_run"),
+        [uv, "venv", "--python", sys.executable, str(venv)], "",
+        timeout=min(180, _h("_remaining")(deadline, _h("RESERVE"))), env=env)
+    merged = None
+    if component_overrides:
+        merged = _component_override_file(generation, component_overrides)
+        overrides = merged
     install_argv = [uv, "pip", "install", "--python", str(python), "-r", str(requirements)]
     if overrides != requirements:
         install_argv += ["-r", str(overrides)]
     install_argv += ["--overrides", str(overrides)]
-    _h("bounded_run")(
-        install_argv,
-        "", timeout=min(600, _h("_remaining")(deadline, _h("RESERVE"))),
-        max_output=512 * 1024, env=env, transport=True,
-    )
+    try:
+        _stage_call(
+            "candidate_runtime", _h("bounded_run"), install_argv, "",
+            timeout=min(600, _h("_remaining")(deadline, _h("RESERVE"))),
+            max_output=512 * 1024, env=env, transport=True,
+        )
+        if merged is not None:
+            _verify_component_floor(python, component_overrides, deadline)
+    finally:
+        if merged is not None:
+            try:
+                merged.unlink(missing_ok=True)
+            except TimeoutError:
+                raise
+            except OSError:
+                pass
     return python
 
 
@@ -130,12 +205,15 @@ def probe_runtime(python: Path, deadline: float, generation: Path) -> None:
     from setup import probe_script
 
     parser = str(generation / "scripts" / "transcript.py")
-    output = _h("bounded_run")(
+    output = _stage_call(
+        "runtime_probe", _h("bounded_run"),
         [str(python), "-c", probe_script(parser)], "",
         timeout=min(60, _h("_remaining")(deadline, _h("RESERVE"))),
     )
     if not output.strip().endswith("OK"):
-        raise _h("CheckFailed")(f"generation runtime probe failed: {output.strip()[:300]}")
+        error = _h("CheckFailed")(f"generation runtime probe failed: {output.strip()[:300]}")
+        error.reason_code = "runtime_probe_failed"
+        raise _stage_failure(error, "runtime_probe")
 
 
 def _profile_authority_sources(adapter: dict):
@@ -580,7 +658,10 @@ def _stage_checkout(sha, remote, adapter, deadline):
     try:
         _h("_git")(["init", "-q", str(staging)], timeout=30, deadline=deadline)
         _h("_git")(["remote", "add", "origin", remote], timeout=15, deadline=deadline, cwd=staging)
-        _h("_git")(["fetch", "--depth", "1", "origin", sha], timeout=180, deadline=deadline, cwd=staging, transport=True)
+        _stage_call(
+            "stage_checkout", _h("_git"),
+            ["fetch", "--depth", "1", "origin", sha], timeout=180, deadline=deadline,
+            cwd=staging, transport=True)
         _h("_git")(["checkout", "-q", "--detach", "FETCH_HEAD"], timeout=60, deadline=deadline, cwd=staging)
     except TimeoutError:
         _discard_quietly(staging)
@@ -597,7 +678,7 @@ def _finalize_target(sha, target, adapter, deadline, build, force):
     """Build exactly one runtime: a merged component runtime wins over a venv."""
     current = _h("read_current")(adapter)
     usable = _usable_python(current)
-    from component_update import prepare as component_prepare
+    from component_update import candidate_overrides, prepare as component_prepare
 
     if usable is None:
         python = build(target, deadline)
@@ -619,7 +700,14 @@ def _finalize_target(sha, target, adapter, deadline, build, force):
         generation, python, config = prepared
         _h("build_host_package")(generation, adapter, sha, config_file=config)
         return generation, python, config
-    python = build(target, deadline)
+    # `prepare` returning `None` (or a binding-only result) proves the active
+    # interpreter already carries the merged floor. A fresh candidate venv
+    # built from the candidate's static active-overrides.txt alone would
+    # downgrade those components, so pin that resolved floor in the one build.
+    floor = candidate_overrides(
+        target, usable, timeout=min(15, _h("_remaining")(deadline, _h("RESERVE"))))
+    python = (build(target, deadline, component_overrides=floor)
+              if floor else build(target, deadline))
     _h("probe_runtime")(python, deadline, target)
     if prepared is not None:
         # The first pass could prove only a command-binding change against the

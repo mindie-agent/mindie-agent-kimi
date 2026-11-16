@@ -10,8 +10,9 @@ entry (`mindie-front` + `kimi.plugin.json`) and an existing native record's
 [Invariants]
 - Only files that already exist and are recognizably MindIE-owned are touched;
   a foreign plist, wrapper or plugin directory is left byte-for-byte intact.
-- No scheduler is registered, reloaded, enabled or disabled here. Replacing a
-  managed file preserves the user's scheduling choice.
+- No scheduler is registered, reloaded, enabled or disabled here. Every
+  replaced scheduler path is persisted in a bounded `scheduled-pins.json` ring
+  before the host file changes, so a still-loaded job keeps its runtime.
 - A cleanup failure after a committed switch is reported as a receipt warning;
   it never rolls back the committed generation.
 
@@ -20,9 +21,9 @@ entry (`mindie-front` + `kimi.plugin.json`) and an existing native record's
   exclusive operation lock; this module takes no additional lock.
 
 [Side-Effect Policy]
-- Rewrites only the managed wrapper/plist, Kimi's installed `mindie-front` and
-  `kimi.plugin.json`, and the matching `originalSource` in `installed.json`.
-  Every replacement uses a same-directory temporary file plus `os.replace`.
+- Rewrites only the managed wrapper/plist, Kimi's installed `mindie-front`,
+  `kimi.plugin.json`, `scheduled-pins.json`, and the matching `originalSource`
+  in `installed.json`; every replacement uses a temporary file + `os.replace`.
 """
 
 from __future__ import annotations
@@ -40,6 +41,9 @@ REFRESH_BUDGET_SECONDS = 10.0
 LABEL = "agent.mindie.kimi-update"
 LAUNCHER = "mindie_launch.py"
 PLUGIN_IDS = frozenset({"mindie-agent", "mindie"})
+SCHEDULED_PINS = "scheduled-pins.json"
+SCHEDULED_PIN_LIMIT = 2
+SCHEDULED_PINS_SCHEMA = "mindie-kimi-scheduled-pins/1"
 
 
 def _same_path(first, second):
@@ -108,6 +112,71 @@ def _read_json(path):
     return value if isinstance(value, dict) else None
 
 
+def scheduled_pins_path(adapter):
+    from genstate import update_dir
+
+    return update_dir(adapter) / SCHEDULED_PINS
+
+
+def scheduled_pins(adapter):
+    """Return the bounded ring of scheduler interpreter paths this module replaced."""
+    value = _read_json(scheduled_pins_path(adapter))
+    pins = value.get("pins") if isinstance(value, dict) else None
+    if not isinstance(pins, list):
+        return []
+    return [item for item in pins
+            if isinstance(item, str) and os.path.isabs(item)][:SCHEDULED_PIN_LIMIT]
+
+
+def remember_scheduled_pins(adapter, paths):
+    """Persist replaced scheduler interpreters before their host file is rewritten.
+
+    A still-loaded launchd job or scheduled task keeps the previous interpreter
+    usable even though the on-disk host file now names the committed runtime.
+    The ring is deliberately tiny: at most the two most recently replaced
+    interpreter paths remain protected.
+    """
+    fresh = []
+    for item in paths:
+        if isinstance(item, str) and os.path.isabs(item) and item not in fresh:
+            fresh.append(item)
+    if not fresh:
+        return scheduled_pins(adapter)
+    current = scheduled_pins(adapter)
+    merged = []
+    for item in [*fresh, *current]:
+        if item not in merged:
+            merged.append(item)
+    merged = merged[:SCHEDULED_PIN_LIMIT]
+    if merged == current:
+        return current
+    from genstate import atomic_write
+
+    atomic_write(scheduled_pins_path(adapter), {
+        "schema": SCHEDULED_PINS_SCHEMA,
+        "pins": merged,
+        "updated_at": time.time(),
+    })
+    return merged
+
+
+def _scheduler_paths(arguments, previous=None):
+    """Paths a still-loaded scheduler command may keep in use after a rewrite."""
+    candidates = []
+    if isinstance(arguments, (list, tuple)):
+        if arguments:
+            first = arguments[0]
+            if isinstance(first, str) and os.path.isabs(first):
+                candidates.append(first)
+        candidates.extend(
+            item for item in arguments
+            if isinstance(item, str) and os.path.isabs(item)
+            and item.endswith(LAUNCHER))
+    if isinstance(previous, dict) and isinstance(previous.get("python"), str):
+        candidates.append(previous["python"])
+    return candidates
+
+
 def _python(current):
     value = current.get("python") if isinstance(current, dict) else None
     if not isinstance(value, str) or not value:
@@ -174,7 +243,7 @@ def _host_command(adapter, current, *, config=None):
     return [str(python), str(launcher), "--config", str(config or current.get("adapter_config"))]
 
 
-def _refresh_wrapper(adapter, current):
+def _refresh_wrapper(adapter, current, previous=None):
     from genstate import update_dir
 
     wrapper = update_dir(adapter) / "MindIEKimiUpdate.pyw"
@@ -187,10 +256,13 @@ def _refresh_wrapper(adapter, current):
         return None
     from updater_schedule import refresh_existing_wrapper
 
+    old = previous.get("python") if isinstance(previous, dict) else None
+    if isinstance(old, str) and os.path.isabs(old):
+        remember_scheduled_pins(adapter, [old])
     return ["schedule-wrapper"] if refresh_existing_wrapper(adapter, current) else None
 
 
-def _refresh_launchd(adapter, current):
+def _refresh_launchd(adapter, current, previous=None):
     path = Path.home() / "Library" / "LaunchAgents" / f"{LABEL}.plist"
     try:
         if not path.is_file():
@@ -208,6 +280,9 @@ def _refresh_launchd(adapter, current):
     command = _wrapper_command(adapter, current)
     if command is None or list(arguments) == command:
         return None
+    # Persist before rewriting: if the pin record cannot be written the old
+    # host file (and therefore the still-loaded job) stays untouched.
+    remember_scheduled_pins(adapter, _scheduler_paths(arguments, previous))
     value["ProgramArguments"] = command
     value["Label"] = LABEL
     payload = plistlib.dumps(value, fmt=plistlib.FMT_XML, sort_keys=True)
@@ -403,8 +478,8 @@ def refresh_after_switch(adapter, previous, current, deadline=None):
         limit = min(limit, deadline)
     result = {"schema": SCHEMA, "status": "ok", "refreshed": [], "warnings": []}
     steps = (
-        ("schedule-wrapper", lambda: _refresh_wrapper(adapter, current)),
-        ("launchd-plist", lambda: _refresh_launchd(adapter, current)),
+        ("schedule-wrapper", lambda: _refresh_wrapper(adapter, current, previous)),
+        ("launchd-plist", lambda: _refresh_launchd(adapter, current, previous)),
         ("managed-entry", lambda: _refresh_managed(adapter, current, previous)),
     )
     for name, step in steps:
