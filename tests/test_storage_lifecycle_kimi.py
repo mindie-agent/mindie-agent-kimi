@@ -196,7 +196,7 @@ def test_legacy_sweep_reclaims_field_backlog_and_keeps_rollback_bootstrap_lease(
     assert len(list((update / "receipts").iterdir())) <= 10
     assert (update / "receipts" / f"{shas[-1]}.json").is_file()
     assert (update / "receipts" / f"{shas[-2]}.json").is_file()
-    assert len(list((update / "component-runtimes").iterdir())) <= 2
+    assert len([p for p in (update / "component-runtimes").iterdir() if p.is_dir()]) <= 2
     assert all(not path.exists() for path in dead)
     assert fresh.is_dir()
 
@@ -582,8 +582,8 @@ def test_prepare_none_binds_candidate_components_and_switch_succeeds(tmp_path):
     (target / "runtime" / "active-overrides.txt").write_text(
         _pin("mindie-profiler", "a" * 40))
     (target / updater_staging.SOURCE).write_text(sha + "\n")
-    candidate_python = target / ".venv" / "bin" / "python"
-    candidate_python.parent.mkdir(parents=True)
+    candidate_python = updater._venv_python(target / ".venv")
+    candidate_python.parent.mkdir(parents=True, exist_ok=True)
     candidate_python.write_text("")
 
     active = genstate.read_current(adapter)
@@ -674,8 +674,9 @@ def test_candidate_runtime_build_installs_and_verifies_the_merged_floor(tmp_path
         calls.append(list(argv))
         if "venv" in argv:
             venv = Path(argv[-1])
-            (venv / "bin").mkdir(parents=True)
-            (venv / "bin" / "python").write_text("")
+            py = updater._venv_python(venv)
+            py.parent.mkdir(parents=True, exist_ok=True)
+            py.write_text("")
             return ""
         if "install" in argv:
             overlay = Path(argv[argv.index("--overrides") + 1])
@@ -700,7 +701,7 @@ def test_candidate_runtime_build_installs_and_verifies_the_merged_floor(tmp_path
     assert seen["overlay"] == _pin(_KNOWLEDGE, "b" * 40)
     assert not overlay_arg.exists()
     assert read.call_args.args[0] == python
-    assert python == generation / ".venv" / "bin" / "python"
+    assert python == updater._venv_python(generation / ".venv")
 
 
 def test_scheduled_pins_keep_the_anchor_and_a_bounded_replacement_ring(tmp_path):
@@ -1080,8 +1081,8 @@ def test_clearing_component_commands_refreshes_fresh_and_reused_candidates(tmp_p
     (target / "runtime").mkdir(parents=True)
     (target / "runtime-requirements.txt").write_text(_pin("mindie-profiler", "a" * 40))
     (target / updater_staging.SOURCE).write_text(sha + "\n")
-    candidate_python = target / ".venv" / "bin" / "python"
-    candidate_python.parent.mkdir(parents=True)
+    candidate_python = updater._venv_python(target / ".venv")
+    candidate_python.parent.mkdir(parents=True, exist_ok=True)
     candidate_python.write_text("")
 
     active = genstate.read_current(adapter)

@@ -23,8 +23,11 @@ developer's real profile.
 
 from __future__ import annotations
 
+import atexit
+import itertools
 import os
 from pathlib import Path
+import shutil
 import site
 import tempfile
 
@@ -32,6 +35,10 @@ import pytest
 
 _REAL_HOME = Path.home()
 _PYTHON_USER_BASE = os.environ.get("PYTHONUSERBASE") or site.getuserbase()
+_PREWARMED_UV_CACHE = os.environ.get("UV_CACHE_DIR")
+_SESSION_TMP = Path(tempfile.mkdtemp(prefix="mk-")).resolve()
+atexit.register(lambda: shutil.rmtree(_SESSION_TMP, ignore_errors=True))
+_TMP_SEQ = itertools.count(1)
 os.environ["MINDIE_TEST_REAL_HOME"] = str(_REAL_HOME)
 
 _ISOLATED_PATHS = {
@@ -42,10 +49,6 @@ _ISOLATED_PATHS = {
     "KIMI_CODE_HOME": "kimi-home",
     "MINDIE_DIAGNOSTICS_ROOT": "diag-root",
     "MINDIE_DIAGNOSTICS_CONFIG": "diagnostics.json",
-    "TMPDIR": "tmp",
-    "TEMP": "tmp",
-    "TMP": "tmp",
-    "UV_CACHE_DIR": "uv-cache",
 }
 
 
@@ -56,6 +59,15 @@ def _isolate_host_environment(tmp_path, monkeypatch):
         if name != "MINDIE_DIAGNOSTICS_CONFIG":
             value.mkdir(parents=True, exist_ok=True)
         monkeypatch.setenv(name, str(value))
+    # Keep per-test temp roots short on Windows so Git pack/loose objects and the
+    # 220-byte feed path budget never overflow under pytest's long case names.
+    short_tmp = _SESSION_TMP / f"t{next(_TMP_SEQ)}"
+    short_tmp.mkdir(parents=True, exist_ok=True)
+    for name in ("TMPDIR", "TEMP", "TMP"):
+        monkeypatch.setenv(name, str(short_tmp))
+    uv_cache = Path(_PREWARMED_UV_CACHE) if _PREWARMED_UV_CACHE else (_SESSION_TMP / "uv")
+    uv_cache.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("UV_CACHE_DIR", str(uv_cache))
     monkeypatch.setenv("PYTHONUSERBASE", _PYTHON_USER_BASE)
     # A test that writes its own profile config must not leak that pointer into
     # the next test's `profile_config_path()` resolution.
