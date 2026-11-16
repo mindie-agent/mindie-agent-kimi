@@ -510,6 +510,10 @@ def publish_nonce_bind(
         db.close()
 
 
+class MissingBind(ValueError):
+    """Raised only when no PreToolUse bind row or store exists for `nonce`."""
+
+
 def claim_nonce(nonce: str, tool_name: str, arguments, *, config=None) -> str:
     nonce = require_nonce(nonce)
     if not isinstance(tool_name, str) or not tool_name:
@@ -519,7 +523,7 @@ def claim_nonce(nonce: str, tool_name: str, arguments, *, config=None) -> str:
     now = time.time()
     path = bind_db_path(config)
     if not path.is_file():
-        raise ValueError(
+        raise MissingBind(
             "no native PreToolUse bind exists for this request_nonce; "
             "the host did not authorize this call"
         )
@@ -535,14 +539,14 @@ def claim_nonce(nonce: str, tool_name: str, arguments, *, config=None) -> str:
                 (nonce,),
             ).fetchone()
             if row is None:
-                raise ValueError("request_nonce was not bound by a native PreToolUse hook")
+                raise MissingBind("request_nonce was not bound by a native PreToolUse hook")
             session, tool, bound_local, stored_args, status, created = row
             if status == "ambiguous":
                 raise ValueError("request_nonce is bound to contradictory native calls")
-            if now - created > 120:
-                raise ValueError("request_nonce bind expired")
             if status in {"claimed", "succeeded", "failed"}:
                 raise ValueError("request_nonce has already been used; replay rejected")
+            if now - created > 120:
+                raise ValueError("request_nonce bind expired")
             if status != "bound":
                 raise ValueError("request_nonce is not authorized")
             tool_ok = tool == tool_name or bound_local == local or tool.endswith("__" + local)

@@ -130,7 +130,7 @@ def command(adapter, component):
     return [executable]
 
 
-def execute(name, arguments, session, *, cancel=None, timeout=None):
+def execute(name, arguments, session, *, cancel=None, timeout=None, session_bound=True):
     adapter = load_adapter_config()
     profile = adapter.get("profile_config")
     if profile and Path(profile) != config_path():
@@ -180,11 +180,11 @@ def execute(name, arguments, session, *, cancel=None, timeout=None):
     if invocation_token is not None:
         environment["MINDIE_DIAGNOSTICS_INVOCATION_TOKEN"] = invocation_token
     cwd = arguments.get("cwd")
-    if cwd is None:
+    if cwd is None and session_bound:
         from identity import session_cwd
 
         cwd = session_cwd(session)
-    if not isinstance(cwd, str) or not Path(cwd).is_absolute():
+    if cwd is not None and (not isinstance(cwd, str) or not Path(cwd).is_absolute()):
         raise ValueError("cwd must be an absolute working directory")
     child = command(adapter, component) + argv
     interrupted = None

@@ -1,6 +1,6 @@
 {
   "name": "mindie-agent",
-  "version": "0.1.26",
+  "version": "0.1.27",
   "description": "MindIE Agent for Kimi Code: local knowledge retrieval, optional community contribution, and general remote-dev. No SessionStart auto-configuration.",
   "keywords": [
     "mindie",
@@ -59,7 +59,7 @@
       "timeout": 20
     }
   ],
-  "systemPrompt": "MindIE tools use a fresh request_nonce bound by the native PreToolUse hook. Remote-dev, coordinator, profiler, sim, local diagnostics and factual status are available without knowledge activation. Never pass or invent native session identity.",
+  "systemPrompt": "Remote-dev, coordinator, profiler, sim, debugger, local diagnostics and factual status are available over MCP without knowledge activation or a required request_nonce. Knowledge tools require /mindie-agent activation and a fresh PreToolUse-bound request_nonce. Never pass or invent native session identity.",
   "interface": {
     "displayName": "MindIE Agent",
     "shortDescription": "Domain knowledge, optional public contribution, and general remote-dev for Kimi Code",

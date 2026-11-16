@@ -1,10 +1,9 @@
 ---
-description: Unbind MindIE Agent from this native Kimi session (install-level choice is untouched)
+description: Revoke MindIE knowledge authorization for the current Kimi session
 ---
 
-Call `mindie_entry` once with `op=deactivate` and a fresh `request_nonce`.
-Never pass a session id. This removes only this task's internal binding; the
-saved install-level sharing/reporting choices are unchanged, attempted
-capture identities are kept so a later binding does not replay them, and
-invoking `/mindie-agent` binds the task again without any setup.
+Call `mindie_entry` once with `op=deactivate` and a fresh `request_nonce`. Never pass a session ID.
+
+This revokes only the current session's knowledge and capture lease across registered domains while keeping saved install-level sharing preferences intact. Deterministic `remote` and `components` tools remain available, and invoking `/mindie-agent` re-enables knowledge for this session at any time.
+
 $ARGUMENTS

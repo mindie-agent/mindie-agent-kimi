@@ -122,7 +122,8 @@ class HostPackageTests(unittest.TestCase):
         self.assertEqual(names, runtime_tool_names())
         self.assertTrue(NATIVE_NAMES <= names, names)
         for tool in listing["result"]["tools"]:
-            self.assertIn("request_nonce", tool["inputSchema"]["required"])
+            self.assertNotIn("request_nonce", tool["inputSchema"].get("required", []))
+            self.assertIn("request_nonce", tool["inputSchema"]["properties"])
 
 
 class ProfileLifecycleTests(unittest.TestCase):
