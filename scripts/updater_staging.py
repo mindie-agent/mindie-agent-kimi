@@ -259,10 +259,12 @@ def write_generation_configs(generation: Path, python: Path, adapter: dict, *, c
             if isinstance(value, str) and os.path.isabs(value):
                 engine[key] = value
     config_dir = generation / "config"
-    commands = dict((padapter or adapter).get("component_commands", {}))
+    pdoc = adapter if padapter is None else padapter
+    raw_cmds = pdoc.get("component_commands")
+    commands = dict(raw_cmds) if isinstance(raw_cmds, dict) else {}
     if components is not None:
         from mindie_knowledge.component_bindings import rebind_commands, validate_command_floor
-        validate_command_floor(padapter or adapter, components)
+        validate_command_floor(pdoc, components)
         # A binding-only update must not rewrite the active generation's config;
         # a fresh candidate keeps its stable `config/kimi.adapter.json` so a
         # retry can reuse the completed generation.
@@ -271,28 +273,22 @@ def write_generation_configs(generation: Path, python: Path, adapter: dict, *, c
                 json.dumps(commands, sort_keys=True).encode()).hexdigest()[:16]
     gen_engine = config_dir / "kimi.engine.json"
     gen_adapter = config_dir / "kimi.adapter.json"
-    _h("atomic_write")(
-        gen_engine,
-        dict(
-            engine,
-            transcript_adapter=str(generation / "scripts" / "transcript.py"),
-            **__import__("capture_config").prepare(python, generation / "scripts"),
-        ),
-    )
-    profile = (padapter or adapter).get("profile_config")
+    _h("atomic_write")(gen_engine, dict(
+        engine, transcript_adapter=str(generation / "scripts" / "transcript.py"),
+        **__import__("capture_config").prepare(python, generation / "scripts")))
+    profile = pdoc.get("profile_config") or adapter.get("profile_config")
     if not (isinstance(profile, str) and os.path.isabs(profile)):
         from paths import profile_config_path
-
         profile = str(profile_config_path())
     gen_adapter_value = dict(
-        adapter,
-        python=str(python),
-        engine_config=str(gen_engine),
-        profile_config=profile,
-    )
+        adapter, python=str(python), engine_config=str(gen_engine), profile_config=profile)
     if components is not None:
         gen_adapter_value["component_source_commands"] = commands
-        gen_adapter_value["component_commands"] = rebind_commands(padapter or adapter, python, components)
+        gen_adapter_value["component_commands"] = rebind_commands(pdoc, python, components)
+    else:
+        gen_adapter_value.pop("component_source_commands", None)
+        if not commands:
+            gen_adapter_value.pop("component_commands", None)
     if padapter is not None and isinstance(padapter.get("community_config"), str):
         gen_adapter_value["community_config"] = padapter["community_config"]
     kimi_bin = adapter.get("kimi_bin")
@@ -650,12 +646,12 @@ def _reuse_complete(target, sha, adapter, release, deadline):
         return None
     current = _h("read_current")(adapter)
     active, candidate = _h("read_json")(Path(current["adapter_config"])), _h("read_json")(gen_adapter)
+    from component_update import candidate_commands_stale, candidate_components
     if (current.get("sha") != sha and active is not None and candidate is not None
-            and candidate.get("domain_source_configs") != (active.get("domain_configs") or {})):
+            and (candidate.get("domain_source_configs") != (active.get("domain_configs") or {})
+                 or candidate_commands_stale(active, candidate))):
         # A refreshed but unpublished generation is complete only after both
         # its binding and host package were rebuilt.
-        from component_update import candidate_components
-
         (target / _h("COMPLETE")).unlink()
         gen_adapter = _h("write_generation_configs")(
             target, python, active,

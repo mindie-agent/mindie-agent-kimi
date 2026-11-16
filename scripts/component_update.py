@@ -219,18 +219,27 @@ def candidate_components(adapter, python, deadline):
     from mindie_knowledge.component_bindings import managed_commands
 
     profile = adapter
-    profile_path = adapter.get("profile_config") if isinstance(adapter, dict) else None
-    if isinstance(profile_path, str) and os.path.isabs(profile_path):
-        try:
-            value = json.loads(Path(profile_path).read_text(encoding="utf-8"))
-        except TimeoutError:
-            raise
-        except (OSError, ValueError):
-            value = None
-        if isinstance(value, dict):
-            profile = value
+    active = adapter
+    try:
+        current = host.read_current(adapter)
+        loaded = host.read_json(Path(current["adapter_config"])) if current else None
+        if isinstance(loaded, dict):
+            active = loaded
+    except TimeoutError:
+        raise
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    padapter, _ = host._profile_authority_sources(active)
+    if padapter is not None:
+        profile = padapter
     commands = profile.get("component_commands")
     if not isinstance(commands, dict) or not commands:
+        if padapter is not None and (
+            isinstance(commands, dict)
+            or "component_source_commands" in active
+            or "component_commands" in active
+        ):
+            return {}
         return None
     if not managed_commands(profile):
         # Custom commands are not rebound, but the candidate still snapshots
@@ -242,6 +251,32 @@ def candidate_components(adapter, python, deadline):
     if timeout <= 0:
         raise TimeoutError("candidate component inventory budget exhausted")
     return read_inventory(python, timeout=timeout)
+
+
+def candidate_commands_stale(active: dict, candidate: dict) -> bool:
+    """True when a reused candidate generation's command snapshot drifted from live profile."""
+    import updater_check
+
+    host = updater_check._HOST
+    if host is None:
+        import updater as host
+    padapter, _ = host._profile_authority_sources(active)
+    source_doc = active if padapter is None else padapter
+    raw = source_doc.get("component_commands")
+    live = dict(raw) if isinstance(raw, dict) else {}
+    tracked = padapter is not None and (
+        isinstance(raw, dict)
+        or "component_source_commands" in active
+        or "component_commands" in active
+        or "component_source_commands" in candidate
+        or "component_commands" in candidate
+    )
+    if not tracked:
+        return "component_source_commands" in candidate
+    return (
+        "component_source_commands" not in candidate
+        or candidate.get("component_source_commands") != live
+    )
 
 
 def prepare(adapter, source, python, deadline, *, force=False):

@@ -1073,6 +1073,62 @@ def test_storage_gc_remote_phase_defers_unresolved_session_and_endpoint_state(tm
     assert result["status"] == "partial"
 
 
+def test_clearing_component_commands_refreshes_fresh_and_reused_candidates(tmp_path):
+    adapter, bare, sha, config_path = _upgrade_fixture(tmp_path)
+    update = genstate.update_dir(adapter)
+    target = update / "generations" / sha
+    (target / "runtime").mkdir(parents=True)
+    (target / "runtime-requirements.txt").write_text(_pin("mindie-profiler", "a" * 40))
+    (target / updater_staging.SOURCE).write_text(sha + "\n")
+    candidate_python = target / ".venv" / "bin" / "python"
+    candidate_python.parent.mkdir(parents=True)
+    candidate_python.write_text("")
+
+    active = genstate.read_current(adapter)
+    old_bound = {"profiler": [sys.executable, "-I", "-X", "utf8", "-m", "mindie_profiler"]}
+    active_adapter = json.loads(Path(active["adapter_config"]).read_text())
+    active_adapter.update(component_commands=old_bound, component_source_commands=old_bound)
+    write_json(Path(active["adapter_config"]), active_adapter)
+    profile = json.loads(config_path.read_text())
+    profile["component_commands"] = {}
+    write_json(config_path, profile)
+
+    with patch("mindie_knowledge.component_runtime.read_inventory") as read_inv, \
+            patch("component_update.candidate_overrides", return_value=None), \
+            patch("component_update.prepare", return_value=None), \
+            patch.object(updater, "probe_runtime"), \
+            patch("capture_config.prepare", return_value={"capture_mode": "public-transcript"}), \
+            patch("capture_config.prepare_domains", return_value={}), \
+            patch.object(updater, "build_host_package") as host_pkg:
+        generation, python, gen_adapter = updater.stage_generation(
+            sha, str(bare), adapter, time.monotonic() + 120,
+            build=lambda *_a, **_kw: candidate_python)
+        read_inv.assert_not_called()
+        staged = json.loads(Path(gen_adapter).read_text())
+        assert staged["component_source_commands"] == {}
+        assert staged["component_commands"] == {}
+
+        # Simulate a previously completed candidate holding stale source bindings,
+        # then verify reuse rebuilds both config and host package on first retry.
+        staged.update(component_source_commands=old_bound, component_commands=old_bound)
+        write_json(Path(gen_adapter), staged)
+        host_pkg.reset_mock()
+        generation, python, gen_adapter = updater.stage_generation(
+            sha, str(bare), adapter, time.monotonic() + 120, build=Mock())
+        host_pkg.assert_called_once()
+        refreshed = json.loads(Path(gen_adapter).read_text())
+        assert refreshed["component_source_commands"] == {}
+        assert refreshed["component_commands"] == {}
+
+        updater.switch(
+            adapter, active, generation, Path(python), gen_adapter, sha,
+            time.monotonic() + 120,
+            lambda *_: {"service": "absent"}, Mock(), 5, update_native=False,
+        )
+    assert genstate.read_current(adapter)["sha"] == sha
+    assert json.loads(config_path.read_text())["component_commands"] == {}
+
+
 def test_core_modules_stay_below_eight_hundred_lines():
     for name in CORE_MODULES:
         path = SCRIPTS / name
