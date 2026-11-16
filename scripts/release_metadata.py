@@ -29,6 +29,17 @@ _CODE = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 _HOST = frozenset({"FileNotFoundError", "CalledProcessError"})
 _HOST_CODES = frozenset({"invalid_harness_version", "invalid_installed_version"})
 _TIMEOUT = frozenset({"TimeoutExpired", "TimeoutError"})
+_CATALOG_CATEGORIES = frozenset({"temporary_network", "rate_limited", "certificate", "internal"})
+
+
+def _catalog_category(code, status, category=None):
+    if isinstance(category, str) and category in _CATALOG_CATEGORIES:
+        return category
+    if code == "release_certificate_error":
+        return "certificate"
+    if code in {"release_http_error", "release_transport_unavailable"}:
+        return "rate_limited" if status == 429 else "temporary_network"
+    return "internal"
 
 
 class CatalogError(RuntimeError):
@@ -71,6 +82,9 @@ def emit_select_error(exc) -> None:
     status = getattr(exc, "status", None)
     if type(status) is int and 100 <= status <= 599:
         payload["error"]["status"] = status
+    category = getattr(exc, "category", None)
+    if isinstance(category, str) and category in _CATALOG_CATEGORIES:
+        payload["error"]["category"] = category
     print(json.dumps(payload, sort_keys=True))
     raise SystemExit(1)
 
@@ -98,15 +112,13 @@ def typed_catalog_error(exc):
         error = FileNotFoundError("kimi binary is unavailable for release selection")
     elif kind in _TIMEOUT:
         error = TimeoutError("kimi version probe timed out")
-    else:
+    elif kind in {"CatalogError", "ReleaseFetchError", "ReleaseJSONError", "ReleaseValidationError"}:
         error = CatalogError(code or "release catalog unavailable")
         if code:
             error.code = code
-        error.category = (
-            "certificate" if code == "release_certificate_error"
-            else "rate_limited" if payload.get("status") == 429
-            else "temporary_network"
-        )
+        error.category = _catalog_category(code, payload.get("status"), payload.get("category"))
+    else:
+        return exc
     if (returncode := getattr(exc, "returncode", None)) is not None:
         error.returncode = returncode
     return error

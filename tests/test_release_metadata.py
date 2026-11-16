@@ -2,6 +2,7 @@
 
 import io
 import json
+import pytest
 from pathlib import Path
 import subprocess
 import sys
@@ -103,7 +104,7 @@ class ReleaseSelectionTests(unittest.TestCase):
         })
         rebuilt = release_metadata.typed_catalog_error(feed)
         self.assertEqual(rebuilt.code, "invalid_release_json")
-        self.assertEqual(rebuilt.category, "temporary_network")
+        self.assertEqual(rebuilt.category, "internal")
 
         limited = RuntimeError("command failed (1)")
         limited.mindie_output = json.dumps({
@@ -225,3 +226,24 @@ class ReleaseSelectionTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
+
+
+def test_release_json_provenance_survives_child_selection(capsys):
+    import component_update
+    from mindie_knowledge.releases_io import _json, _remote_json, ReleaseFetchError
+    for parse, expected in ((_remote_json, "temporary_network"), (_json, "internal")):
+        try:
+            parse(b'{"PRIVATE":')
+        except ReleaseFetchError as error:
+            assert component_update.typed_catalog_error(error).category == expected
+            with pytest.raises(SystemExit):
+                release_metadata.emit_select_error(error)
+        raw = capsys.readouterr().out
+        assert "PRIVATE" not in raw
+        child = RuntimeError("selection child failed")
+        child.mindie_output = raw
+        rebuilt = release_metadata.typed_catalog_error(child)
+        assert rebuilt.category == expected
+        assert rebuilt.code == "invalid_release_json"
+    local = json.JSONDecodeError("local parser", "", 0)
+    assert component_update.typed_catalog_error(local) is local
