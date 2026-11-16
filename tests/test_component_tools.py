@@ -56,7 +56,9 @@ def test_manifest_launch_discovers_schema_and_executes_real_profiler(adapter):
     assert process.returncode == 0, process.stderr
     catalog = {tool["name"]: tool for tool in json.loads(process.stdout)["result"]["tools"]}
     tool = catalog["profiler"]
-    assert {"argv", "request_nonce"} <= set(tool["inputSchema"]["required"])
+    assert "argv" in set(tool["inputSchema"]["required"])
+    assert "request_nonce" not in set(tool["inputSchema"].get("required", []))
+    assert "request_nonce" in tool["inputSchema"]["properties"]
     capture = ROOT / "tests/fixtures/profiler/rank_0"
     result = call(tool["name"], {"argv": ["inventory", "--root", str(capture)]})
     assert not result["isError"], result
@@ -70,12 +72,50 @@ def test_manifest_launch_discovers_schema_and_executes_real_profiler(adapter):
     assert not Path(json.loads(config.read_text())["engine_config"]).exists()
 
 
-def test_components_cannot_execute_without_native_bind(adapter, tmp_path):
-    output = tmp_path / "support.zip"
-    result = call("diagnostics_bundle", {"root": str(tmp_path), "output": str(output)}, bind=False)
-    assert result["isError"]
-    assert "PreToolUse" in result["content"][0]["text"]
-    assert not output.exists()
+def test_components_execute_without_request_nonce_while_rejecting_bound_replay(adapter, tmp_path):
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    output = tmp_path / "zero-bind.zip"
+    direct = mcp_server.handle("components", {
+        "jsonrpc": "2.0", "id": 10, "method": "tools/call",
+        "params": {"name": "diagnostics_bundle", "arguments": {"root": str(logs), "output": str(output), "cwd": str(tmp_path)}},
+    })["result"]
+    assert not direct["isError"], direct
+    assert output.is_file()
+    output2 = tmp_path / "hookless-nonce.zip"
+    hookless = call("diagnostics_bundle", {"root": str(logs), "output": str(output2)}, bind=False)
+    assert not hookless["isError"], hookless
+    assert output2.is_file()
+    bound_args = {"root": str(logs), "output": str(tmp_path / "bound.zip"), "cwd": str(tmp_path), "request_nonce": "nonce-replay-check"}
+    identity.publish_nonce_bind(
+        "ordinary-session", "nonce-replay-check",
+        "mcp__plugin-mindie-agent_components__diagnostics_bundle", "call-1", bound_args,
+    )
+    first = mcp_server.handle("components", {
+        "jsonrpc": "2.0", "id": 11, "method": "tools/call",
+        "params": {"name": "diagnostics_bundle", "arguments": bound_args},
+    })["result"]
+    assert not first["isError"], first
+    replay = mcp_server.handle("components", {
+        "jsonrpc": "2.0", "id": 12, "method": "tools/call",
+        "params": {"name": "diagnostics_bundle", "arguments": bound_args},
+    })["result"]
+    assert replay["isError"]
+    assert "replay" in replay["content"][0]["text"].lower()
+    import sqlite3
+    with sqlite3.connect(identity.bind_db_path()) as db:
+        db.execute("UPDATE binds SET created = created - 300 WHERE nonce = 'nonce-replay-check'")
+    aged_replay = mcp_server.handle("components", {
+        "jsonrpc": "2.0", "id": 13, "method": "tools/call",
+        "params": {"name": "diagnostics_bundle", "arguments": bound_args},
+    })["result"]
+    assert aged_replay["isError"]
+    assert "replay" in aged_replay["content"][0]["text"].lower()
+    zero_cwd_status = mcp_server.handle("components", {
+        "jsonrpc": "2.0", "id": 14, "method": "tools/call",
+        "params": {"name": "diagnostics_status", "arguments": {}},
+    })["result"]
+    assert not zero_cwd_status["isError"], zero_cwd_status
 
 
 def test_real_coordinator_and_local_diagnostics_need_no_knowledge(adapter, tmp_path):

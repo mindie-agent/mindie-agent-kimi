@@ -26,8 +26,8 @@ Bridges native Kimi Hook/MCP/Skill surfaces to shared first-party runtime compon
 
 ## 2. Host Protocols & Core State Invariants
 
-- **PreToolUse Nonce Binding**: Kimi MCP `tools/call` carries only `name` and `arguments`. Every MindIE MCP tool requires a fresh `request_nonce` bound by `PreToolUse` (`bridge.py pretool` -> `mcp-binds.sqlite3`) and claimed atomically (`BEGIN IMMEDIATE`) before execution. Replayed, expired (`> 120s`), or mismatched nonces fail closed.
-- **Manual `/mindie-agent` Knowledge Gate vs. Default-On Deterministic Tools**: Consuming a `request_nonce` proves native session identity, not knowledge activation. Deterministic `remote-dev` tools and factual `mindie_entry(op="status")` execute with the consumed `request_nonce` alone, whereas all `knowledge_*` MCP tools (`knowledge_query`, `knowledge_explain`, `knowledge_feedback`, `knowledge_distill`, `knowledge_sync`) and `Stop` transcript capture require an active manual-entry lease (`Admission.knowledge_lease(session)` / `lease.get("entry_enabled") == 1`) granted by `/mindie-agent` in the current session.
+- **PreToolUse Nonce Binding (Strict on `knowledge`, Opportunistic on Deterministic Surfaces)**: Kimi MCP `tools/call` carries only `name` and `arguments`. On the `knowledge` surface, every tool strictly requires a fresh `request_nonce` bound by `PreToolUse` (`bridge.py pretool` -> `mcp-binds.sqlite3`) and claimed atomically (`BEGIN IMMEDIATE`). On deterministic `remote` and `components` surfaces, `request_nonce` is optional: when bound by `PreToolUse` it supplies the native session/cwd and enforces replay rejection; when omitted or unbound (e.g. subagents, automations, or direct MCP calls), tools execute under a connection-scoped fallback without failing closed.
+- **Manual `/mindie-agent` Knowledge Gate vs. Zero-Binding Deterministic Tools**: Deterministic `remote-dev` and `components` tools and factual `mindie_status` execute over standard MCP `tools/call` without requiring `/mindie-agent` or a mandatory `PreToolUse` nonce, whereas `mindie_entry` and all `knowledge_*` MCP tools (`knowledge_query`, `knowledge_explain`, `knowledge_feedback`, `knowledge_distill`, `knowledge_sync`) require a `PreToolUse`-bound `request_nonce` and an active manual-entry lease (`Admission.knowledge_lease(session)` / `lease.get("entry_enabled") == 1`) granted by `/mindie-agent` in the current session.
 - **Stop Hook Notification**: `bridge.py stop` never blocks the host and never fabricates a native turn ID; it checks `lease.get("entry_enabled")` first (returning `{}` for unactivated sessions) before passing a thin notification (`identity_kind="notification"`, session lease token, and `wire.jsonl` path) to `mindie_knowledge.loop.cli.capture_hook`.
 - **Atomic Generation Pointer**: `current.json` (`{generation, python, adapter_config, sha}`) is read under a shared `operation.lock` for every Hook/MCP call and flipped under an exclusive `operation.lock` only after `stop_if_idle` and verified native plugin readback.
 
@@ -36,11 +36,12 @@ Bridges native Kimi Hook/MCP/Skill surfaces to shared first-party runtime compon
 - **Explicit Timeout Hierarchy**:
   - `HOOK_TOTAL = 10.0s` (`HOOK_LOCK_BUDGET = 2.0s`), native host hook timeout `15s`, `CALL_LOCK_BUDGET = 5.0s`, `CALL_CHILD_BUDGET = 60.0s` (`180s` for explicit contribution activation/configuration, including shared reporter startup), `MAX_YIELD_TIME_MS = 30000` (30s).
   - `BOOTSTRAP_TOTAL = 540.0s`, summary native timeout at most `300s` and bounded by `summary_budget.native_timeout()` with `5s` reserved for cleanup, `CHECK_BUDGET = 240.0s` (with `RESERVE = 53.0s`: `ROLLBACK_BUDGET = 45.0s` + `HANDOFF_BUDGET = 8.0s`).
-- **Four `v0.0.2` Iron Rules**:
+- **Five Anti-Over-Defensive Iron Rules**:
   1. **Lightweight SQLite & File I/O**: Use `busy_timeout=5000` and `os.replace()` atomic writes; never run recursive parent symlink checks, `O_NOFOLLOW`/`S_ISREG` descriptor dances, or per-read `chmod` ceremonies.
   2. **Honest `unknown` Boundary**: Reserve `outcome_unknown` / `unconfirmed` strictly for interrupted paid model invocations or external remote writes; never brick local state with permanent one-way fault lockouts.
   3. **No Defensive Bloat**: Keep adapter scripts concise and direct; do not duplicate core engine logic or invent `ctypes` ACL/pipe ceremonies.
   4. **No Filler or Paranoid Tests**: Never write `chmod(0)`/`icacls` permission games, FIFO/symlink traps, or prose-grep tests.
+  5. **Zero Pre-Call Session-Binding Gates on Deterministic Tools (`P2.7`)**: `remote` and `components` never require `request_nonce` in `inputSchema.required` and fall back to `_CONNECTION_SESSION_ID` when `request_nonce` is omitted or unbound; strict `PreToolUse` `claim_nonce` + `knowledge_lease` applies exclusively to `knowledge` and `Stop` capture.
 
 ## 4. Fast Verification Commands
 

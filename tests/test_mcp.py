@@ -295,7 +295,8 @@ class McpTests(unittest.TestCase):
         )
         self.assertNotIn("remote_exec_command", tools)
         for name in ("remote_read", "remote_Read", "remote_TaskList"):
-            self.assertIn("request_nonce", tools[name]["inputSchema"]["required"])
+            self.assertNotIn("request_nonce", tools[name]["inputSchema"].get("required", []))
+            self.assertIn("request_nonce", tools[name]["inputSchema"]["properties"])
 
     def test_remote_tools_are_listed_without_knowledge_activation(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -308,7 +309,18 @@ class McpTests(unittest.TestCase):
                 self.assertIn("remote_read", names)
                 self.assertIn("remote_job_status", names)
                 for item in listed["result"]["tools"]:
-                    self.assertIn("request_nonce", item["inputSchema"]["required"])
+                    self.assertNotIn("request_nonce", item["inputSchema"].get("required", []))
+                    self.assertIn("request_nonce", item["inputSchema"]["properties"])
+                auth = self.rpc(
+                    proc,
+                    dict(
+                        jsonrpc="2.0",
+                        id=3,
+                        method="tools/call",
+                        params=dict(name="remote_auth", arguments=dict(host="auth.example", port=22, action="status")),
+                    ),
+                )
+                self.assertFalse(auth["result"]["isError"], auth)
             finally:
                 proc.stdin.close()
                 proc.kill()

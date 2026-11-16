@@ -37,7 +37,9 @@ def serve_profile(surface):
             return [current["python"], str(script), surface, "--once"], launch._child_env(current, surface)
         config = launch._load_config() or {}
         return [config.get("python") or sys.executable,
-                str(Path(__file__).with_name("mcp_server.py")), surface, "--once"], {}
+                str(Path(__file__).with_name("mcp_server.py")), surface, "--once"], {
+            "MINDIE_MCP_CONNECTION_ID": launch._CONNECTION_ID,
+        }
 
     with lease_owning_runtime():
         return serve_selected(select)

@@ -9,8 +9,12 @@ coordinator, profiler, sim, local diagnostics and factual status.
 - Native task identity is never accepted from tool arguments (`sessionId`,
   `thread_id`, `session_id`, `_session_id`, `_session_verified`, `_activation`,
   and `mindie_activation` on the `knowledge` surface are rejected).
-- Every `tools/call` requires a fresh `request_nonce` bound by native
-  `PreToolUse` and claimed atomically before execution (`claim_nonce`).
+- `knowledge` surface `tools/call` strictly requires a fresh `request_nonce`
+  bound by native `PreToolUse` (`claim_nonce`). Deterministic surfaces (`remote`
+  and `components`) treat `request_nonce` as an opportunistic hint: when bound,
+  it supplies native session/cwd and rejects replay; when omitted or unbound
+  (e.g. subagents, automations, or direct MCP calls), execution proceeds under
+  `_CONNECTION_SESSION_ID` without pre-call session-binding failure.
 - Knowledge domains select trusted `domain_configs` paths; arbitrary paths
   and unknown or conflicting domains are rejected.
 - Distillation requires an active capture lease from the selected target
@@ -39,13 +43,14 @@ import os
 import re
 import sqlite3
 import sys
+import uuid
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-from identity import claim_nonce, finish_nonce, local_tool_name, require_nonce
+from identity import MissingBind, claim_nonce, finish_nonce, local_tool_name, require_nonce
 from paths import (
     domain_configs,
     domain_from_ref,
@@ -70,6 +75,7 @@ REMOTE_ERROR_CATEGORIES = frozenset({
     "worker_capacity",
 })
 JOB_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{2,95}$")
+_CONNECTION_SESSION_ID = os.environ.get("MINDIE_MCP_CONNECTION_ID") or f"kimi-mcp-{os.getpid()}-{uuid.uuid4().hex[:12]}"
 from mcp_catalog import KNOWLEDGE_TOOLS, NONCE_PROP
 
 
@@ -473,13 +479,13 @@ def bind_remote_profile() -> None:
     os.environ["REMOTE_DEV_HARNESS_PROFILE"] = REMOTE_PROFILE
 
 
-def _nonce_tools(catalog):
+def _nonce_tools(catalog, *, require=True):
     tools = []
     for item in catalog:
         schema = dict(item.get("inputSchema") or {"type": "object", "properties": {}})
         properties = {**(schema.get("properties") or {}), "request_nonce": NONCE_PROP}
         required = list(schema.get("required") or [])
-        if "request_nonce" not in required:
+        if require and "request_nonce" not in required:
             required.append("request_nonce")
         tools.append(
             dict(
@@ -496,7 +502,7 @@ def remote_tools():
     bind_remote_profile()
     from remote_dev.mcp.tools import list_tools
 
-    return _nonce_tools(list_tools())
+    return _nonce_tools(list_tools(), require=False)
 
 
 def component_tools():
@@ -508,7 +514,7 @@ def component_tools():
         inputSchema=dict(type="object", properties={}, additionalProperties=False),
         annotations=dict(readOnlyHint=True, destructiveHint=False, openWorldHint=False),
     )
-    return _nonce_tools([status, *catalog()])
+    return _nonce_tools([status, *catalog()], require=False)
 
 
 def knowledge_tools():
@@ -575,10 +581,22 @@ def handle(surface, message):
         if not isinstance(args, dict):
             raise ValueError("invalid tool arguments")
         reject_native_identity_args(args, surface)
-        nonce = require_nonce(args.get("request_nonce"))
-        session = claim_nonce(nonce, name, args)
-        claimed = True
-        _, body = strip_nonce(args, surface)
+        if surface == "knowledge":
+            nonce = require_nonce(args.get("request_nonce"))
+            session = claim_nonce(nonce, name, args)
+            claimed = True
+            _, body = strip_nonce(args, surface)
+        elif isinstance(args.get("request_nonce"), str) and args["request_nonce"].strip():
+            nonce = require_nonce(args.get("request_nonce"))
+            try:
+                session = claim_nonce(nonce, name, args)
+                claimed = True
+            except MissingBind:
+                session = _CONNECTION_SESSION_ID
+            body = {k: v for k, v in args.items() if k != "request_nonce"}
+        else:
+            session = _CONNECTION_SESSION_ID
+            body = {k: v for k, v in args.items() if k != "request_nonce"}
         if surface == "knowledge" and name == "mindie_entry":
             from entry import dispatch
             from identity import session_cwd
@@ -618,7 +636,7 @@ def handle(surface, message):
             else:
                 from component_tools import execute
 
-                result = execute(name, body, session)
+                result = execute(name, body, session, session_bound=claimed)
         else:
             try:
                 payload = remote_call(name, body, session)

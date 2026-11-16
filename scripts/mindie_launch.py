@@ -273,9 +273,13 @@ def _current(state: Path) -> dict:
     raise RuntimeError("no committed generation is available")
 
 
+_CONNECTION_ID = os.environ.get("MINDIE_MCP_CONNECTION_ID") or f"kimi-mcp-{os.getpid()}-{os.urandom(6).hex()}"
+
+
 def _child_env(current: dict, surface: str | None = None) -> dict:
     env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
     env["PYTHONIOENCODING"] = "utf-8"
+    env["MINDIE_MCP_CONNECTION_ID"] = _CONNECTION_ID
     env["MINDIE_KIMI_CONFIG"] = current["adapter_config"]
     env["MINDIE_DIAGNOSTICS_CONFIG"] = str(diagnostic_support.reporting_config_path())
     if surface == "remote":
