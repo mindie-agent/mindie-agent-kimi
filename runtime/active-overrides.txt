@@ -1,10 +1,11 @@
 # Active exact component selection; older transitive pins are overridden.
 # The component updater preserves newer installed formal releases.
 # runtime-requirements.txt remains the immutable controller bootstrap trio.
-mindie-coordinator @ git+https://github.com/mindie-agent/coordinator@33e2c6966d21d62969a2148145e74885dc826e3c
-mindie-debugger @ git+https://github.com/mindie-agent/debugger@33052a2fc10c7475e4b819577870ca822efcebd0
-mindie-diagnostics @ git+https://github.com/mindie-agent/diagnostics@96c40049e2fc8e53676f557cb8144421efcfe8ed
-mindie-knowledge @ git+https://github.com/mindie-agent/knowledge@c991b64a1ead277b5ce91b7835337b01aed03998
-mindie-profiler @ git+https://github.com/mindie-agent/profiler@609d555d84857309ac5cb8214da7309f1b783ef0
-mindie-sim @ git+https://github.com/mindie-agent/sim@9dbab02f10843c7b829d6fda7e7b9ad89e4f92e5
-remote-dev @ git+https://github.com/mindie-agent/remote-dev@c4d38f99c1ef5aace1c088af07647941adc2d394
+mindie-harness @ git+https://github.com/mindie-agent/harness@f05569947dbf0131061d8698bb779d024df0c43b
+mindie-coordinator @ git+https://github.com/mindie-agent/coordinator@a3c7336faa0bc14ebdb8f2fd75606c82e96422e9
+mindie-debugger @ git+https://github.com/mindie-agent/debugger@e15c2ed38d8f928db67c5bb1a94269f62207227c
+mindie-diagnostics @ git+https://github.com/mindie-agent/diagnostics@54ac7c03c78f9e02f379051d1613a4427559e10d
+mindie-knowledge @ git+https://github.com/mindie-agent/knowledge@8fe8455669e88ef6963314332422653841518900
+mindie-profiler @ git+https://github.com/mindie-agent/profiler@b702893129724b852c5abcb8971724b8b0a6e870
+mindie-sim @ git+https://github.com/mindie-agent/sim@83fb8288aa998e0a6ad345ca7a16269f0181545b
+remote-dev @ git+https://github.com/mindie-agent/remote-dev@64c5a8d0ca9fe344e7af05f89fc0de6249f2368a
