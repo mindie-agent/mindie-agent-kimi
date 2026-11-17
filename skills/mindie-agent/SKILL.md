@@ -8,7 +8,7 @@ disableModelInvocation: true
 
 ## 1. Core Operating Stance
 
-- **Keep the user's task moving**: Knowledge retrieval, onboarding, diagnostics, and local hypothesis tracking are optional helpers. If any helper fails, report the concrete error once and continue with deterministic MCP tools or authorized host-native tools. Reconcile any `unknown` remote write before repeating it.
+- **Keep the user's task moving**: Knowledge retrieval, diagnostics, and local hypothesis tracking are optional helpers. If any helper fails, report the concrete error once and continue with deterministic MCP tools or authorized host-native tools. Reconcile any `unknown` remote write before repeating it.
 - **Zero-gate deterministic tools (`P2.7`)**: `remote` (`remote-dev`) and `components` (`mindie_status`, `diagnostics_status`, `diagnostics_bundle`, `coordinator`, `debugger`, `profiler`, `sim`) work in every Kimi session, subagent, and automation without `/mindie-agent`, `context_file`, or a required `request_nonce`; `coordinator` runs are addressed directly by `execution_id`, and `remote-dev` background jobs by `job_id`. Obtain a `coordinator` lease (or verify an existing reservation) before running workloads on physical NPUs, pausing only that device step if ownership cannot be confirmed.
 - **Single `/mindie-agent` entry & strict knowledge gate (`P2.1`)**:
   - When the user invokes `/mindie-agent` (optionally followed by a task prompt), call `mindie_entry(op="init", request_nonce=...)` once (with optional `domain="<domain>"`) to activate the current session's knowledge lease and expose `knowledge_*` tools.
@@ -26,19 +26,8 @@ disableModelInvocation: true
   - `coordinator` (`execution_id`) and `remote-dev` (`job_id`) persist authoritative run state across parent sessions, subagents, and compactions—inspect existing handles before resubmitting. Pass explicit `--time-window`, `--step-window`, or `--full-range` and `--clock-domain` to `mindie_profiler`.
   - When repeated `L3` attempts stall on a structural bottleneck, query `L4` structural mutators (`mode="explore"`) and optionally spawn a clean subagent seeded with `exploration_context.subagent_fact_pack.prompt_brief`, verifying multi-factor changes on the operator's real interface.
 
-## 3. Non-Intrusive First-Use Onboarding
+## 3. Progressive References (Load Only When Needed)
 
-- Defer optional onboarding when the user is focused on an active task; reuse saved settings (`contribute`, `disabled`, `read-only`, `later`) without prompting again.
-- During initial setup or when `needs_onboarding_prompt: true` (or `mindie_entry` reports `first_use` unset / `needs_choice`), briefly reference [用户须知](references/user-notice.md) and ask via `AskUserQuestion` in the user's language:
-  1. **Workspace**: Keep the current directory when already inside a repository checkout, or initialize/select `vllm-ascend-workspace` when starting fresh;
-  2. **Community Sharing & Sanitized Fault Reporting**: Enable (`setup.py sharing --enable --project-root "$WORKSPACE_ROOT"` or `mindie_entry(op="choose", choice="contribute", ...)`) vs. Keep Local-Only (`setup.py sharing --disable` or `choice="disabled"`);
-  3. **Optional GitHub Star**: Ask lightly whether to star `mindie-agent/mindie-agent` (only star on an explicit yes).
-- Report local consent state, background reporter health, and external GitHub Issue/PR creation separately.
-
-## 4. Progressive References (Load Only When Needed)
-
-- GitHub sign-in & enterprise network token login: [GitHub Sign-In](references/github-authentication.md)
-- Workspace setup details: [Workspace Setup](references/workspace-setup.md)
 - Detailed schemas & profiler timing discipline: [Domain Tooling](references/domain-skills.md)
 - Diagnostic isolation & scale-up verification (`W1–W7`): [Diagnostic Reasoning](references/diagnostic-reasoning.md)
 - Session lifecycle, multi-domain routing & recovery: [Activation Lifecycle](references/activation-lifecycle.md)
