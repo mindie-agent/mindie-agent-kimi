@@ -148,7 +148,7 @@
     },
     "plugin.commands": {
       "code_paths": [
-        "commands/",
+        "scripts/identity.py:require_current_plugin_command",
         "scripts/entry.py"
       ],
       "evidence_refs": [

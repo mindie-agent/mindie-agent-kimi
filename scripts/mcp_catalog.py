@@ -230,3 +230,235 @@ KNOWLEDGE_TOOLS = [
         ),
     ),
 ]
+
+import json
+import os
+from pathlib import Path
+import re
+import sqlite3
+
+MAX_YIELD_TIME_MS = 30000
+JOB_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{2,95}$")
+REMOTE_ERROR_CATEGORIES = frozenset({
+    "internal", "caller", "validation", "permission", "remote_execution",
+    "cancelled", "cancel_unconfirmed", "cleanup", "configuration",
+    "process_start", "connection_capacity", "connection_timeout",
+    "connection_unavailable", "rpc_disconnected", "rpc_send", "rpc_timeout",
+    "command_exit", "command_protocol", "command_timeout", "remote_worker",
+    "worker_capacity",
+})
+_TERMINAL_COMMAND_STATES = {"succeeded", "failed", "timeout", "cancelled"}
+_COMMAND_TOOLS = {
+    "remote_Bash", "remote_bash", "remote_TaskOutput",
+    "remote_exec_command", "remote_write_stdin", "remote_shell",
+}
+
+
+def canonical_json(value) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+def clamp_remote_args(args):
+    body = dict(args)
+    if "yield_time_ms" in body:
+        yield_ms = body["yield_time_ms"]
+        if type(yield_ms) is not int:
+            raise ValueError("yield_time_ms must be an integer")
+        body["yield_time_ms"] = min(yield_ms, MAX_YIELD_TIME_MS)
+    return body
+
+
+def _validated_job_ref(args):
+    if not isinstance(args, dict):
+        return None, None
+    for key in ("job_id", "session_id"):
+        value = args.get(key)
+        if isinstance(value, str) and JOB_ID_RE.fullmatch(value):
+            return key, value
+    return None, None
+
+
+def remote_stage_failure(args, name, stage, exc=None):
+    structured = {"stage": stage, "remote_outcome": "unconfirmed"}
+    if exc is not None:
+        from remote_dev.core.errors import AUTH_ERROR_HINTS, error_details, safe_auth_error_details
+
+        details = error_details(exc)
+        category = details.get("category")
+        structured["category"] = (
+            category
+            if isinstance(category, str) and category in REMOTE_ERROR_CATEGORIES | AUTH_ERROR_HINTS.keys()
+            else "internal"
+        )
+        certainty = details.get("submission_state")
+        if isinstance(certainty, str) and certainty in {"not_sent", "uncertain", "acknowledged"}:
+            structured["submission_state"] = certainty
+        if type(details.get("retryable")) is bool:
+            structured["retryable"] = details["retryable"]
+        auth = safe_auth_error_details(details)
+        if auth is not None:
+            structured.update(auth)
+        if structured.get("submission_state") == "not_sent":
+            structured["remote_outcome"] = "not_sent"
+        repair = details.get("input_repair")
+        if (
+            structured["category"] == "caller"
+            and structured.get("submission_state") == "not_sent"
+            and isinstance(repair, dict)
+        ):
+            structured["input_repair"] = repair
+            structured["remote_outcome"] = "not_sent"
+    key, value = _validated_job_ref(args)
+    if key:
+        structured[key] = value
+    repair = structured.get("input_repair")
+    if isinstance(repair, dict):
+        missing = [item for item in repair.get("missing", ()) if isinstance(item, str)]
+        action = repair.get("action") if isinstance(repair.get("action"), str) else None
+        text = f"Remote request was not sent ({stage})."
+        if missing:
+            text += f" Missing required argument(s): {', '.join(missing)}."
+        if action:
+            text += f" {action}"
+    elif structured.get("hint"):
+        text = (
+            f"Remote request was not sent ({stage})."
+            if structured.get("submission_state") == "not_sent"
+            else f"Remote outcome unconfirmed ({stage}); inspect the original operation before repeating it."
+        )
+        text += " " + structured["hint"]
+    elif key:
+        text = f"Remote outcome unconfirmed ({stage}). Inspect or stop original {key} {value} before a deliberate repeat."
+    elif name == "remote_bash":
+        if structured.get("submission_state") == "not_sent":
+            structured["remote_outcome"] = "not_sent"
+            text = f"Remote request was not sent ({stage})."
+        else:
+            text = f"Remote submission unconfirmed ({stage}). Inspect local remote-dev job records before a deliberate repeat."
+    else:
+        text = f"Unavailable ({stage}). Continue independently."
+    for k in ("category", "submission_state"):
+        if k in structured:
+            text += f" {k}={structured[k]}."
+    from diagnostic_support import attach
+
+    result = dict(content=[dict(type="text", text=text[:500])], isError=True, structuredContent=structured)
+    return attach(result, getattr(exc, "mindie_diagnostic", None))
+
+
+def _observed_exit_code(result):
+    if not isinstance(result, dict):
+        return None
+    for value in (
+        result.get("exit_code"),
+        (result.get("task") or {}).get("exitCode") if isinstance(result.get("task"), dict) else None,
+    ):
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    for container in (result.get("job"), result.get("remote_status")):
+        if not isinstance(container, dict):
+            continue
+        value = container.get("exit_code")
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+        for nested in (container.get("result"), container.get("remote_status")):
+            if isinstance(nested, dict) and isinstance(nested.get("exit_code"), int) and not isinstance(nested.get("exit_code"), bool):
+                return nested["exit_code"]
+    return None
+
+
+def _completed_command(name, result):
+    if name not in _COMMAND_TOOLS or not isinstance(result, dict):
+        return False
+    error_details = result.get("error_details")
+    if result.get("unknown") or (
+        isinstance(error_details, dict) and error_details.get("submission_state") == "uncertain"
+    ):
+        return False
+    if (result.get("state") or result.get("status")) not in _TERMINAL_COMMAND_STATES:
+        return False
+    return _observed_exit_code(result) is not None
+
+
+def remote_result(name, payload):
+    """Preserve native content blocks and a completed nonzero command."""
+    result_payload = payload.get("result", payload) if isinstance(payload, dict) else payload
+    text = payload.get("text") if isinstance(payload, dict) else None
+    blocks = [dict(type="text", text=text if isinstance(text, str) else canonical_json(payload))]
+    native = payload.get("content") if isinstance(payload, dict) else None
+    if isinstance(native, list):
+        blocks.extend(item for item in native if isinstance(item, dict) and isinstance(item.get("type"), str))
+    if isinstance(result_payload, dict):
+        error_details = result_payload.get("error_details")
+        uncertain = (
+            result_payload.get("status") == "submission_uncertain"
+            or result_payload.get("unknown")
+            or (isinstance(error_details, dict) and error_details.get("submission_state") == "uncertain")
+        )
+    else:
+        uncertain = False
+    if uncertain:
+        is_error = True
+    elif _completed_command(name, result_payload):
+        is_error = False
+    elif isinstance(result_payload, dict):
+        outcome = result_payload.get("outcome")
+        if result_payload.get("status") == "local_recording_failed":
+            completed_locally = (
+                result_payload.get("operation_completed") is True
+                or (
+                    isinstance(result_payload.get("error_details"), dict)
+                    and result_payload["error_details"].get("operation_completed") is True
+                )
+            )
+            if completed_locally:
+                outcome = result_payload.get("execution_outcome", outcome)
+        is_error = outcome not in {None, "success", "cancelled"}
+    else:
+        is_error = False
+    return dict(content=blocks, structuredContent=result_payload, isError=is_error)
+
+
+def has_any_active_knowledge_lease() -> bool:
+    """Read-only check (`?mode=ro`, Iron Rule 1) for any active manual `/mindie-agent` lease (`P2.1`/`AD-11`)."""
+    from paths import admission_path, domain_configs, engine_config_path, load_engine_config_at
+
+    candidate_engines: list[Path] = []
+    try:
+        candidate_engines.append(engine_config_path())
+    except TimeoutError:
+        raise
+    except (OSError, ValueError):
+        return False
+    try:
+        extra = domain_configs()
+        if isinstance(extra, dict):
+            for item in extra.values():
+                if isinstance(item, str) and os.path.isabs(item):
+                    candidate_engines.append(Path(item))
+    except TimeoutError:
+        raise
+    except (OSError, ValueError):
+        pass
+    for eng_file in candidate_engines:
+        try:
+            if not eng_file.is_file():
+                continue
+            eng = load_engine_config_at(eng_file)
+            db_path = admission_path(eng)
+            if not db_path.is_file():
+                continue
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2.0)
+            try:
+                row = conn.execute(
+                    "SELECT 1 FROM leases WHERE enabled = 1 AND entry_enabled = 1 LIMIT 1"
+                ).fetchone()
+                if row is not None:
+                    return True
+            finally:
+                conn.close()
+        except TimeoutError:
+            raise
+        except (OSError, ValueError, sqlite3.Error):
+            continue
+    return False

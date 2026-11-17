@@ -15,31 +15,66 @@ from pathlib import Path
 
 def lease_owning_runtime():
     """Hold the shared lease for this interpreter's disposable generation."""
-    from contextlib import nullcontext
+    from contextlib import ExitStack, nullcontext
     from mindie_knowledge.storage import acquire_runtime_lease, owning_dir
 
     owner = owning_dir(sys.executable)
     if owner is None:
         return nullcontext()
-    return acquire_runtime_lease(owner)
+    stack = ExitStack()
+    stack.enter_context(acquire_runtime_lease(owner))
+    try:
+        from mindie_harness.locks import acquire_generation_lease
+
+        stack.enter_context(acquire_generation_lease(Path(owner)))
+    except Exception:
+        pass
+    return stack
 
 
 def serve_profile(surface):
-    """Cover the native source manifest as well as updater-generated packages."""
-    from remote_dev.mcp.catalog_refresh import serve_selected
+    """Serve resident concurrent MCP directly when on the active interpreter (`AD-03` fixed)."""
+    from remote_dev.mcp.catalog_refresh import CatalogRefresh, file_revision, serve_selected
+    from paths import same_interpreter
     import mindie_launch as launch
 
+    pointer = launch._state_dir() / "update/current.json"
+    if not pointer.exists():
+        import mcp_server
+
+        with lease_owning_runtime():
+            return mcp_server._serve(surface)
+    try:
+        current = launch._current(launch._state_dir())
+    except Exception:
+        current = None
+    if current is not None and same_interpreter(current["python"], sys.executable):
+        import mcp_server
+
+        os.environ["MINDIE_KIMI_CONFIG"] = current["adapter_config"]
+        os.environ["MINDIE_MCP_CONNECTION_ID"] = launch._CONNECTION_ID
+        if surface == "remote":
+            os.environ["REMOTE_DEV_HARNESS_PROFILE"] = launch.KIMI_REMOTE_PROFILE
+        refresh = CatalogRefresh(lambda: file_revision(pointer), mcp_server.send)
+        refresh.start()
+        try:
+            with lease_owning_runtime():
+                return mcp_server._serve(surface)
+        finally:
+            refresh.close()
+
     def select():
-        pointer = launch._state_dir() / "update/current.json"
         if pointer.exists():
-            current = launch._current(launch._state_dir())
-            script = Path(current["generation"]) / "scripts/mcp_server.py"
-            return [current["python"], str(script), surface, "--once"], launch._child_env(current, surface)
+            cur = launch._current(launch._state_dir())
+            script = Path(cur["generation"]) / "scripts/mcp_server.py"
+            return [cur["python"], str(script), surface, "--once"], launch._child_env(cur, surface)
         config = launch._load_config() or {}
-        return [config.get("python") or sys.executable,
-                str(Path(__file__).with_name("mcp_server.py")), surface, "--once"], {
-            "MINDIE_MCP_CONNECTION_ID": launch._CONNECTION_ID,
-        }
+        return [
+            config.get("python") or sys.executable,
+            str(Path(__file__).with_name("mcp_server.py")),
+            surface,
+            "--once",
+        ], {"MINDIE_MCP_CONNECTION_ID": launch._CONNECTION_ID}
 
     with lease_owning_runtime():
         return serve_selected(select)

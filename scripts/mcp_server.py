@@ -38,11 +38,13 @@ coordinator, profiler, sim, local diagnostics and factual status.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import re
 import sqlite3
 import sys
+import threading
 import uuid
 from pathlib import Path
 
@@ -76,7 +78,28 @@ REMOTE_ERROR_CATEGORIES = frozenset({
 })
 JOB_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{2,95}$")
 _CONNECTION_SESSION_ID = os.environ.get("MINDIE_MCP_CONNECTION_ID") or f"kimi-mcp-{os.getpid()}-{uuid.uuid4().hex[:12]}"
-from mcp_catalog import KNOWLEDGE_TOOLS, NONCE_PROP
+from mcp_catalog import (
+    JOB_ID_RE,
+    KNOWLEDGE_TOOLS,
+    MAX_YIELD_TIME_MS,
+    NONCE_PROP,
+    REMOTE_ERROR_CATEGORIES,
+    clamp_remote_args,
+    has_any_active_knowledge_lease as _has_any_active_knowledge_lease,
+    remote_result,
+    remote_stage_failure,
+)
+
+
+_SEND_LOCK = threading.Lock()
+_REMOTE_ENV_LOCK = threading.Lock()
+_READ_ONLY_TOOLS = frozenset({
+    "remote_read", "remote_Read", "remote_glob", "remote_Glob", "remote_grep", "remote_Grep",
+    "remote_ReadMediaFile", "remote_ls", "remote_job_status", "remote_job_tail", "remote_job_output",
+    "remote_job_stop", "remote_job_cancel", "remote_TaskOutput", "remote_TaskStop", "remote_TaskList",
+    "remote_probe", "remote_context_snapshot", "mindie_status", "diagnostics_status",
+    "knowledge_query", "knowledge_explain",
+})
 
 
 def canonical(value):
@@ -84,8 +107,9 @@ def canonical(value):
 
 
 def send(message):
-    sys.stdout.buffer.write((canonical(message) + "\n").encode("utf-8"))
-    sys.stdout.buffer.flush()
+    with _SEND_LOCK:
+        sys.stdout.buffer.write((canonical(message) + "\n").encode("utf-8"))
+        sys.stdout.buffer.flush()
 
 
 def parse_rpc_line(line):
@@ -113,179 +137,6 @@ def failure(exc):
 
     text = f"Unavailable: {exc}. Continue independently."[:500]
     return attach(dict(content=[dict(type="text", text=text)], isError=True), getattr(exc, "mindie_diagnostic", None))
-
-
-def _validated_job_ref(args):
-    if not isinstance(args, dict):
-        return None, None
-    for key in ("job_id", "session_id"):
-        value = args.get(key)
-        if isinstance(value, str) and JOB_ID_RE.fullmatch(value):
-            return key, value
-    return None, None
-
-
-def remote_stage_failure(args, name, stage, exc=None):
-    structured = {"stage": stage, "remote_outcome": "unconfirmed"}
-    if exc is not None:
-        from remote_dev.core.errors import AUTH_ERROR_HINTS, error_details, safe_auth_error_details
-
-        details = error_details(exc)
-        category = details.get("category")
-        structured["category"] = category if isinstance(category, str) and category in REMOTE_ERROR_CATEGORIES | AUTH_ERROR_HINTS.keys() else "internal"
-        certainty = details.get("submission_state")
-        if isinstance(certainty, str) and certainty in {"not_sent", "uncertain", "acknowledged"}:
-            structured["submission_state"] = certainty
-        if type(details.get("retryable")) is bool:
-            structured["retryable"] = details["retryable"]
-        auth = safe_auth_error_details(details)
-        if auth is not None:
-            structured.update(auth)
-        if structured.get("submission_state") == "not_sent":
-            structured["remote_outcome"] = "not_sent"
-        repair = details.get("input_repair")
-        # Only the shared caller classification is trusted to describe a local
-        # pre-dispatch correction. Transport and uncertain outcomes never gain
-        # replay instructions here.
-        if (structured["category"] == "caller"
-                and structured.get("submission_state") == "not_sent"
-                and isinstance(repair, dict)):
-            structured["input_repair"] = repair
-            structured["remote_outcome"] = "not_sent"
-    key, value = _validated_job_ref(args)
-    if key:
-        structured[key] = value
-    repair = structured.get("input_repair")
-    if isinstance(repair, dict):
-        missing = [item for item in repair.get("missing", ()) if isinstance(item, str)]
-        action = repair.get("action") if isinstance(repair.get("action"), str) else None
-        # Render only bounded shared repair metadata; never exception prose.
-        text = f"Remote request was not sent ({stage})."
-        if missing:
-            text += f" Missing required argument(s): {', '.join(missing)}."
-        if action:
-            text += f" {action}"
-    elif structured.get("hint"):
-        text = (
-            f"Remote request was not sent ({stage})."
-            if structured.get("submission_state") == "not_sent"
-            else f"Remote outcome unconfirmed ({stage}); inspect the original operation before repeating it."
-        )
-        text += " " + structured["hint"]
-    elif key:
-        text = f"Remote outcome unconfirmed ({stage}). Inspect or stop original {key} {value} before a deliberate repeat."
-    elif name == "remote_bash":
-        if structured.get("submission_state") == "not_sent":
-            structured["remote_outcome"] = "not_sent"
-            text = f"Remote request was not sent ({stage})."
-        else:
-            text = f"Remote submission unconfirmed ({stage}). Inspect local remote-dev job records before a deliberate repeat."
-    else:
-        text = f"Unavailable ({stage}). Continue independently."
-    for k in ("category", "submission_state"):
-        if k in structured:
-            text += f" {k}={structured[k]}."
-    from diagnostic_support import attach
-
-    result = dict(content=[dict(type="text", text=text[:500])], isError=True, structuredContent=structured)
-    return attach(result, getattr(exc, "mindie_diagnostic", None))
-
-
-def clamp_remote_args(args):
-    body = dict(args)
-    if "yield_time_ms" in body:
-        yield_ms = body["yield_time_ms"]
-        if type(yield_ms) is not int:
-            raise ValueError("yield_time_ms must be an integer")
-        body["yield_time_ms"] = min(yield_ms, MAX_YIELD_TIME_MS)
-    return body
-
-
-_TERMINAL_COMMAND_STATES = {"succeeded", "failed", "timeout", "cancelled"}
-_COMMAND_TOOLS = {
-    "remote_Bash", "remote_bash", "remote_TaskOutput",
-    "remote_exec_command", "remote_write_stdin", "remote_shell",
-}
-
-
-def _observed_exit_code(result):
-    """Find a native exit code without inventing one for helper failures."""
-    if not isinstance(result, dict):
-        return None
-    for value in (
-        result.get("exit_code"),
-        (result.get("task") or {}).get("exitCode") if isinstance(result.get("task"), dict) else None,
-    ):
-        if isinstance(value, int) and not isinstance(value, bool):
-            return value
-    for container in (result.get("job"), result.get("remote_status")):
-        if not isinstance(container, dict):
-            continue
-        value = container.get("exit_code")
-        if isinstance(value, int) and not isinstance(value, bool):
-            return value
-        for nested in (container.get("result"), container.get("remote_status")):
-            if isinstance(nested, dict) and isinstance(nested.get("exit_code"), int) \
-                    and not isinstance(nested.get("exit_code"), bool):
-                return nested["exit_code"]
-    return None
-
-
-def _completed_command(name, result):
-    if name not in _COMMAND_TOOLS or not isinstance(result, dict):
-        return False
-    error_details = result.get("error_details")
-    if result.get("unknown") or (
-            isinstance(error_details, dict)
-            and error_details.get("submission_state") == "uncertain"):
-        return False
-    if (result.get("state") or result.get("status")) not in _TERMINAL_COMMAND_STATES:
-        return False
-    # A terminal state alone is not proof that the command ran: a failed
-    # start/status RPC has no observed exit code. Require the real observation.
-    return _observed_exit_code(result) is not None
-
-
-def remote_result(name, payload):
-    """Preserve native content blocks and a completed nonzero command."""
-    result_payload = payload.get("result", payload) if isinstance(payload, dict) else payload
-    text = payload.get("text") if isinstance(payload, dict) else None
-    blocks = [dict(
-        type="text",
-        text=text if isinstance(text, str) else canonical(payload),
-    )]
-    native = payload.get("content") if isinstance(payload, dict) else None
-    if isinstance(native, list):
-        blocks.extend(item for item in native
-                      if isinstance(item, dict) and isinstance(item.get("type"), str))
-    if isinstance(result_payload, dict):
-        error_details = result_payload.get("error_details")
-        uncertain = (
-            result_payload.get("status") == "submission_uncertain"
-            or result_payload.get("unknown")
-            or (isinstance(error_details, dict)
-                and error_details.get("submission_state") == "uncertain")
-        )
-    else:
-        uncertain = False
-    if uncertain:
-        is_error = True
-    elif _completed_command(name, result_payload):
-        is_error = False
-    elif isinstance(result_payload, dict):
-        outcome = result_payload.get("outcome")
-        if result_payload.get("status") == "local_recording_failed":
-            completed_locally = (
-                result_payload.get("operation_completed") is True
-                or (isinstance(result_payload.get("error_details"), dict)
-                    and result_payload["error_details"].get("operation_completed") is True)
-            )
-            if completed_locally:
-                outcome = result_payload.get("execution_outcome", outcome)
-        is_error = outcome not in {None, "success", "cancelled"}
-    else:
-        is_error = False
-    return dict(content=blocks, structuredContent=result_payload, isError=is_error)
 
 
 def reject_native_identity_args(args, surface):
@@ -518,6 +369,8 @@ def component_tools():
 
 
 def knowledge_tools():
+    if not _has_any_active_knowledge_lease():
+        return [KNOWLEDGE_TOOLS[0]]
     from knowledge_sync import TOOL
 
     return [*KNOWLEDGE_TOOLS, *_nonce_tools([TOOL])]
@@ -533,15 +386,16 @@ def remote_call(name, args, session):
     from remote_dev.mcp.schemas import ALIASES
     from remote_dev.mcp.tools import call_tool
 
-    root = state_dir() / "remote" / session
+    # Profile-shared remote job root (`AD-02` fixed) so subagents and reconnected
+    # MCP sessions can poll/stop parent `job_id`s, while `REMOTE_DEV_SESSION_ID`
+    # keeps read-before-write ledgers scoped per session.
+    root = state_dir() / "remote"
     root.mkdir(parents=True, exist_ok=True)
-    os.environ["REMOTE_DEV_SESSION_ID"] = session
-    os.environ["REMOTE_DEV_STATE_DIR"] = str(root)
-    # The native host calls a server-qualified name such as
-    # `mcp__plugin-mindie-agent_remote__remote_Read`; remote-dev dispatch takes
-    # the local wire name after the trusted nonce has already been claimed.
     local = local_tool_name(name) if isinstance(name, str) else name
-    return call_tool(ALIASES.get(local, local), clamp_remote_args(args))
+    with _REMOTE_ENV_LOCK:
+        os.environ["REMOTE_DEV_SESSION_ID"] = session
+        os.environ["REMOTE_DEV_STATE_DIR"] = str(root)
+        return call_tool(ALIASES.get(local, local), clamp_remote_args(args))
 
 
 def handle(surface, message):
@@ -556,7 +410,7 @@ def handle(surface, message):
             jsonrpc="2.0", id=ident,
             result=dict(
                 protocolVersion="2025-11-25",
-                capabilities={"tools": {}},
+                capabilities={"tools": {"listChanged": True}},
                 serverInfo={"name": f"mindie-kimi-{surface}", "version": plugin_version()},
             ),
         )
@@ -666,7 +520,10 @@ def handle(surface, message):
                 warning = "Local bind receipt could not be saved. The tool result is unchanged; do not repeat the call."
                 result["structuredContent"] = dict(
                     result.get("structuredContent") or {},
-                    bind_warning=warning, diagnostic_ref=diagnostic,
+                    bind_warning=warning,
+                    receipt_warning=warning,
+                    receipt_unconfirmed=True,
+                    diagnostic_ref=diagnostic,
                 )
                 result["content"] = [*result.get("content", []), dict(type="text", text=warning)]
             except (OSError, sqlite3.Error) as exc:
@@ -676,9 +533,25 @@ def handle(surface, message):
                 warning = "Local bind receipt could not be saved. The tool result is unchanged; do not repeat the call."
                 result["structuredContent"] = dict(
                     result.get("structuredContent") or {},
-                    bind_warning=warning, diagnostic_ref=diagnostic,
+                    bind_warning=warning,
+                    receipt_warning=warning,
+                    receipt_unconfirmed=True,
+                    diagnostic_ref=diagnostic,
                 )
                 result["content"] = [*result.get("content", []), dict(type="text", text=warning)]
+
+
+def _is_readonly_rpc(message: dict) -> bool:
+    method = message.get("method")
+    if method == "tools/list":
+        return True
+    if method != "tools/call":
+        return False
+    params = message.get("params") if isinstance(message.get("params"), dict) else {}
+    raw_name = params.get("name")
+    if not isinstance(raw_name, str):
+        return False
+    return local_tool_name(raw_name) in _READ_ONLY_TOOLS
 
 
 def serve(surface):
@@ -690,16 +563,45 @@ def serve(surface):
 
 def _serve(surface):
     stdin = sys.stdin.buffer
-    while True:
-        raw = stdin.readline()
-        if not raw:
-            return
-        line = raw.rstrip(b"\r\n")
-        if not line.strip():
-            continue
-        message = parse_rpc_line(line)
-        if isinstance(message, dict) and (response := handle(surface, message)) is not None:
+    read_pool = ThreadPoolExecutor(max_workers=16, thread_name_prefix="kimi-mcp-ro")
+    work_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="kimi-mcp-rw")
+    last_lease_state = _has_any_active_knowledge_lease() if surface == "knowledge" else None
+
+    def _run_and_reply(msg):
+        nonlocal last_lease_state
+        response = handle(surface, msg)
+        if response is not None:
             send(response)
+        if surface == "knowledge" and msg.get("method") == "tools/call":
+            params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
+            if local_tool_name(str(params.get("name") or "")) == "mindie_entry":
+                now_state = _has_any_active_knowledge_lease()
+                if now_state != last_lease_state:
+                    last_lease_state = now_state
+                    send({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"})
+
+    try:
+        while True:
+            raw = stdin.readline()
+            if not raw:
+                return
+            line = raw.rstrip(b"\r\n")
+            if not line.strip():
+                continue
+            message = parse_rpc_line(line)
+            if not isinstance(message, dict):
+                continue
+            method = message.get("method")
+            if method in {"initialize", "ping", "notifications/initialized", "notifications/cancelled"}:
+                response = handle(surface, message)
+                if response is not None:
+                    send(response)
+                continue
+            pool = read_pool if _is_readonly_rpc(message) else work_pool
+            pool.submit(_run_and_reply, message)
+    finally:
+        read_pool.shutdown(wait=True)
+        work_pool.shutdown(wait=True)
 
 
 def serve_once(surface):

@@ -49,13 +49,7 @@ class McpTests(unittest.TestCase):
                 self.assertEqual(init["result"]["serverInfo"]["version"], manifest["version"])
                 listed = self.rpc(proc, dict(jsonrpc="2.0", id=2, method="tools/list"))
                 names = {item["name"] for item in listed["result"]["tools"]}
-                self.assertEqual(
-                    names,
-                    {
-                        "mindie_entry", "knowledge_query", "knowledge_explain",
-                        "knowledge_feedback", "knowledge_distill", "knowledge_sync",
-                    },
-                )
+                self.assertEqual(names, {"mindie_entry"})
                 missing = self.rpc(
                     proc,
                     dict(
@@ -69,6 +63,18 @@ class McpTests(unittest.TestCase):
                     ),
                 )
                 self.assertTrue(missing["result"]["isError"])
+                with patch.dict(os.environ, MINDIE_KIMI_CONFIG=str(config)):
+                    import admission
+                    admission.gate().activate("ses_active", project_root=str(raw))
+                listed_active = self.rpc(proc, dict(jsonrpc="2.0", id=4, method="tools/list"))
+                active_names = {item["name"] for item in listed_active["result"]["tools"]}
+                self.assertEqual(
+                    active_names,
+                    {
+                        "mindie_entry", "knowledge_query", "knowledge_explain",
+                        "knowledge_feedback", "knowledge_distill", "knowledge_sync",
+                    },
+                )
             finally:
                 proc.stdin.close()
                 proc.kill()

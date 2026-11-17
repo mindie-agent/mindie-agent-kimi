@@ -23,7 +23,10 @@ class UpgradeBootstrapTests(unittest.TestCase):
         self.launch = self.update / 'launch' / SHA
         self.scripts.mkdir(parents=True)
         self.launch.mkdir(parents=True)
-        for name in ('diagnostic_support.py', 'paths.py', 'launch_budget.py'):
+        for name in (
+            'diagnostic_support.py', 'paths.py', 'launch_budget.py',
+            'kimi_diagnostics.py', 'kimi_paths.py', 'kimi_bounded.py', 'kimi_launch.py',
+        ):
             shutil.copy2(ROOT / 'scripts' / name, self.scripts / name)
         for name in ('mindie_launch.py', 'bounded.py'):
             shutil.copy2(ROOT / 'scripts' / name, self.launch / name)

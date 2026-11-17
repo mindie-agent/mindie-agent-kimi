@@ -346,11 +346,48 @@ def _validate_plugin_command_origin(origin: dict, command: str) -> dict:
     )
 
 
+def _subcommand_from_args(raw_args: str, command: str) -> str | None:
+    stripped = (raw_args or "").lstrip()
+    if not stripped:
+        return None
+    parts = stripped.split(None, 1)
+    head = parts[0]
+    if head not in COMMANDS or ENTRY_ALIASES.get(head, head) != command:
+        return None
+    return parts[1].strip() if len(parts) > 1 else ""
+
+
 def require_current_plugin_command(session_id: str, command: str, *, kimi_home=None) -> dict:
-    origin = current_turn_origin(session_id, kimi_home=kimi_home)
-    if origin.get("kind") != "plugin_command":
-        raise ValueError("current turn is not a native MindIE slash command")
-    return _validate_plugin_command_origin(origin, command)
+    openings = _turn_openings(session_id, kimi_home=kimi_home)
+    if not openings:
+        raise ValueError("current native turn origin is unavailable")
+    record, origin = openings[-1]
+    kind = origin.get("kind")
+    if kind == "plugin_command":
+        return _validate_plugin_command_origin(origin, command)
+    if kind == "skill_activation":
+        entry = _current_skill_activation(origin, command)
+        if origin.get("trigger") == "model-tool" or origin.get("inTurn") is True:
+            opener_text = next(
+                (_record_text(rec) for rec, org in reversed(openings) if org.get("kind") == "user"),
+                "",
+            )
+            if not _invokes_entry(opener_text):
+                raise ValueError("model-initiated skill use is not the user entry")
+        sub_args = _subcommand_from_args(entry["arguments"], command)
+        if sub_args is None:
+            raise ValueError("current slash command does not match this operation")
+        return dict(command=command, arguments=sub_args, activation_id=entry["activation_id"])
+    if kind == "user" and _invokes_entry(_record_text(record)):
+        prompt_id = record.get("promptId") or (record.get("message") or {}).get("id")
+        if not isinstance(prompt_id, str) or not prompt_id:
+            raise ValueError("native user entry lacks its prompt identity")
+        tail = _record_text(record).lstrip()[len("/mindie-agent") :].strip()
+        sub_args = _subcommand_from_args(tail, command)
+        if sub_args is None:
+            raise ValueError("current slash command does not match this operation")
+        return dict(command=command, arguments=sub_args, activation_id="user-entry:" + prompt_id)
+    raise ValueError("current turn is not a native MindIE slash command")
 
 
 def _record_text(record):

@@ -11,6 +11,7 @@ concurrency:
 
 jobs:
   component:
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -33,14 +34,24 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+      - name: Enforce Unix LF Line Endings
+        run: python .github/scripts/check_lf_eol.py
       - name: Install pinned runtime
         run: |
           git config --global core.longpaths true
           git config --global core.autocrlf false
           pip install uv
           uv pip install --system -r runtime-requirements.txt -r runtime/active-overrides.txt -r test-requirements.txt --overrides runtime/active-overrides.txt
+          uv pip install --system --no-deps "mindie-harness @ git+https://github.com/mindie-agent/harness.git@main"
       - name: Compile all committed Python
         run: python -m compileall -q scripts tests
+      - name: Outside-checkout artifact smoke check
+        shell: bash
+        run: |
+          SMOKE_DIR="$(mktemp -d)"
+          trap 'rm -rf "$SMOKE_DIR"' EXIT
+          cp -R assets scripts kimi.plugin.json harness-compatibility.json "$SMOKE_DIR/"
+          (cd "$SMOKE_DIR" && python -c "import hashlib, json, pathlib; p=pathlib.Path('assets/mindie-harness-seed.pyz'); lk=json.loads(pathlib.Path('assets/seed-lock.json').read_text()); assert hashlib.sha256(p.read_bytes()).hexdigest()==lk['sha256']; import sys; sys.path.insert(0, 'scripts'); import paths, bounded, diagnostic_support, launch_budget, mindie_launch; assert mindie_launch.remote_budget('remote_Bash', {'timeout': 300}) == 360.0")
       - name: Pin preflight
         env:
           MINDIE_PEER_CC_REPO: ${{ github.workspace }}/peer-cc
@@ -66,6 +77,7 @@ jobs:
     needs: [component]
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - env:
           RESULTS: ${{ toJSON(needs) }}

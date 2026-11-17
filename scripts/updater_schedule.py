@@ -1,28 +1,27 @@
 #!/usr/bin/env python3
-"""Native OS schedule management for the MindIE Kimi updater.
+"""Native OS schedule management for the MindIE Kimi updater (`mindie_harness.runtime.scheduler`).
 
 [Role]
-Writes the windowless Windows wrapper and registered task, writes and
-bootstraps the launchd plist, queries native scheduler state, and unregisters
-either schedule with explicit readback. `updater.py` re-exports these helpers
-and binds itself so monkeypatches keep resolving through it.
+Writes the windowless Windows GUI wrapper (`render_windows_gui_wrapper` — zero
+`CREATE_NEW_CONSOLE`), registers/migrates `MindIEKimiUpdate` and `agent.mindie.kimi-update.plist`
+with verified readback, and unregisters either schedule cleanly.
 
 [Invariants]
-- Registration is only reported as scheduled after native readback proves the
-  exact wrapper action.
-- Uninstall reports success only after the scheduler state is observed absent.
-- The generated wrapper covers the 1210s launcher budget plus 10s cleanup.
-- Scheduler dispatch requires the actual native commands, independent of OS labels.
+- Zero `CREATE_NEW_CONSOLE` or `SW_HIDE`: Windows wrappers use `mindie_harness.process.run_owned`
+  (`CREATE_NO_WINDOW = 0x08000000`) launched by a PE-verified `Subsystem == 2` `pythonw.exe`.
+- `refresh_existing_wrapper` updates `MindIEKimiUpdate.pyw` AND migrates any registered
+  `MindIEKimiUpdate` Scheduled Task `<Command>` to the committed generation's `pythonw.exe`
+  before old generations can be garbage-collected.
+- Uninstall reports success only after native readback observes the schedule absent.
 
 [Timeouts & Locks]
-- `subprocess.run(..., timeout=1220)` in the generated wrapper; `_native_run`
-  callers pass explicit 10-30s budgets and uninstall readback polls for 3s.
+- Generated wrapper enforces a `1220s` deadline (`1210s` launcher + `10s` grace).
+- Native scheduler registration/readback commands run under `10-30s` bounded deadlines.
 
 [Side-Effect Policy]
-- Writes `update/MindIEKimiUpdate.pyw`/`.xml`, the user LaunchAgents plist, and
-  launchd/Task Scheduler registrations; uninstall removes only its own entries.
+- Writes `update/MindIEKimiUpdate.pyw`/`.xml`, user `LaunchAgents` plist, and OS scheduler
+  registrations; `uninstall_schedule` removes only MindIE-owned entries.
 """
-
 from __future__ import annotations
 
 from datetime import datetime, timedelta
@@ -30,10 +29,14 @@ import json
 import os
 from pathlib import Path
 import shutil
-import struct
 import subprocess
 import time
 import xml.etree.ElementTree as ET
+
+from mindie_harness.atomic import atomic_write_text
+from mindie_harness.paths import HarnessError
+from mindie_harness.process import verify_gui_subsystem
+from mindie_harness.runtime.scheduler import render_windows_gui_wrapper
 
 try:
     from bounded import run as bounded_run
@@ -43,7 +46,9 @@ except ImportError:
     which_host_binary = None
 
 INTERVAL_SECONDS = 300
+WRAPPER_TIMEOUT_SECONDS = 1220.0
 LAUNCHER = "mindie_launch.py"
+CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 _HOST = None
 
@@ -74,59 +79,49 @@ def _scheduler_backend():
 
 
 def _wrapper_body(command) -> str:
-    # Keep a hidden console for the launcher and its ordinary console children.
-    # CREATE_NO_WINDOW alone would let those children allocate a visible console.
-    return (
-        "import subprocess\n"
-        "startup = subprocess.STARTUPINFO()\n"
-        "startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW\n"
-        "startup.wShowWindow = subprocess.SW_HIDE\n"
-        f"raise SystemExit(subprocess.run({list(command)!r},\n"
-        "    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,\n"
-        "    startupinfo=startup, creationflags=subprocess.CREATE_NEW_CONSOLE,\n"
-        "    timeout=1220, check=False).returncode)\n"
-    )
+    """Render a zero-popup Windows GUI `.pyw` wrapper via `mindie_harness.runtime.scheduler`."""
+    return render_windows_gui_wrapper(list(command), timeout_seconds=WRAPPER_TIMEOUT_SECONDS)
 
 
 def _schedule_wrapper(adapter: dict, command) -> Path:
     wrapper = _h("update_dir")(adapter) / "MindIEKimiUpdate.pyw"
     _h("update_dir")(adapter).mkdir(parents=True, exist_ok=True)
-    body = _h("_wrapper_body")(command)
-    tmp = wrapper.with_name(wrapper.name + f".tmp-{os.getpid()}")
-    tmp.write_text(body, encoding="utf-8")
-    os.replace(tmp, wrapper)
+    atomic_write_text(wrapper, _h("_wrapper_body")(command), mode=0o600)
     return wrapper
 
 
-
 def refresh_existing_wrapper(adapter, current):
-    """Carry an already scheduled action to the committed launcher and budget.
-
-    Replacing the managed script preserves the native task's enabled/disabled
-    choice and never re-registers a task or terminates its current invocation.
-    """
+    """Carry an already scheduled action (and Windows task `<Command>`) to the committed runtime."""
     wrapper = _h("update_dir")(adapter) / "MindIEKimiUpdate.pyw"
     if not wrapper.is_file():
         return False
     from paths import profile_config_path
+
     launcher = _h("launch_dir")(adapter) / (current.get("sha") or "bootstrap") / _h("LAUNCHER")
     if not launcher.is_file() or not (launcher.parent / "bounded.py").is_file():
         raise ValueError("committed scheduled launcher is unavailable")
     config_file = adapter.get("profile_config")
     if not (isinstance(config_file, str) and os.path.isabs(config_file)):
         config_file = str(profile_config_path())
-    command = [current["python"], str(launcher), "--config", config_file,
-               "updater", "check"]
-    if wrapper.read_text(encoding="utf-8") == _h("_wrapper_body")(command):
-        return False
-    _h("_schedule_wrapper")(adapter, command)
-    return True
+    command = [current["python"], str(launcher), "--config", config_file, "updater", "check"]
+    body = _h("_wrapper_body")(command)
+    changed = wrapper.read_text(encoding="utf-8") != body
+    if changed:
+        _h("_schedule_wrapper")(adapter, command)
+    if os.name == "nt" and _scheduler_backend() == "task-scheduler":
+        pythonw = Path(current["python"]).with_name("pythonw.exe")
+        try:
+            _h("_require_windowless_python")(pythonw)
+            state, _ = _h("_task_state")("MindIEKimiUpdate")
+            if state == "present":
+                _h("_register_windows_schedule")(adapter, command)
+                changed = True
+        except (SystemExit, RuntimeError, OSError):
+            pass
+    return changed
 
 
 def _verify_scheduled_task(wrapper: Path, pythonw: Path) -> None:
-    # Headless Windows PowerShell 5.1 (`CREATE_NO_WINDOW`) has no console handle,
-    # so `[Console]::OutputEncoding = ...` throws IOException (and parameterless
-    # `UTF8Encoding::new()` emits a BOM). Write UTF-8 without BOM to raw stdout.
     script = (
         "$ErrorActionPreference='Stop'; "
         "$xml = Export-ScheduledTask -TaskName MindIEKimiUpdate -ErrorAction Stop; "
@@ -136,15 +131,18 @@ def _verify_scheduled_task(wrapper: Path, pythonw: Path) -> None:
     )
     output = _h("bounded_run")(
         ["powershell", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
-        "", timeout=30,
+        "",
+        timeout=30,
     )
     try:
         actions = ET.fromstring(output.lstrip("\ufeff")).findall("./{*}Actions/{*}Exec")
     except ET.ParseError:
         actions = []
-    if (len(actions) != 1
-            or actions[0].findtext("{*}Command") != str(pythonw)
-            or actions[0].findtext("{*}Arguments") != subprocess.list2cmdline([str(wrapper)])):
+    if (
+        len(actions) != 1
+        or actions[0].findtext("{*}Command") != str(pythonw)
+        or actions[0].findtext("{*}Arguments") != subprocess.list2cmdline([str(wrapper)])
+    ):
         raise SystemExit(
             "scheduled task readback does not match the windowless wrapper action; "
             "the registration is not trusted"
@@ -152,31 +150,12 @@ def _verify_scheduled_task(wrapper: Path, pythonw: Path) -> None:
 
 
 def _require_windowless_python(python):
-    """Task metadata cannot hide a CUI executable named pythonw.exe.
-
-    PE32 and PE32+ place Subsystem at optional-header offset 68; read just
-    these headers before touching any wrapper or native registration.
-    """
+    """Verify PE `Subsystem == 2` (`IMAGE_SUBSYSTEM_WINDOWS_GUI`) via `mindie_harness.process`."""
     try:
-        with Path(python).open("rb") as stream:
-            dos = stream.read(64)
-            if len(dos) != 64 or dos[:2] != b"MZ":
-                raise ValueError()
-            offset = struct.unpack_from("<I", dos, 60)[0]
-            if offset < 64:
-                raise ValueError()
-            stream.seek(offset)
-            pe = stream.read(24)
-            optional = stream.read(70)
-            if (len(pe) != 24 or pe[:4] != b"PE\0\0"
-                    or struct.unpack_from("<H", pe, 20)[0] < 70
-                    or len(optional) != 70
-                    or struct.unpack_from("<H", optional)[0] not in {0x10B, 0x20B}
-                    or struct.unpack_from("<H", optional, 68)[0] != 2):
-                raise ValueError()
+        verify_gui_subsystem(Path(python))
     except TimeoutError:
         raise
-    except (OSError, ValueError):
+    except (HarnessError, OSError, ValueError):
         raise SystemExit(
             f"a PE GUI windowless Python is required at {python}; task was not registered"
         ) from None
@@ -184,10 +163,8 @@ def _require_windowless_python(python):
 
 def _register_windows_schedule(adapter: dict, command) -> dict:
     pythonw = Path(command[0]).with_name("pythonw.exe")
-    _require_windowless_python(pythonw)
+    _h("_require_windowless_python")(pythonw)
     wrapper = _h("_schedule_wrapper")(adapter, command)
-    # XML keeps the interpreter and wrapper paths separate, without /TR's
-    # command-line length limit or cmd.exe's codepage and metacharacter parsing.
     task = ET.Element("Task", xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task", version="1.2")
     trigger = ET.SubElement(ET.SubElement(task, "Triggers"), "TimeTrigger")
     start = datetime.now() + timedelta(seconds=_h("INTERVAL_SECONDS"))
@@ -197,6 +174,7 @@ def _register_windows_schedule(adapter: dict, command) -> dict:
     ET.SubElement(principal, "LogonType").text = "InteractiveToken"
     settings = ET.SubElement(task, "Settings")
     ET.SubElement(settings, "MultipleInstancesPolicy").text = "IgnoreNew"
+    ET.SubElement(settings, "Hidden").text = "true"
     action = ET.SubElement(ET.SubElement(task, "Actions", Context="Author"), "Exec")
     ET.SubElement(action, "Command").text = str(pythonw)
     ET.SubElement(action, "Arguments").text = subprocess.list2cmdline([str(wrapper)])
@@ -204,7 +182,8 @@ def _register_windows_schedule(adapter: dict, command) -> dict:
     ET.ElementTree(task).write(definition, encoding="utf-16", xml_declaration=True)
     _h("bounded_run")(
         ["schtasks", "/Create", "/F", "/TN", "MindIEKimiUpdate", "/XML", str(definition)],
-        "", timeout=30,
+        "",
+        timeout=30,
     )
     _h("_verify_scheduled_task")(wrapper, pythonw)
     return {"result": "scheduled", "task": "MindIEKimiUpdate", "action": str(wrapper), "verified": True}
@@ -225,6 +204,7 @@ def install_schedule(config_file=None) -> int:
         raise SystemExit(f"no launcher available at {launcher.parent}")
     command = _h("schedule_command")(launcher, config_file)
     from mindie_diagnostics.service_environment import prepare
+
     prepare(_h("update_dir")(adapter))
     backend = _scheduler_backend()
     if backend == "launchd":
@@ -241,6 +221,7 @@ def install_schedule(config_file=None) -> int:
                         "PATH": os.environ.get("PATH")
                         or "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
                     },
+                    "KeepAlive": False,
                     "StartInterval": _h("INTERVAL_SECONDS"),
                     "StandardOutPath": os.devnull,
                     "StandardErrorPath": os.devnull,
@@ -259,19 +240,25 @@ def install_schedule(config_file=None) -> int:
         print(json.dumps(_h("_register_windows_schedule")(adapter, command)))
         return 0
     print(
-        json.dumps({
-            "result": "unsupported-platform",
-            "hint": f"run every {_h('INTERVAL_SECONDS')}s via your scheduler: " + " ".join(command),
-        })
+        json.dumps(
+            {
+                "result": "unsupported-platform",
+                "hint": f"run every {_h('INTERVAL_SECONDS')}s via your scheduler: " + " ".join(command),
+            }
+        )
     )
     return 1
 
 
 def _native_run(argv, timeout):
     completed = subprocess.run(
-        argv, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-        errors="replace", timeout=timeout,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        argv,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        errors="replace",
+        timeout=timeout,
+        creationflags=CREATE_NO_WINDOW,
     )
     return completed.returncode, completed.stdout or "", completed.stderr or ""
 
@@ -354,7 +341,8 @@ def _uninstall_launchd(label, plist):
             return _h("_schedule_failed")(
                 "readback",
                 "service-retained" if state == "loaded" else "state-unproven",
-                plist=plist, detail=detail or bootout_detail,
+                plist=plist,
+                detail=detail or bootout_detail,
             )
     plist.unlink(missing_ok=True)
     print(json.dumps({"result": "unscheduled"}))
@@ -391,7 +379,8 @@ def _uninstall_task(task):
             return _h("_schedule_failed")(
                 "readback",
                 "service-retained" if state == "present" else "state-unproven",
-                task=task, detail=detail,
+                task=task,
+                detail=detail,
             )
     print(json.dumps({"result": "unscheduled"}))
     return 0
@@ -410,9 +399,11 @@ def uninstall_schedule(*, label=None, plist_path=None, schedule_root=None, task=
     if backend == "task-scheduler":
         return _h("_uninstall_task")(task or "MindIEKimiUpdate")
     print(
-        json.dumps({
-            "result": "unsupported-platform",
-            "hint": "remove the agent.mindie.kimi-update schedule with your platform tools",
-        })
+        json.dumps(
+            {
+                "result": "unsupported-platform",
+                "hint": "remove the agent.mindie.kimi-update schedule with your platform tools",
+            }
+        )
     )
     return 1

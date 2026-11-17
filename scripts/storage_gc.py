@@ -147,14 +147,24 @@ def keep_paths(adapter, current):
 
 
 def _scheduled_pins(adapter):
+    pins: list[str] = []
     try:
         from host_pin_refresh import scheduled_pins
 
-        return scheduled_pins(adapter)
+        pins.extend(scheduled_pins(adapter))
     except TimeoutError:
         raise
     except Exception:
-        return []
+        pass
+    try:
+        from mindie_harness.runtime.scheduler import discover_scheduled_executables
+
+        pins.extend(str(path) for path in discover_scheduled_executables())
+    except TimeoutError:
+        raise
+    except Exception:
+        pass
+    return pins
 
 
 def _leased_directories(adapter, current):
