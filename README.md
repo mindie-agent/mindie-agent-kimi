@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/mindie-agent/mindie-agent-kimi/releases"><img src="https://img.shields.io/badge/release-v0.1.28-0F766E.svg" alt="Release v0.1.28"></a>
+  <a href="https://github.com/mindie-agent/mindie-agent-kimi/releases"><img src="https://img.shields.io/badge/release-v0.1.29-0F766E.svg" alt="Release v0.1.29"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-0F766E.svg" alt="License: MIT"></a>
   <a href="runtime-requirements.txt"><img src="https://img.shields.io/badge/python-3.11%2B-2563EB.svg" alt="Python 3.11+"></a>
   <a href="kimi.plugin.json"><img src="https://img.shields.io/badge/host-Kimi_Code-7C3AED.svg" alt="Host: Kimi Code"></a>
@@ -27,11 +27,11 @@
 
 ---
 
-**MindIE Agent for Kimi Code**（`mindie-agent-kimi`）是 [MindIE Agent](https://github.com/mindie-agent/mindie-agent) 面向 Kimi Code 的原生插件适配器，面向**昇腾（Ascend）NPU 上的 AI Infra 设计、开发与测试流程**提供统一的 Agent 支撑。当前 `v0.1.28`（配套主产品 `0.1.13`）已交付 **`vLLM-Ascend` 特性开发与测试**、**`AscendC` 与 `Triton` 算子实现验证**、远端 NPU 执行及公开经验脱敏沉淀能力；更多昇腾基础软件方向按路线图持续扩展。
+**MindIE Agent for Kimi Code**（`mindie-agent-kimi`）是 [MindIE Agent](https://github.com/mindie-agent/mindie-agent) 面向 Kimi Code 的原生插件适配器，面向**昇腾（Ascend）NPU 上的 AI Infra 设计、开发与测试流程**提供统一的 Agent 支撑。当前 `v0.1.29`（配套主产品 `0.1.13`）已交付 **`vLLM-Ascend` 特性开发与测试**、**`AscendC` 与 `Triton` 算子实现验证**、远端 NPU 执行及公开经验脱敏沉淀能力；更多昇腾基础软件方向按路线图持续扩展。
 
 项目设计遵循 [MindIE Agent 工程设计原则](https://github.com/mindie-agent/mindie-agent/blob/main/docs/design-principles.md)：共享知识引擎与远端开发能力由独立组件承载，本仓库专注于 Kimi 会话身份绑定、`wire.jsonl` 公开对话提取、MCP 桥接与本地不可变版本更新。
 
-> **生态与版本说明**：当前 `v0.1.28`（配套主产品 `0.1.13`）支持 Claude Code（[`mindie-agent-cc`](https://github.com/mindie-agent/mindie-agent-cc)）、OpenAI Codex CLI（[`mindie-agent-codex`](https://github.com/mindie-agent/mindie-agent-codex)）、Kimi Code（本仓库）与 DeepSeek Harness（[`mindie-agent-dsh`](https://github.com/mindie-agent/mindie-agent-dsh)）四个宿主，共享同一套知识、远端开发与诊断组件。各宿主的实机验证范围详见[文档导航](#文档导航)。
+> **生态与版本说明**：当前 `v0.1.29`（配套主产品 `0.1.13`）支持 Claude Code（[`mindie-agent-cc`](https://github.com/mindie-agent/mindie-agent-cc)）、OpenAI Codex CLI（[`mindie-agent-codex`](https://github.com/mindie-agent/mindie-agent-codex)）、Kimi Code（本仓库）与 DeepSeek Harness（[`mindie-agent-dsh`](https://github.com/mindie-agent/mindie-agent-dsh)）四个宿主，共享同一套知识、远端开发与诊断组件。各宿主的实机验证范围详见[文档导航](#文档导航)。
 
 ---
 
@@ -71,8 +71,8 @@ MindIE Agent 采用**「领域知识与 Skill 手动按需触发 + 远端开发�
 > - **单一持久化开关**：社区知识共享与工具故障自动上报共用 `mindie-consent.json` 中的统一贡献开关。显式选择 `contribute` 会同时开启公开知识共享并启动后台故障上报 worker；选择 `disabled` 则同时停止两者的后续外发。
 > - **升级保持与旧版授权重确认**：已有的 `disabled`、`later`、`read-only` 选择在升级后保持关闭。旧版仅包含知识共享授权（缺少统一授权 `choice_revision` / 标记为 `needs_choice`）的记录在升级后**不会**自动获得故障上传权限，需用户显式重新确认一次后才允许上传故障报告。
 > - **三态严格区分**：系统严格区分（1）本地授权配置已写入、（2）后台上报/整理 worker 正在运行、（3）外部 GitHub Issue 或知识 PR 已实际创建。可通过 `/mindie-agent:reporting-status` 只读查看 worker 与队列真实状态。
-> - 关于公开消息筛选范围、本地脱敏边界与公开 Git 历史说明，请参阅 **[用户须知](skills/mindie-agent/references/user-notice.md)**。
-> - 如需在本地搭建 `vllm` + `vllm-ascend` 多任务 Git Worktree 协同工作区，可参考 **[工作区配置指南](skills/mindie-agent/references/workspace-setup.md)** 与 [vllm-ascend-workspace](https://github.com/mindie-agent/vllm-ascend-workspace.git)。
+> - 关于公开消息筛选范围、本地脱敏边界与公开 Git 历史说明，请参阅 **[用户须知](docs/install/user-notice.md)**。
+> - 如需在本地搭建 `vllm` + `vllm-ascend` 多任务 Git Worktree 协同工作区，可参考 **[工作区配置指南](docs/install/workspace-setup.md)** 与 [vllm-ascend-workspace](https://github.com/mindie-agent/vllm-ascend-workspace.git)。
 
 ---
 
@@ -96,7 +96,7 @@ MindIE Agent 采用**「领域知识与 Skill 手动按需触发 + 远端开发�
    GH_USER=$(gh api --hostname github.com user --jq .login) && echo "GitHub channel verified for account: $GH_USER"
    uv run --no-project --python 3.13 python -c "import sqlite3; assert sqlite3.sqlite_version_info >= (3, 43, 0), sqlite3.sqlite_version; print('SQLite OK:', sqlite3.sqlite_version)"
    ```
-   - **硬性门禁（严禁跳过或静默忽略）**：若未安装 `gh`，请先协助安装（macOS：`brew install gh`；Windows：`winget install --id GitHub.cli`；Ubuntu / WSL：`sudo apt update && sudo apt install -y gh`）。账号读取成功时复用已有认证；需要登录时按 [GitHub 登录引导](skills/mindie-agent/references/github-authentication.md) 选择方式：普通网络使用浏览器，企业网络或浏览器授权受阻时优先 Token。已有 Token 就在 `gh` 隐藏输入提示中粘贴（或使用已提供的私有文件），没有则引导创建。使用进程级 `GIT_CONFIG_COUNT`（含 `credential.https://github.com.helper=!gh auth git-credential`，不修改全局或系统级 Git 配置文件）验证账号、Git 和后续进程可复用凭据后继续；网络/证书错误先修复传输，不反复要求登录。
+   - **硬性门禁（严禁跳过或静默忽略）**：若未安装 `gh`，请先协助安装（macOS：`brew install gh`；Windows：`winget install --id GitHub.cli`；Ubuntu / WSL：`sudo apt update && sudo apt install -y gh`）。账号读取成功时复用已有认证；需要登录时按 [GitHub 登录引导](docs/install/github-authentication.md) 选择方式：普通网络使用浏览器，企业网络或浏览器授权受阻时优先 Token。已有 Token 就在 `gh` 隐藏输入提示中粘贴（或使用已提供的私有文件），没有则引导创建。使用进程级 `GIT_CONFIG_COUNT`（含 `credential.https://github.com.helper=!gh auth git-credential`，不修改全局或系统级 Git 配置文件）验证账号、Git 和后续进程可复用凭据后继续；网络/证书错误先修复传输，不反复要求登录。
    - 优先使用 Python 3.13；Windows 要求 Python >= 3.12（用于非阻塞 MCP 管道），POSIX 要求 Python >= 3.11。链接的底层 SQLite 版本须 `>= 3.43.0`（支持 FTS5 与 `contentless_delete`）。
 
 2. **克隆仓库并构建持久化锁定运行时**：
@@ -108,7 +108,7 @@ MindIE Agent 采用**「领域知识与 Skill 手动按需触发 + 远端开发�
    GIT_CONFIG_KEY_0=core.longpaths GIT_CONFIG_VALUE_0=true \
    GIT_CONFIG_KEY_1=core.autocrlf GIT_CONFIG_VALUE_1=false \
    GIT_CONFIG_KEY_2=credential.https://github.com.helper GIT_CONFIG_VALUE_2="!gh auth git-credential" \
-   git clone --depth 1 --branch v0.1.28 https://github.com/mindie-agent/mindie-agent-kimi.git "$KIMI_SRC"
+   git clone --depth 1 --branch v0.1.29 https://github.com/mindie-agent/mindie-agent-kimi.git "$KIMI_SRC"
    SETUP_JSON=$(uv run --no-project --python 3.13 python "$KIMI_SRC/scripts/setup.py")
    echo "$SETUP_JSON"
    NATIVE_PKG=$(printf '%s' "$SETUP_JSON" | uv run --no-project --python 3.13 python -c "import json,sys; print(json.load(sys.stdin)['native_package'])")
@@ -134,10 +134,10 @@ MindIE Agent 采用**「领域知识与 Skill 手动按需触发 + 远端开发�
    验证成功后立即继续第 5 步，弹出交互式提问完成首次配置后一起汇报安装结果。
 
 5. **调用 Kimi 原生 `AskUserQuestion` 弹出首次配置提问并按序落盘**：
-   - 先向用户简要呈现 [用户须知](skills/mindie-agent/references/user-notice.md) 的三项核心契约（本地 Gitleaks 双层脱敏、仅向公开知识库提 PR 与向主仓提脱敏故障 Issue、单一 `mindie-consent.json` 权威开关可随时关闭）。
+   - 先向用户简要呈现 [用户须知](docs/install/user-notice.md) 的三项核心契约（本地 Gitleaks 双层脱敏、仅向公开知识库提 PR 与向主仓提脱敏故障 Issue、单一 `mindie-consent.json` 权威开关可随时关闭）。
    - 当 `setup.py sharing --status` 返回 `needs_onboarding_prompt: true`（或尚无工作区/Star 确认记录）时，**优先调用 Kimi Code 原生 `AskUserQuestion` 工具**（若当前 CLI 会话未暴露 `AskUserQuestion`，则输出编号单选卡片 `[1]/[2]` 并等待用户回复），一次性弹出以下 3 个单选问题：
      1. **本地开发工作区初始化（`Workspace`）**：
-        - 选项 1：`(Recommended) 新建并初始化 vllm-ascend-workspace` — 按 [工作区配置指南](skills/mindie-agent/references/workspace-setup.md) 创建聚合工作区、登记到 Kimi 客户端并运行 `uv run --no-project --python 3.13 python .agents/scripts/repo_init.py --no-input`
+        - 选项 1：`(Recommended) 新建并初始化 vllm-ascend-workspace` — 按 [工作区配置指南](docs/install/workspace-setup.md) 创建聚合工作区、登记到 Kimi 客户端并运行 `uv run --no-project --python 3.13 python .agents/scripts/repo_init.py --no-input`
         - 选项 2：`保持当前目录不变` — 暂不克隆源码仓库，直接将当前目录作为工作区
         - 选项 3：`复用本机已有工作区目录` — 指定本机已存在的开发工作区路径并登记到 Kimi 客户端
      2. **社区知识共享与自动故障上报（`Community`）**：

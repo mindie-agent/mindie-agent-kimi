@@ -15,3 +15,5 @@ This directory contains the automatic update design, framework stability guarant
 | [Service Continuity](service-continuity.en.md) | [插件更新期间的服务连续性](service-continuity.md) | Knowledge service stop/restore across updates, rollback handoff, and daemon acceptance boundaries |
 | [Test Boundaries](test-boundaries.en.md) | [测试边界与故障检测](test-boundaries.md) | Cross-platform CI check ordering, independent failure dimensions, and stdio transport boundary tests |
 | [Windows Launch Contract](windows-launch-contract.en.md) | [Windows 原生启动契约](windows-launch-contract.md) | Windows shell-free MCP launch, Job Object descendant cleanup, and native boundary verification |
+| [Install & Consent Guides (`install/`)](install/user-notice.md) | [安装与授权指南 (`install/`)](install/user-notice.md) | User notice ([`user-notice.md`](install/user-notice.md)), GitHub sign-in ([`github-authentication.md`](install/github-authentication.md)), and workspace setup ([`workspace-setup.md`](install/workspace-setup.md)) |
+| [Release Notes (`0.1.29`)](releases/mindie-agent-kimi-0.1.29.en.md) | [发布记录 (`0.1.29`)](releases/mindie-agent-kimi-0.1.29.md) | Formal release notes by tag ([`releases/`](releases/)) |

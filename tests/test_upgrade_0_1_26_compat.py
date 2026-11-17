@@ -305,3 +305,28 @@ def test_ad03_concurrent_resident_mcp_and_ad11_unified_subcommand(tmp_path, monk
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=2)
+
+
+def test_runtime_skill_preserves_manual_trigger_and_excludes_install_onboarding():
+    skill_md = ROOT / "skills" / "mindie-agent" / "SKILL.md"
+    skill_text = skill_md.read_text(encoding="utf-8")
+    assert "disableModelInvocation: true" in skill_text
+
+    banned = (
+        "workspace-setup.md",
+        "github-authentication.md",
+        "user-notice.md",
+        "needs_onboarding_prompt",
+        "vllm-ascend-workspace",
+        "gh auth login",
+        "GitHub Star",
+        "Non-Intrusive First-Use Onboarding",
+    )
+    for doc in [skill_md, *sorted((ROOT / "skills" / "mindie-agent" / "references").glob("*.md"))]:
+        text = doc.read_text(encoding="utf-8")
+        for token in banned:
+            assert token not in text, f"{doc.name} unexpectedly contains install/onboarding token {token!r}"
+
+    for name in ("workspace-setup.md", "github-authentication.md", "user-notice.md"):
+        assert (ROOT / "docs" / "install" / name).is_file()
+        assert not (ROOT / "skills" / "mindie-agent" / "references" / name).exists()
