@@ -1,7 +1,7 @@
 # Installed optional CLIs for reproducible process-boundary verification.
 # Layer runtime/active-overrides.txt over older component transitive pins.
 pytest==9.1.1
-mindie-debugger @ git+https://github.com/mindie-agent/debugger@d40a250e4048ac63d4a478a5dbfa993702ceddd0
-mindie-profiler @ git+https://github.com/mindie-agent/profiler@79d97e75bff7351b0472b93c03b072c1cf47f5e7
-mindie-sim @ git+https://github.com/mindie-agent/sim@6f1d5a871a7b1ef20ff7a8cab33aaf4637fb3f66
-mindie-coordinator @ git+https://github.com/mindie-agent/coordinator@d8977114e8cd0e5b7befa59a5ff5e53f40a74521
+mindie-debugger @ git+https://github.com/mindie-agent/debugger@e15c2ed38d8f928db67c5bb1a94269f62207227c
+mindie-profiler @ git+https://github.com/mindie-agent/profiler@b702893129724b852c5abcb8971724b8b0a6e870
+mindie-sim @ git+https://github.com/mindie-agent/sim@83fb8288aa998e0a6ad345ca7a16269f0181545b
+mindie-coordinator @ git+https://github.com/mindie-agent/coordinator@a3c7336faa0bc14ebdb8f2fd75606c82e96422e9

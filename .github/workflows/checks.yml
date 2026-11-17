@@ -42,7 +42,6 @@ jobs:
           git config --global core.autocrlf false
           pip install uv
           uv pip install --system -r runtime-requirements.txt -r runtime/active-overrides.txt -r test-requirements.txt --overrides runtime/active-overrides.txt
-          uv pip install --system --no-deps "mindie-harness @ git+https://github.com/mindie-agent/harness.git@main"
       - name: Compile all committed Python
         run: python -m compileall -q scripts tests
       - name: Outside-checkout artifact smoke check
