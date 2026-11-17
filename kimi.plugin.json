@@ -10,7 +10,6 @@
   ],
   "license": "MIT",
   "skills": "./skills/",
-  "commands": "./commands/",
   "mcpServers": {
     "knowledge": {
       "command": "python3",

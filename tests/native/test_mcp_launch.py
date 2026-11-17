@@ -91,7 +91,10 @@ class NativeMcpLaunchTests(unittest.TestCase):
             root = Path(temporary)
             source = root / "source"
             (source / "scripts").mkdir(parents=True)
-            for name in ("mindie_launch.py", "bounded.py", "diagnostic_support.py", "paths.py", "launch_budget.py", "native_mcp.py"):
+            for name in (
+                "mindie_launch.py", "bounded.py", "diagnostic_support.py", "paths.py", "launch_budget.py",
+                "kimi_paths.py", "kimi_bounded.py", "kimi_diagnostics.py", "kimi_launch.py", "native_mcp.py",
+            ):
                 shutil.copy2(SCRIPTS / name, source / "scripts" / name)
             shutil.copy2(TESTS.parent / "kimi.plugin.json", source / "kimi.plugin.json")
             config = make_config(root / "config")
@@ -101,7 +104,7 @@ class NativeMcpLaunchTests(unittest.TestCase):
             genstate.write_current(dict(generation=str(TESTS.parent), python=sys.executable,
                                         adapter_config=str(config), sha=sha), adapter)
             manifest = json.loads((package / "kimi.plugin.json").read_text())
-            expected = {"knowledge": {"mindie_entry", "knowledge_query", "knowledge_explain", "knowledge_distill", "knowledge_sync"},
+            expected = {"knowledge": {"mindie_entry"},
                         "remote": {"remote_read", "remote_bash", "remote_job_status"},
                         "components": {"coordinator", "profiler", "sim", "debugger", "diagnostics_status",
                                        "diagnostics_bundle", "mindie_status"}}
@@ -165,7 +168,10 @@ class NativeMcpLaunchTests(unittest.TestCase):
         root = Path(temporary)
         source = root / "source"
         (source / "scripts").mkdir(parents=True)
-        for name in ("mindie_launch.py", "bounded.py", "diagnostic_support.py", "paths.py", "launch_budget.py", "native_mcp.py"):
+        for name in (
+            "mindie_launch.py", "bounded.py", "diagnostic_support.py", "paths.py", "launch_budget.py",
+            "kimi_paths.py", "kimi_bounded.py", "kimi_diagnostics.py", "kimi_launch.py", "native_mcp.py",
+        ):
             shutil.copy2(SCRIPTS / name, source / "scripts" / name)
         shutil.copy2(TESTS.parent / "kimi.plugin.json", source / "kimi.plugin.json")
         config = make_config(root / "config")

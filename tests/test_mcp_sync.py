@@ -67,11 +67,13 @@ def test_discovered_sync_uses_real_local_feed_without_a_service(local_feed, tmp_
     native = json.loads((SCRIPTS.parent / "kimi.plugin.json").read_text())["mcpServers"]["knowledge"]
     assert child >= knowledge_sync.TIMEOUT + 5 + 5 + 5 + 2.2
     assert native["toolTimeoutMs"] / 1000 >= child + mindie_launch.CALL_LOCK_BUDGET + mindie_launch.OUTPUT_BUDGET
+    unactivated = mcp_server.handle("knowledge", {"id": 1, "method": "tools/list"})
+    assert {t["name"] for t in unactivated["result"]["tools"]} == {"mindie_entry"}
+    admission.activate("session-sync", project_root=str(tmp_path))
     listed = mcp_server.handle("knowledge", {"id": 1, "method": "tools/list"})
     schema = next(tool["inputSchema"] for tool in listed["result"]["tools"]
                   if tool["name"] == "knowledge_sync")
     assert schema["required"] == ["request_nonce"]
-    admission.activate("session-sync", project_root=str(tmp_path))
     with patch("knowledge_service.ensure_service") as ensure, \
             patch("knowledge_service.existing_service") as existing:
         result = sync()

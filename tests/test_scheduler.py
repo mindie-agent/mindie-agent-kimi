@@ -101,17 +101,21 @@ class SchedulerLauncherTests(unittest.TestCase):
             self.assertFalse(updater_schedule.refresh_existing_wrapper(
                 self.adapter, genstate.read_current(self.adapter)))
         native.assert_not_called()
-        process = mock.Mock(return_value=SimpleNamespace(returncode=7))
-        windows = SimpleNamespace(
-            STARTUPINFO=lambda: SimpleNamespace(dwFlags=0, wShowWindow=0),
-            STARTF_USESHOWWINDOW=1, SW_HIDE=0, CREATE_NEW_CONSOLE=16, DEVNULL=-3,
-            run=process)
-        with mock.patch.dict(sys.modules, {"subprocess": windows}), self.assertRaises(SystemExit) as exit:
-            exec(compile(wrapper.read_text(), str(wrapper), "exec"), {})
+        wrapper_source = wrapper.read_text(encoding="utf-8")
+        self.assertNotIn("CREATE_NEW_CONSOLE", wrapper_source)
+        self.assertNotIn("SW_HIDE", wrapper_source)
+        outcome = SimpleNamespace(returncode=7)
+        with mock.patch("mindie_harness.api.run_owned", return_value=outcome) as owned_run, \
+             self.assertRaises(SystemExit) as exit:
+            exec(compile(wrapper_source, str(wrapper), "exec"), {})
         self.assertEqual(exit.exception.code, 7)
-        self.assertEqual(process.call_args.args[0], [sys.executable, str(launcher),
-                         "--config", str(self.config_path), "updater", "check"])
-        self.assertGreaterEqual(process.call_args.kwargs["timeout"], updater.CHECK_BUDGET + 20)
+        spec = owned_run.call_args.args[0]
+        self.assertEqual(
+            list(spec.argv),
+            [sys.executable, str(launcher), "--config", str(self.config_path), "updater", "check"],
+        )
+        self.assertEqual(spec.role, "background_maintenance")
+        self.assertGreaterEqual(owned_run.call_args.kwargs["deadline"], updater.CHECK_BUDGET + 20)
 
     def test_unscheduled_profile_stays_unscheduled_during_checks(self):
         import updater_schedule

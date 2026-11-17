@@ -1,54 +1,29 @@
-# mindie-agent-kimi (`v0.0.2` Agent-Native Guide)
+# MindIE Agent for Kimi Code (`mindie-agent/mindie-agent-kimi`) — Agent Operating Rules
 
-Native Kimi Code plugin adapter for MindIE Agent (`kimi.plugin.json`, `commands/`, `skills/`, `scripts/`).
-Bridges native Kimi Hook/MCP/Skill surfaces to shared first-party runtime components (`knowledge`, `remote-dev`, `diagnostics`).
+This repository owns the thin Kimi Code host plugin (`kimi.plugin.json`), Kimi native wire/hook/transcript adaptation, and live generation handoff built on the shared [`mindie-harness`](https://github.com/mindie-agent/harness) (`API_VERSION = 1`) substrate.
 
-## 1. Script Module Navigation (`scripts/`)
+## 1. Core Architectural Invariants (`host-plugin`)
 
-| Module | Responsibility | Key Entrypoints / State |
-| :--- | :--- | :--- |
-| `mindie_launch.py` & `launch_budget.py` | Stable front launcher outside committed generations (`hook`, `mcp`, `updater`) and pure deadline arithmetic | `<state_dir>/update/current.json`, `operation.lock` |
-| `bridge.py` | Native Kimi `PreToolUse` (`pretool`) and `Stop` (`stop`) hook bridge | `handle_pretool()`, `handle_stop()`, `capture_hook` |
-| `mcp_server.py` & `mcp_catalog.py` | JSON-RPC 2.0 MCP dispatch/catalog for manually enabled `knowledge` and default-on `remote`/`components` | `handle()`, `serve()`, `serve_once()` |
-| `component_tools.py` & `knowledge_sync.py` | Thin bounded CLI calls for optional deterministic components and explicitly authorized feed sync | `component_commands`, installed CLI beside configured Python or on `PATH` |
-| `identity.py` | Session directory lookup, turn-origin verification, and one-shot nonce binds | `require_current_entry()`, `publish_nonce_bind()`, `claim_nonce()`, `mcp-binds.sqlite3` |
-| `entry.py` & `entry_state.py` | `/mindie-agent` unified entry and slash command operations (`init`, `choose`, `status`, `recover`); `op_status` returns factual `status_facts` without command-origin gating or onboarding prompts | `dispatch()`, `status_facts()`, `status_payload()`, `consume_activation_id()` |
-| `admission.py` & `sharing.py` | Task admission lease helpers (`knowledge_lease`, `entry_enabled=1`) and community sharing status/configuration | `admission.sqlite3`, `mindie-community.json` |
-| `consent.py` | Profile-shared consent through `mindie_knowledge.consent_store` and generation-stranded state convergence | `load()`, `record_choice()`, `adopt_community_settings()` |
-| `transcript.py` | Bounded Kimi `wire.jsonl` reader with fork-boundary (`state.createdAt`) filtering | `identify()`, `read_material()` |
-| `organizer.py` | Isolated `kimi -p` summary worker (`--output-format text`, thinking off, zero tools/hooks) | `identity()`, `run()`, `prepare_isolated_home()` |
-| `knowledge_service.py` & `service_handoff.py` | Background knowledge service lifecycle and authenticated updater `stop_if_idle`/`restore` | `ensure_service()`, `stop_if_idle()` |
-| `updater.py` & `genstate.py` | Atomic generation staging, native plugin install/rollback, and scheduler control (never starts knowledge service or feed sync during passive checks) | `check()`, `switch()`, `check.lock`, `operation.lock` |
-| `setup.py` & `install_kimi_plugin.py` | Pinned runtime bootstrap (`bootstrap-venv`) and native `kimi web` plugin API installer | `build_bootstrap_runtime()`, `verify_install_report()` |
-| `bounded.py` & `with_runtime.py` | Bounded subprocess runner with process-tree cleanup and runtime `sys.path` injector | `bounded.run()`, `classify_transport_text()` |
-| `paths.py`, `capture_config.py`, `community_config.py` | Canonical config/state path resolution and core engine config builders | `kimi.json`, `kimi.engine.json` |
-| `diagnostic_support.py` | Shared `mindie_diagnostics.integration` fault recording and opt-in reporting; reports `logging_failed` when unavailable | `failure()`, `attach()`, `diagnostics.json` |
+1. **Thin Host Boundary & `0.1.26 -> 0.1.27` Transition Compatibility (`HOST-UPGRADE`)**:
+   - Delegate process supervision, Windows Job Objects, PE `Subsystem == 2` verification, scheduled wrapper generation, atomic writes, and RSI utilities (`rsi_loop.py`, `rsi_explore.py`, `experiment_ledger.py`) to `mindie_harness` and bundle the deterministic cold seed (`assets/mindie-harness-seed.pyz` + `assets/seed-lock.json`).
+   - Preserve `< 30`-line `mindie_harness`-delegating transition shims at all paths copied or probed by deployed `0.1.26` `updater_staging.py` (`scripts/mindie_launch.py`, `scripts/bounded.py`, `scripts/diagnostic_support.py`, `scripts/paths.py`, `scripts/launch_budget.py`, `scripts/transcript.py`, `scripts/capture_config.py`, `runtime-requirements.txt`, `runtime/active-overrides.txt`) and preserve `update/current.json` (`{generation, python, adapter_config, sha}`).
+   - Keep core Python modules `< 800` lines with a top-30-line `[Role]` / `[Invariants]` / `[Timeouts & Locks]` / `[Side-Effect Policy]` docstring header, and allow legitimate symlinks (`AD-07` — no `O_NOFOLLOW` hostility on config/repo reads).
 
-## 2. Host Protocols & Core State Invariants
+2. **Windows 11 Zero-Popup & Scheduled Task Migration (`HOST-NATIVE`)**:
+   - Never pass `CREATE_NEW_CONSOLE` or `DETACHED_PROCESS` in any Python script or generated `.pyw` wrapper (`CREATE_NO_WINDOW = 0x08000000` only).
+   - Scheduled tasks (`MindIEKimiUpdate` / `agent.mindie.kimi-update.plist`) must verify PE `Subsystem == 2` (`pythonw.exe`), migrate task actions before retiring old generations, and protect OS-scheduled executables (`discover_scheduled_executables`) during `Active + Rollback (<= 2)` storage GC.
 
-- **PreToolUse Nonce Binding (Strict on `knowledge`, Opportunistic on Deterministic Surfaces)**: Kimi MCP `tools/call` carries only `name` and `arguments`. On the `knowledge` surface, every tool strictly requires a fresh `request_nonce` bound by `PreToolUse` (`bridge.py pretool` -> `mcp-binds.sqlite3`) and claimed atomically (`BEGIN IMMEDIATE`). On deterministic `remote` and `components` surfaces, `request_nonce` is optional: when bound by `PreToolUse` it supplies the native session/cwd and enforces replay rejection; when omitted or unbound (e.g. subagents, automations, or direct MCP calls), tools execute under a connection-scoped fallback without failing closed.
-- **Manual `/mindie-agent` Knowledge Gate vs. Zero-Binding Deterministic Tools**: Deterministic `remote-dev` and `components` tools and factual `mindie_status` execute over standard MCP `tools/call` without requiring `/mindie-agent` or a mandatory `PreToolUse` nonce, whereas `mindie_entry` and all `knowledge_*` MCP tools (`knowledge_query`, `knowledge_explain`, `knowledge_feedback`, `knowledge_distill`, `knowledge_sync`) require a `PreToolUse`-bound `request_nonce` and an active manual-entry lease (`Admission.knowledge_lease(session)` / `lease.get("entry_enabled") == 1`) granted by `/mindie-agent` in the current session.
-- **Stop Hook Notification**: `bridge.py stop` never blocks the host and never fabricates a native turn ID; it checks `lease.get("entry_enabled")` first (returning `{}` for unactivated sessions) before passing a thin notification (`identity_kind="notification"`, session lease token, and `wire.jsonl` path) to `mindie_knowledge.loop.cli.capture_hook`.
-- **Atomic Generation Pointer**: `current.json` (`{generation, python, adapter_config, sha}`) is read under a shared `operation.lock` for every Hook/MCP call and flipped under an exclusive `operation.lock` only after `stop_if_idle` and verified native plugin readback.
+3. **Single `/mindie-agent` Entry, `P2.7` Zero-Binding Deterministic MCP & `P2.1` Knowledge Gate (`HOST-WIRE`, `HOST-ADMISSION`)**:
+   - Expose a single `/mindie-agent` entry skill (`kimi.plugin.json` carries `"skills": "./skills/"` without duplicate `commands/*.md` slash clutter).
+   - Keep `request_nonce` strictly optional on deterministic `remote` and `components` MCP `inputSchema.required` (`P2.7`), share `state_dir() / "remote"` across parent and subagent sessions so subagents can inspect/cancel parent `job_id`s (`AD-02`), and serve resident MCP requests concurrently without cold `--once` single-flight locks (`AD-03`).
+   - Hide `knowledge_query`, `knowledge_explain`, `knowledge_feedback`, `knowledge_distill`, and `knowledge_sync` from unactivated default `tools/list` responses (`AD-11`, `P2.1`), emitting `notifications/tools/list_changed` when `/mindie-agent` activates or revokes a manual session lease, and enforce per-session nonce + manual lease admission on every `knowledge_*` call.
+   - Preserve Receipt Honesty (`isError=False` + `receipt_warning` + `receipt_unconfirmed=True`) when local bind/receipt accounting fails after a primary tool call succeeds, and precede every broad `except OSError:` with `except TimeoutError: raise`.
 
-## 3. Timeout Budgets & `v0.0.2` Engineering Iron Rules
+## 2. Isolated Verification Protocol
 
-- **Explicit Timeout Hierarchy**:
-  - `HOOK_TOTAL = 10.0s` (`HOOK_LOCK_BUDGET = 2.0s`), native host hook timeout `15s`, `CALL_LOCK_BUDGET = 5.0s`, `CALL_CHILD_BUDGET = 60.0s` (`180s` for explicit contribution activation/configuration, including shared reporter startup), `MAX_YIELD_TIME_MS = 30000` (30s).
-  - `BOOTSTRAP_TOTAL = 540.0s`, summary native timeout at most `300s` and bounded by `summary_budget.native_timeout()` with `5s` reserved for cleanup, `CHECK_BUDGET = 240.0s` (with `RESERVE = 53.0s`: `ROLLBACK_BUDGET = 45.0s` + `HANDOFF_BUDGET = 8.0s`).
-- **Five Anti-Over-Defensive Iron Rules**:
-  1. **Lightweight SQLite & File I/O**: Use `busy_timeout=5000` and `os.replace()` atomic writes; never run recursive parent symlink checks, `O_NOFOLLOW`/`S_ISREG` descriptor dances, or per-read `chmod` ceremonies.
-  2. **Honest `unknown` Boundary**: Reserve `outcome_unknown` / `unconfirmed` strictly for interrupted paid model invocations or external remote writes; never brick local state with permanent one-way fault lockouts.
-  3. **No Defensive Bloat**: Keep adapter scripts concise and direct; do not duplicate core engine logic or invent `ctypes` ACL/pipe ceremonies.
-  4. **No Filler or Paranoid Tests**: Never write `chmod(0)`/`icacls` permission games, FIFO/symlink traps, or prose-grep tests.
-  5. **Zero Pre-Call Session-Binding Gates on Deterministic Tools (`P2.7`)**: `remote` and `components` never require `request_nonce` in `inputSchema.required` and fall back to `_CONNECTION_SESSION_ID` when `request_nonce` is omitted or unbound; strict `PreToolUse` `claim_nonce` + `knowledge_lease` applies exclusively to `knowledge` and `Stop` capture.
-
-## 4. Fast Verification Commands
-
-```bash
-# Create the same installed dependency environment used by checks and releases:
-uv venv --python 3.13
-uv pip install -r runtime-requirements.txt -r test-requirements.txt --overrides runtime/active-overrides.txt
-.venv/bin/python tests/preflight.py
-.venv/bin/python -m pytest -q -o "pythonpath=tests scripts" tests
-```
+- Isolate `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `XDG_*`, `MINDIE_CONFIG_HOME`, `MINDIE_DATA_HOME`, `MINDIE_DIAGNOSTICS_ROOT`, `KIMI_CODE_HOME`, `REMOTE_DEV_AUTH_DIR`, `UV_CACHE_DIR`, and `TMPDIR` in all tests.
+- Before committing, run:
+  ```bash
+  python3 .github/scripts/check_lf_eol.py
+  python3 -m pytest -q -o "pythonpath=tests scripts" tests
+  ```

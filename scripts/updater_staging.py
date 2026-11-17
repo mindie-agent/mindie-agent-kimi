@@ -360,9 +360,13 @@ def build_host_package(
     launcher_dir = _h("launch_dir")(adapter) / sha
     launcher_dir.mkdir(parents=True, exist_ok=True)
     launcher = launcher_dir / _h("LAUNCHER")
-    for name in (_h("LAUNCHER"), "bounded.py", "diagnostic_support.py", "paths.py", "launch_budget.py"):
-        if not (launcher_dir / name).is_file():
-            shutil.copy2(generation / "scripts" / name, launcher_dir / name)
+    for name in (
+        _h("LAUNCHER"), "bounded.py", "diagnostic_support.py", "paths.py", "launch_budget.py",
+        "kimi_paths.py", "kimi_bounded.py", "kimi_diagnostics.py", "kimi_launch.py",
+    ):
+        src_file = generation / "scripts" / name
+        if src_file.is_file() and not (launcher_dir / name).is_file():
+            shutil.copy2(src_file, launcher_dir / name)
     transport = generation / "scripts/native_mcp.py"
     if transport.is_file() and not (launcher_dir / transport.name).exists():
         shutil.copy2(transport, launcher_dir / transport.name)

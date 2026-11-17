@@ -59,7 +59,6 @@ from runtime_probe import (  # noqa: F401
 BOOTSTRAP_ITEMS = (
     "scripts",
     "skills",
-    "commands",
     "kimi.plugin.json",
     "runtime-requirements.txt",
     "runtime",

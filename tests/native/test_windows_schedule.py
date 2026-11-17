@@ -47,7 +47,7 @@ class WindowsScheduleLaunchTests(unittest.TestCase):
             state = json.loads(output.read_text(encoding="utf-8"))
             self.assertEqual(state["args"], arguments)
             for process in (state, state["child"]):
-                self.assertTrue(process["has_console"])
+                self.assertFalse(process["has_console"])
                 self.assertFalse(process["visible"])
 
     def test_headless_powershell_xml_export_has_no_bom_and_preserves_utf8_paths(self):
