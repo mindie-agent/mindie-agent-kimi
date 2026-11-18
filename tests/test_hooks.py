@@ -240,21 +240,176 @@ class HookTests(unittest.TestCase):
             fresh = admission_mod.gate().check("ses_ev")
             self.assertEqual(fresh.get("failures", 0), 0)
 
-    def test_stop_inactive_session_is_quiet_no_notification(self):
+    def test_stop_auto_ensures_lease_when_sharing_enabled_and_skips_when_deactivated_or_off(self):
+        import shutil
+        import time as time_mod
+
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
             diag = Path(raw).resolve() / "diag"
             config = make_config(tmp, sharing=True, roots=[tmp])
             os.environ["MINDIE_KIMI_CONFIG"] = str(config)
             os.environ["MINDIE_DIAGNOSTICS_ROOT"] = str(diag)
-            captured = []
+            import admission as admission_mod
+            from paths import admission_path
+
+            # 1. Fresh in-scope session auto-provisions default lease (not_before=0.0) and captures,
+            #    and aligns project_root if an earlier MCP call created the lease with a different cwd
+            other_cwd = tmp.parent / f"{tmp.name}-other"
+            other_cwd.mkdir(exist_ok=True)
+            try:
+                early = admission_mod.ensure_default_lease("ses_auto_stop", project_root=other_cwd)
+                self.assertEqual(early["project_root"], str(other_cwd.resolve()))
+                captured = []
+                self._run_stop_in_process(
+                    config,
+                    {"hook_event_name": "Stop", "session_id": "ses_auto_stop", "cwd": str(tmp)},
+                    captured,
+                )
+            finally:
+                shutil.rmtree(other_cwd, ignore_errors=True)
+            self.assertEqual(len(captured), 1)
+            lease = admission_mod.knowledge_lease("ses_auto_stop")
+            self.assertIsNotNone(lease)
+            self.assertEqual(lease["project_root"], str(tmp.resolve()))
+            self.assertEqual(lease["activated_at"], 0.0)
+            self.assertEqual(captured[0][1]["mindie_activation"], lease["token"])
+
+            # 2. Unknown workspace (no cwd, no workspace_root, no wire cwd) skips even if an old lease exists
+            captured_unknown = []
+            os.environ.pop("KIMI_CODE_HOME", None)
             self._run_stop_in_process(
                 config,
-                {"hook_event_name": "Stop", "session_id": "ses_never", "cwd": str(tmp)},
-                captured,
+                {"hook_event_name": "Stop", "session_id": "ses_auto_stop"},
+                captured_unknown,
             )
-            self.assertEqual(captured, [])
+            self.assertEqual(captured_unknown, [])
+
+            # 3. workspace_root is accepted on Stop when cwd is omitted
+            captured_ws = []
+            self._run_stop_in_process(
+                config,
+                {"hook_event_name": "Stop", "session_id": "ses_ws_stop", "workspace_root": str(tmp)},
+                captured_ws,
+            )
+            self.assertEqual(len(captured_ws), 1)
+
+            # 4. Explicitly deactivated session skips quietly
+            admission_mod.deactivate("ses_auto_stop")
+            captured_deact = []
+            self._run_stop_in_process(
+                config,
+                {"hook_event_name": "Stop", "session_id": "ses_auto_stop", "cwd": str(tmp)},
+                captured_deact,
+            )
+            self.assertEqual(captured_deact, [])
             self.assertEqual(self._diagnostic_events(diag), [])
+
+            # 5. Real mindie_knowledge Stop path (prepare_schema + capture_hook) succeeds without NameError
+            from mindie_knowledge import state_layout
+            from support import stop_real_services
+
+            home = tmp / "kimi-home-real"
+            write_session(home, "ses_real_mk", [{"type": "metadata", "created_at": 1}], cwd=tmp)
+            eng_cfg = Path(json.loads(config.read_text())["engine_config"])
+            eng_doc = json.loads(eng_cfg.read_text())
+            try:
+                real_res = run_bridge(
+                    "stop",
+                    {"hook_event_name": "Stop", "session_id": "ses_real_mk", "cwd": str(tmp)},
+                    config,
+                    kimi_home=home,
+                )
+                self.assertEqual(real_res.returncode, 0, real_res.stderr)
+                self.assertEqual(self._diagnostic_events(diag), [])
+                self.assertTrue(
+                    (state_layout.state_root(eng_doc["root"], eng_doc["domain"]) / state_layout.DATABASE).is_file()
+                )
+            finally:
+                stop_real_services(eng_cfg)
+
+        # 3. Sharing disabled & out-of-scope: < 100ms (min of 5 samples) and zero SQLite created
+        with tempfile.TemporaryDirectory() as raw_off:
+            off_root = Path(raw_off)
+            off_cfg = make_config(off_root, sharing=False)
+            os.environ["MINDIE_KIMI_CONFIG"] = str(off_cfg)
+            from paths import admission_path as adm_path_fn
+
+            run_bridge("stop", {"hook_event_name": "Stop", "session_id": "ses_warm", "cwd": str(off_root)}, off_cfg)
+            samples_off = []
+            for i in range(5):
+                t0 = time_mod.perf_counter()
+                res = run_bridge(
+                    "stop",
+                    {"hook_event_name": "Stop", "session_id": f"ses_off_{i}", "cwd": str(off_root)},
+                    off_cfg,
+                )
+                samples_off.append((time_mod.perf_counter() - t0) * 1000.0)
+                self.assertEqual(res.returncode, 0)
+            self.assertLess(min(samples_off), 100.0, samples_off)
+            self.assertFalse(adm_path_fn().exists())
+
+        with tempfile.TemporaryDirectory() as raw_oos:
+            oos_root = Path(raw_oos)
+            allowed_dir = oos_root / "allowed"
+            outside_dir = oos_root / "outside"
+            allowed_dir.mkdir()
+            outside_dir.mkdir()
+            oos_cfg = make_config(oos_root, sharing=True, roots=[allowed_dir])
+            os.environ["MINDIE_KIMI_CONFIG"] = str(oos_cfg)
+            from paths import admission_path as adm_path_fn
+
+            run_bridge("stop", {"hook_event_name": "Stop", "session_id": "ses_warm", "cwd": str(outside_dir)}, oos_cfg)
+            samples_oos = []
+            for i in range(5):
+                t0 = time_mod.perf_counter()
+                res = run_bridge(
+                    "stop",
+                    {"hook_event_name": "Stop", "session_id": f"ses_oos_{i}", "cwd": str(outside_dir)},
+                    oos_cfg,
+                )
+                samples_oos.append((time_mod.perf_counter() - t0) * 1000.0)
+                self.assertEqual(res.returncode, 0)
+            self.assertLess(min(samples_oos), 100.0, samples_oos)
+            self.assertFalse(adm_path_fn().exists())
+
+            # Pre-lock launcher check: out-of-scope Stop exits < 50ms even when operation.lock is exclusively locked
+            import subprocess
+            from support import SCRIPTS, env_for
+
+            state = Path(json.loads(oos_cfg.read_text())["state_dir"])
+            lock_path = state / "update" / "operation.lock"
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+            try:
+                if os.name != "nt":
+                    import fcntl
+
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                subprocess.run(
+                    [sys.executable, str(SCRIPTS / "mindie_launch.py"), "--config", str(oos_cfg), "hook", "stop"],
+                    input=json.dumps({"hook_event_name": "Stop", "session_id": "ses_lock_warm", "cwd": str(outside_dir)}),
+                    text=True,
+                    capture_output=True,
+                    env=env_for(oos_cfg),
+                    timeout=5,
+                )
+                lock_samples = []
+                for i in range(5):
+                    t0 = time_mod.perf_counter()
+                    lres = subprocess.run(
+                        [sys.executable, str(SCRIPTS / "mindie_launch.py"), "--config", str(oos_cfg), "hook", "stop"],
+                        input=json.dumps({"hook_event_name": "Stop", "session_id": f"ses_lock_{i}", "cwd": str(outside_dir)}),
+                        text=True,
+                        capture_output=True,
+                        env=env_for(oos_cfg),
+                        timeout=5,
+                    )
+                    lock_samples.append((time_mod.perf_counter() - t0) * 1000.0)
+                    self.assertEqual(lres.returncode, 0)
+                self.assertLess(min(lock_samples), 100.0, lock_samples)
+            finally:
+                os.close(lock_fd)
 
     def test_stop_unreadable_admission_is_recorded_not_inactive(self):
         with tempfile.TemporaryDirectory() as raw:

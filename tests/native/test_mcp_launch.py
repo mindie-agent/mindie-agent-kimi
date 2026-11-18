@@ -104,7 +104,8 @@ class NativeMcpLaunchTests(unittest.TestCase):
             genstate.write_current(dict(generation=str(TESTS.parent), python=sys.executable,
                                         adapter_config=str(config), sha=sha), adapter)
             manifest = json.loads((package / "kimi.plugin.json").read_text())
-            expected = {"knowledge": {"mindie_entry"},
+            expected = {"knowledge": {"mindie_entry", "knowledge_query", "knowledge_explain",
+                                      "knowledge_feedback", "knowledge_distill", "knowledge_sync"},
                         "remote": {"remote_read", "remote_bash", "remote_job_status"},
                         "components": {"coordinator", "profiler", "sim", "debugger", "diagnostics_status",
                                        "diagnostics_bundle", "mindie_status"}}

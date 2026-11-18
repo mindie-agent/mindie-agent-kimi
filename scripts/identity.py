@@ -91,6 +91,16 @@ def session_from_hook(event: dict) -> str:
     return require_session(event.get("session_id"))
 
 
+def session_from_meta(meta) -> str | None:
+    if not isinstance(meta, dict):
+        return None
+    for key in ("session_id", "sessionId", "conversation_id", "conversationId"):
+        value = meta.get(key)
+        if isinstance(value, str) and SESSION_RE.fullmatch(value):
+            return value
+    return None
+
+
 def is_mindie_mcp_tool(name) -> bool:
     return isinstance(name, str) and name.startswith(MCP_QUALIFIED_PREFIX)
 

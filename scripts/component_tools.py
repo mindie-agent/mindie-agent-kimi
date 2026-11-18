@@ -183,7 +183,10 @@ def execute(name, arguments, session, *, cancel=None, timeout=None, session_boun
     if cwd is None and session_bound:
         from identity import session_cwd
 
-        cwd = session_cwd(session)
+        try:
+            cwd = session_cwd(session)
+        except ValueError:
+            cwd = None
     if cwd is not None and (not isinstance(cwd, str) or not Path(cwd).is_absolute()):
         raise ValueError("cwd must be an absolute working directory")
     child = command(adapter, component) + argv

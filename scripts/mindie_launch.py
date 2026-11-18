@@ -20,7 +20,7 @@ for _c in (_H, _GEN):
 else:
     raise ModuleNotFoundError("No module named 'diagnostic_support'")
 import kimi_launch as _impl  # noqa: E402
-_impl.diagnostic_support._LAUNCH_SHIM_DIR = str(_H if (_H / "diagnostic-build.json").is_file() else (_c if (_c / "diagnostic-build.json").is_file() else _H))
+_impl._LAUNCH_SHIM_DIR = str(_H if (_H / "diagnostic-build.json").is_file() else (_c if (_c / "diagnostic-build.json").is_file() else _H))
 sys.modules.setdefault("mindie_launch", _impl)
 if __name__ == "__main__":
     raise SystemExit(_impl.main(launcher_file=_SELF))

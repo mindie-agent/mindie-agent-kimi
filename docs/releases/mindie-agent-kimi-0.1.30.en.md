@@ -1,0 +1,6 @@
+# mindie-agent-kimi 0.1.30: Silent Default-On `knowledge_*` MCP, Zero `request_nonce` Gate & Fast `Stop` Capture
+
+[中文](mindie-agent-kimi-0.1.30.md)
+
+- **Default-Enabled `knowledge_*` MCP Surface with Zero `request_nonce` Gate**: Exposes `knowledge_query`, `knowledge_explain`, `knowledge_feedback`, `knowledge_distill`, and `knowledge_sync` on `tools/list` immediately at startup without requiring prior session activation or mandatory `request_nonce`. Resolves sessions from optional `PreToolUse` / `_meta` hints falling back cleanly to `_CONNECTION_SESSION_ID`, auto-provisions default session leases (`not_before=0.0`) on demand for mutating calls, and preserves replay protection and Receipt Honesty (`isError=False` + `receipt_warning`).
+- **Silent Semantic `SKILL.md` & `< 100ms` Zero-SQLite `Stop` Short-Circuit**: Removes `disableModelInvocation` from `skills/mindie-agent/SKILL.md` (`<= 30` lines) so Kimi loads domain guidance semantically; checks `mindie-consent.json` and authorized `project_roots` in `scripts/bridge.py` (`Stop`) before opening SQLite so disabled or out-of-scope turns exit in `< 100ms` with zero SQLite files created, while opted-in in-scope workspaces automatically ensure a lease and capture public transcript slices.

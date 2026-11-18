@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/mindie-agent/mindie-agent-kimi/releases"><img src="https://img.shields.io/badge/release-v0.1.29-0F766E.svg" alt="Release v0.1.29"></a>
+  <a href="https://github.com/mindie-agent/mindie-agent-kimi/releases"><img src="https://img.shields.io/badge/release-v0.1.30-0F766E.svg" alt="Release v0.1.30"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-0F766E.svg" alt="License: MIT"></a>
   <a href="runtime-requirements.txt"><img src="https://img.shields.io/badge/python-3.11%2B-2563EB.svg" alt="Python 3.11+"></a>
   <a href="kimi.plugin.json"><img src="https://img.shields.io/badge/host-Kimi_Code-7C3AED.svg" alt="Host: Kimi Code"></a>
@@ -27,35 +27,35 @@
 
 ---
 
-**MindIE Agent for Kimi Code** (`mindie-agent-kimi`) is the native Kimi Code plugin adapter for [MindIE Agent](https://github.com/mindie-agent/mindie-agent), supporting the **Ascend NPU AI Infra design, development, and testing workflow**. In `v0.1.29` (paired with `mindie-agent 0.1.13`), it delivers **`vLLM-Ascend` feature development & testing**, **`AscendC` / `Triton` operator implementation & verification**, remote NPU execution, and sanitized public experience capture, while additional Ascend AI Infra domains continue expanding on the roadmap.
+**MindIE Agent for Kimi Code** (`mindie-agent-kimi`) is the native Kimi Code plugin adapter for [MindIE Agent](https://github.com/mindie-agent/mindie-agent), supporting the **Ascend NPU AI Infra design, development, and testing workflow**. In `v0.1.30` (paired with `mindie-agent 0.1.13`), it delivers **`vLLM-Ascend` feature development & testing**, **`AscendC` / `Triton` operator implementation & verification**, remote NPU execution, and sanitized public experience capture, while additional Ascend AI Infra domains continue expanding on the roadmap.
 
 Designed around the [MindIE Agent Engineering Design Principles](https://github.com/mindie-agent/mindie-agent/blob/main/docs/design-principles.en.md), this thin adapter handles Kimi session identity, `wire.jsonl` public transcript extraction, MCP dispatch, and atomic generation updates, while delegating core knowledge, remote execution, and diagnostics to shared components.
 
-> **Ecosystem & Release Note**: Currently `v0.1.29` (paired with `mindie-agent 0.1.13`) supports four hosts — Claude Code ([`mindie-agent-cc`](https://github.com/mindie-agent/mindie-agent-cc)), OpenAI Codex CLI ([`mindie-agent-codex`](https://github.com/mindie-agent/mindie-agent-codex)), Kimi Code (this repository), and DeepSeek Harness ([`mindie-agent-dsh`](https://github.com/mindie-agent/mindie-agent-dsh)) — all built on the same shared knowledge, remote-dev, and diagnostics components. See the [Documentation Index](#documentation-index) for per-host verification scope.
+> **Ecosystem & Release Note**: Currently `v0.1.30` (paired with `mindie-agent 0.1.13`) supports Claude Code ([`mindie-agent-cc`](https://github.com/mindie-agent/mindie-agent-cc)), OpenAI Codex CLI ([`mindie-agent-codex`](https://github.com/mindie-agent/mindie-agent-codex)), Kimi Code (this repository), and DeepSeek Harness ([`mindie-agent-dsh`](https://github.com/mindie-agent/mindie-agent-dsh)) — all built on the same shared knowledge, remote-dev, and diagnostics components. See the [Documentation Index](#documentation-index) for per-host verification scope.
 
 ---
 
 ## Why Use This Plugin? (Trigger Modes & Usage Examples)
 
-MindIE Agent combines **manual on-demand activation for domain knowledge & skills** with **default automatic triggering for remote NPU development & testing**:
+MindIE Agent combines **silent default-on domain knowledge, skill guidance, and remote NPU tooling** with **strict opt-in workspace-scoped community contribution**:
 
 | Capability | Trigger Mode | When to Use | How to Trigger |
 | :--- | :--- | :--- | :--- |
-| **Experience, Knowledge & Skill System**<br/>(`mindie-knowledge` + `mindie-agent` Skill) | **🎯 Manual Per-Session Trigger** | When designing Ascend AI Infra features, developing in `vLLM-Ascend`, writing `AscendC` / `Triton` kernels, authoring unit/accuracy tests, or tuning performance | Explicitly type **`/mindie-agent` + your task description** once in the current session to enable knowledge search (`knowledge_query` / `knowledge_explain`), feedback (`knowledge_feedback`), distillation (`knowledge_distill`), and sync (`knowledge_sync`) across subsequent turns (`/mindie-agent:deactivate` turns it off for the session) |
-| **Remote Ascend NPU Dev & Component Tools**<br/>(`remote` + `components` MCP servers) | **⚡ Default Auto-Trigger** | When syncing local code/tests to a remote Ascend server/container, running NPU builds/tests, checking `npu-smi`, or calling local diagnostics, status checks, profiling, simulation, and device coordination tools | **No `/mindie-agent` required**—just describe the remote task or component invocation in natural language |
-| **Experience Capture & Unified Contribution Switch**<br/>(`Stop` Auto-Capture + Gitleaks Redaction + Fault Reporting) | **🔄 Background Run in Enabled Sessions** | When contributing sanitized design, kernel development, testing, or tuning takeaways back to the open-source knowledge base, or reporting sanitized tool faults | **Configure Consent Once, Active in `/mindie-agent` Sessions**—once explicitly enabled in setup, every `/mindie-agent`-enabled session is redacted locally and packaged into a knowledge PR in the background; unactivated sessions perform zero `Stop` capture |
+| **Experience, Knowledge & Skill System**<br/>(`mindie-knowledge` + `mindie-agent` Skill) | **⚡ Default Auto-Trigger** | When designing Ascend AI Infra features, developing in `vLLM-Ascend`, writing `AscendC` / `Triton` kernels, authoring unit/accuracy tests, or tuning performance | Enabled out of the box once the plugin is active—describe your Ascend architecture, kernel, or tuning task in natural language and Kimi uses `L1–L4` knowledge search (`knowledge_query` / `knowledge_explain`), feedback (`knowledge_feedback`), distillation (`knowledge_distill`), and sync (`knowledge_sync`) without session activation commands or `request_nonce` |
+| **Remote Ascend NPU Dev & Component Tools**<br/>(`remote` + `components` MCP servers) | **⚡ Default Auto-Trigger** | When syncing local code/tests to a remote Ascend server/container, running NPU builds/tests, checking `npu-smi`, or calling local diagnostics, status checks, profiling, simulation, and device coordination tools | Describe the remote task or component invocation directly in natural language |
+| **Experience Capture & Unified Contribution Switch**<br/>(`Stop` Auto-Capture + Gitleaks Redaction + Fault Reporting) | **🔄 Scoped Opt-In Background Run** | When contributing sanitized design, kernel development, testing, or tuning takeaways back to the open-source knowledge base, or reporting sanitized tool faults | **Configure Consent Once, Active in Authorized `project_roots`**—once explicitly enabled in setup, turns inside authorized `project_roots` are redacted locally and packaged into a knowledge PR in the background; disabled or out-of-scope turns skip in `< 100ms` with zero SQLite I/O |
 
-### Scenario 1: Type `/mindie-agent` for Feature Design, Kernel Development & Test Authoring (Manual Trigger)
+### Scenario 1: Natural-Language Feature Design, Kernel Development & Test Authoring (Default Auto-Trigger)
 > **Context**: Designing new Ascend features, implementing `AscendC` / `Triton` operators, or writing `vLLM-Ascend` accuracy tests benefits from prior architecture conventions, kernel constraints, and verified test patterns.  
 > **Copy-Paste Example**:
 > ```text
-> /mindie-agent I want to design and implement a custom fused operator in vllm-ascend (with Triton / AscendC kernel support) and add unit + accuracy tests. Please check past experience and architecture conventions to propose an implementation plan.
+> I want to design and implement a custom fused operator in vllm-ascend (with Triton / AscendC kernel support) and add unit + accuracy tests. Please check past experience and architecture conventions to propose an implementation plan.
 > ```
-> **What Happens**: Typing `/mindie-agent` activates the `mindie-agent` Skill and queries locally synced [`knowledge-vllm-ascend`](https://github.com/mindie-agent/knowledge-vllm-ascend) packages via SQLite FTS5, returning verified engineering cases complete with **applicable environments, evidence, and known caveats** as reference material.
+> **What Happens**: Kimi automatically applies the `mindie-agent` Skill and queries locally synced [`knowledge-vllm-ascend`](https://github.com/mindie-agent/knowledge-vllm-ascend) and [`knowledge-operators`](https://github.com/mindie-agent/knowledge-operators) `L1–L4` graded units, returning verified engineering rules complete with **applicable conditions, evidence, and known caveats** as reference material.
 
 ### Scenario 2: Everyday Conversation Automatically Triggers Remote Ascend NPU Dev & Testing (`remote-dev` Default Auto-Trigger)
 > **Context**: Your local machine is a macOS or Windows laptop while the Ascend NPU hardware lives on a remote Linux server or container.  
-> **Copy-Paste Example (no slash command required)**:
+> **Copy-Paste Example**:
 > ```text
 > Connect to the vllm_dev container on my remote 910B server, check current NPU memory usage, and sync my new operator implementation and rotary_embedding tests to run the full pytest verification suite.
 > ```
@@ -65,12 +65,12 @@ MindIE Agent combines **manual on-demand activation for domain knowledge & skill
 > **Context**: You want to contribute reusable engineering takeaways back to the community while keeping internal IPs, keys, and private file paths out of public commits.  
 > **Copy-Paste Example**:
 > ```text
-> /mindie-agent Help me complete the build and accuracy alignment verification for this custom Ascend operator using the knowledge base and our remote NPU container, and run the corresponding unit test once fixed.
+> Help me complete the build and accuracy alignment verification for this custom Ascend operator using the knowledge base and our remote NPU container, and run the corresponding unit test once fixed.
 > ```
 > **Unified Contribution Switch & State Boundaries**:
 > - **Single Persistent Switch**: Community knowledge sharing and automatic tool fault reporting share a single persistent switch in `mindie-consent.json`. Explicitly selecting `contribute` enables scoped public knowledge sharing and starts the native background fault reporter; selecting `disabled` stops subsequent outgoing sends for both paths.
 > - **Upgrade Preservation & Legacy Re-Confirmation**: Existing `disabled`, `later`, and `read-only` choices stay off across upgrades. Legacy knowledge-only `contribute` records lacking the unified consent revision (`choice_revision` / marked `needs_choice`) do **not** automatically gain fault-upload permission on upgrade until explicitly re-confirmed once by the user.
-> - **Three-State Separation**: The system strictly separates (1) local consent configuration written to disk, (2) background reporter or organizer worker running, and (3) external GitHub Issue or knowledge PR actually created. Use `/mindie-agent:reporting-status` for a read-only check of worker and queue state.
+> - **Three-State Separation**: The system strictly separates (1) local consent configuration written to disk, (2) background reporter or organizer worker running, and (3) external GitHub Issue or knowledge PR actually created. Use `diagnostics_status` or `setup.py sharing --status` for a read-only check of worker and queue state.
 > - Read the **[User & Contribution Notice](docs/install/user-notice.md)** for full details on sharing scope, redaction limits, and public Git history.
 > - To set up a multi-task Git worktree layout for `vllm` and `vllm-ascend`, see **[Workspace Setup](docs/install/workspace-setup.md)** and [vllm-ascend-workspace](https://github.com/mindie-agent/vllm-ascend-workspace.git).
 
@@ -108,7 +108,7 @@ If you are an AI Agent asked by the user to install this plugin, execute the fol
    GIT_CONFIG_KEY_0=core.longpaths GIT_CONFIG_VALUE_0=true \
    GIT_CONFIG_KEY_1=core.autocrlf GIT_CONFIG_VALUE_1=false \
    GIT_CONFIG_KEY_2=credential.https://github.com.helper GIT_CONFIG_VALUE_2="!gh auth git-credential" \
-   git clone --depth 1 --branch v0.1.29 https://github.com/mindie-agent/mindie-agent-kimi.git "$KIMI_SRC"
+   git clone --depth 1 --branch v0.1.30 https://github.com/mindie-agent/mindie-agent-kimi.git "$KIMI_SRC"
    SETUP_JSON=$(uv run --no-project --python 3.13 python "$KIMI_SRC/scripts/setup.py")
    echo "$SETUP_JSON"
    NATIVE_PKG=$(printf '%s' "$SETUP_JSON" | uv run --no-project --python 3.13 python -c "import json,sys; print(json.load(sys.stdin)['native_package'])")
@@ -168,28 +168,28 @@ If you are an AI Agent asked by the user to install this plugin, execute the fol
 
 ## Everyday Usage & Interaction
 
-Use **`/mindie-agent`** to activate domain knowledge on demand, while remote development and local component tools remain available by default across all sessions:
+Once registered and enabled, domain knowledge, remote development, and local component tools are all available out of the box across every session:
 
-- **`remote` and `components` MCP tools are available by default (no `/mindie-agent` needed)**: `remote` handles remote file reads/writes, command execution, and background job management on Ascend servers; `components` provides status checks (`mindie_status`), local diagnostic tools (`diagnostics_status` and `diagnostics_bundle`), and CLI wrappers for `coordinator`, `profiler`, and `sim`. Physical NPU execution and timing still require holding a device lease, and local diagnostic bundles are saved locally without automatic upload.
-- **Knowledge retrieval, sync, experience capture, and initial configuration require `/mindie-agent`**: `knowledge_query`, `knowledge_explain`, `knowledge_feedback`, `knowledge_distill`, `knowledge_sync`, and turn-end (`Stop`) capture are active only in sessions where you explicitly invoke `/mindie-agent`:
+- **`knowledge`, `remote`, and `components` MCP tools are available by default (zero pre-activation or required `request_nonce`)**: `knowledge` exposes `L1–L4` search (`knowledge_query`, `knowledge_explain`), feedback (`knowledge_feedback`), distillation (`knowledge_distill`), and feed synchronization (`knowledge_sync`); `remote` handles remote file reads/writes, command execution, and background job management on Ascend servers; `components` provides status checks (`mindie_status`), local diagnostic tools (`diagnostics_status` and `diagnostics_bundle`), and CLI wrappers for `coordinator`, `debugger`, `profiler`, and `sim`. Physical NPU execution and timing still require holding a device lease, and local diagnostic bundles are saved locally without automatic upload.
+- **Community contribution and background capture strictly follow saved consent (`mindie-consent.json`)**:
 
 | What You Want to Do | How to Do It |
 |---|---|
-| **Ascend AI Infra Design, Dev (`vLLM-Ascend` / `AscendC` / `Triton`), Testing & Tuning** | `/mindie-agent <describe your design, development, testing, or tuning goal>` |
-| **Work on a remote Ascend server / container (sync files, run tests, check `npu-smi`)** | **No slash command needed**—just describe the remote task in natural language (`remote` MCP triggers automatically) |
-| **Check local plugin status, export diagnostic bundles, or run `profiler` / `sim` / `coordinator`** | **No slash command needed**—ask in natural language or invoke the `components` MCP tools directly |
-| **First-time setup, check status, or toggle the unified contribution switch** | `/mindie-agent` (or `/mindie-agent check status / enable community sharing`) |
+| **Ascend AI Infra Design, Dev (`vLLM-Ascend` / `AscendC` / `Triton`), Testing & Tuning** | Describe your design, development, testing, or tuning goal directly in natural language (`knowledge` MCP and the `mindie-agent` Skill work automatically) |
+| **Work on a remote Ascend server / container (sync files, run tests, check `npu-smi`)** | Describe the remote task directly in natural language (`remote` MCP triggers automatically) |
+| **Check local plugin status, export diagnostic bundles, or run `profiler` / `sim` / `coordinator` / `debugger`** | Ask in natural language or invoke the `components` MCP tools directly |
+| **Inspect or toggle the unified contribution & fault-reporting switch** | Run `setup.py sharing --status` / `--enable` / `--disable`, or call `mindie_status` / `diagnostics_status` |
 
-> 💡 **Background Experience Capture**: Once you explicitly opt in to community contribution during setup, your saved consent persists across sessions; in any session where you have invoked `/mindie-agent`, turn end (`Stop`) extracts and sanitizes public user/assistant messages in the background (ordinary sessions where `/mindie-agent` was not invoked skip `Stop` capture). Local capture completion is distinct from external PR creation; inspect status receipts to verify remote publication.
+> 💡 **Background Experience Capture**: Once you explicitly opt in to community contribution during setup, your saved consent and authorized `project_roots` persist across sessions; for sessions inside authorized `project_roots`, turn end (`Stop`) extracts and sanitizes public user/assistant messages in the background, while disabled or out-of-scope workspaces skip `Stop` in `< 100ms` with zero SQLite I/O. Local capture completion is distinct from external PR creation; inspect status receipts to verify remote publication.
 
 ### `components` Local Diagnostics & Analysis Tools
 
-Once the plugin is registered, the `components` MCP server is available by default in every Kimi session without typing `/mindie-agent`. Listing tools neither starts the knowledge service nor installs optional components (the interactive `npu-top` terminal viewer is for human terminal use only and is not registered as an MCP tool):
+Once the plugin is registered, the `components` MCP server is available by default in every Kimi session. Listing tools neither starts the knowledge service nor installs optional components (the interactive `npu-top` terminal viewer is for human terminal use only and is not registered as an MCP tool):
 
 | Tool | Purpose | Installation | Arguments & Output |
 | :--- | :--- | :--- | :--- |
-| `mindie_status`<br/>`diagnostics_status`<br/>`diagnostics_bundle` | Check session, plugin, and local diagnostic status, or export a sanitized local support bundle (saved locally only, never uploaded automatically) | **Built in** (uses the plugin's Python environment) | Pass a single-use `request_nonce`; `diagnostics_status` accepts optional `config`, and `diagnostics_bundle` requires `root` (optional `operation_id`, `output`) |
-| `coordinator`<br/>`profiler`<br/>`sim` | Run `mindie-coordinator` (device probing and leases), `mindie-profiler` (trace analysis), and `mindie-sim` (performance simulation) CLIs | **Optional separate install** (not preinstalled). Searched in the configured Python environment first, then `PATH`, or specified via `component_commands`; returns a clear error if missing | Pass argument array `argv` (e.g. `{"argv":["--help"],"request_nonce":"..."}`) and optional absolute `cwd`; returns `component`, `status`, `exit_code`, `stdout`, `stderr` (plus parsed `result` only when `stdout` is JSON) |
+| `mindie_status`<br/>`diagnostics_status`<br/>`diagnostics_bundle` | Check session, plugin, and local diagnostic status, or export a sanitized local support bundle (saved locally only, never uploaded automatically) | **Built in** (uses the plugin's Python environment) | Zero required fields; `diagnostics_status` accepts optional `config`, and `diagnostics_bundle` requires `root` (optional `operation_id`, `output`) |
+| `coordinator`<br/>`debugger`<br/>`profiler`<br/>`sim` | Run `mindie-coordinator` (device probing and leases), `mindie-debugger` (fault triage and ACLGraph/precision localization), `mindie-profiler` (trace analysis), and `mindie-sim` (performance simulation) CLIs | **Installed in the locked runtime or on `PATH`**. Searched in the configured Python environment first, then `PATH`, or specified via `component_commands`; returns a clear error if missing | Pass argument array `argv` (e.g. `{"argv":["--help"]}`) and optional absolute `cwd`; returns `component`, `status`, `exit_code`, `stdout`, `stderr` (plus parsed `result` only when `stdout` is JSON) |
 
 If `coordinator`, `profiler`, or `sim` are installed in separate environments, specify their executable and fixed prefix arguments under `component_commands` in `~/.config/mindie-agent/kimi.json`:
 
@@ -203,7 +203,7 @@ If `coordinator`, `profiler`, or `sim` are installed in separate environments, s
 }
 ```
 
-Each call is bound to the current session and working directory by Kimi's native `PreToolUse` hook via `request_nonce` (the model must never supply a session ID), and relative input/output paths resolve against the session working directory by default. Timeout defaults to 120 seconds (`timeout_ms=120000`) up to 10 minutes (`600000`). Combined output defaults to at most 64 KiB (`max_output_tokens=16384`) and can be set up to 1 MiB (`262144`), counted at 4 bytes per token across `stdout` and `stderr`; save large reports to a file.
+Each call automatically resolves session and working directory via Kimi's native `PreToolUse` hook when present without requiring `request_nonce` (the model must never supply a session ID), and relative input/output paths resolve against the session working directory by default. Timeout defaults to 120 seconds (`timeout_ms=120000`) up to 10 minutes (`600000`). Combined output defaults to at most 64 KiB (`max_output_tokens=16384`) and can be set up to 1 MiB (`262144`), counted at 4 bytes per token across `stdout` and `stderr`; save large reports to a file.
 
 ### Automatic Updates & Safe Uninstall
 

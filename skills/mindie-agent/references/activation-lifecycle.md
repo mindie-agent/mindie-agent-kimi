@@ -1,18 +1,16 @@
-# Activation Lifecycle (Kimi)
+# Session Lifecycle & Background Capture (Kimi)
 
-- **Session Identity & Manual Activation (`P2.1` / `P2.7`)**:
-  - Native identity is `session_id` on hook stdin (resumed sessions keep the same ID; `/fork` creates a new ID with its own independent boundary).
-  - Unactivated default sessions expose only `mindie_entry` on the `knowledge` MCP surface (`AD-11`); `knowledge_query`, `knowledge_explain`, `knowledge_feedback`, `knowledge_distill`, `knowledge_sync`, and background `Stop` capture require an active manual-entry lease (`entry_enabled == 1`) granted by `/mindie-agent` in the current session.
-  - Deterministic `remote-dev` and `components` tools require zero pre-call session binding or `request_nonce` (`P2.7`).
-- **Single `/mindie-agent` Entry & Subcommands (`mindie_entry`)**:
-  - `op="init"`, `op="choose"`, `op="deactivate"`, `op="sharing-enable"`, `op="sharing-disable"`, `op="sharing-status"`, `op="reporting-status"`, and `op="recover"` consume the verified `/mindie-agent` turn origin once with a fresh `request_nonce`.
-  - `op="status"` (`mindie_entry(op="status", request_nonce=...)`) returns read-only `status_facts(session)` (`configured`, `knowledge_enabled`, `this_session`, `diagnostics`, `reporting`).
+- **Default-Enabled MCP Surfaces (`P2.7`)**:
+  - `remote` (`remote-dev`), `components` (`mindie_status`, `diagnostics_status`, `diagnostics_bundle`, `coordinator`, `debugger`, `profiler`, `sim`), and `knowledge` (`knowledge_query`, `knowledge_explain`, `knowledge_feedback`, `knowledge_distill`, `knowledge_sync`) are exposed on `tools/list` at startup and execute over standard MCP `tools/call` without pre-call session activation or a required `request_nonce`.
+  - Native identity resolves automatically from optional `PreToolUse` bindings or MCP connection scope (resumed sessions preserve their `session_id`; forked sessions receive a distinct `session_id` and drop inherited history before `state.createdAt`). Never supply a session ID in tool arguments.
+  - Read-only `mindie_status` and `diagnostics_status` return factual configuration, diagnostic, and reporting status without creating `admission.sqlite3` or starting background services.
+- **On-Demand Session Lease & Multi-Domain Routing**:
+  - Public `knowledge_query`, `knowledge_explain`, and `knowledge_sync` calls execute across the default domain and any registered `domain_configs` route without writing session leases.
+  - Mutating calls (`knowledge_feedback` and `knowledge_distill`) auto-provision a default session lease (`not_before=0.0`) on the selected target domain's own `Admission` store on demand; default-domain tokens are never forwarded across domains.
+  - Register additional domain routes with `python -m mindie_knowledge.loop.domain_routes register --adapter-config <path> --domain <domain> --engine-config <path>`.
 - **Unified Contribution & Fault-Reporting Switch**:
-  - `mindie-consent.json` (`mindie-consent/1`) stores the persistent choice (`contribute` or `disabled`) governing both public knowledge sharing and sanitized product fault reporting, while `mindie-community.json` (`mindie-community-config/1`) stores project scope and repository bindings.
-  - When enabling contribution (`contribute`) for a target public knowledge repository `owner/repo` (e.g., `mindie-agent/knowledge-vllm-ascend`), ensure the personal fork exists (`gh repo fork owner/repo --clone=false`) and bind `--community-fork ACCOUNT/repo`.
-  - Keep three states distinct when reporting status: (1) local consent config written, (2) background organizer/reporter worker running, and (3) external GitHub Issue or knowledge PR created (inspectable via `/mindie-agent reporting-status`).
-- **Multi-Domain Registration, Target Activation & `deactivate`**:
-  - Register an additional domain route with `python -m mindie_knowledge.loop.domain_routes register --adapter-config <path> --domain <domain> --engine-config <path>`.
-  - Distilling or contributing to a registered target `domain` requires that domain's own consent and `project_root` scope plus `mindie_entry(op="init", domain="<domain>", request_nonce=...)`.
-  - `/mindie-agent deactivate` (`mindie_entry(op="deactivate", request_nonce=...)`) revokes the current `session_id` across the default domain and all registered `domain_configs`, returning `status="partial"` with per-domain `domains[]` details if any domain fails during revocation.
-- **`Stop` Capture vs. Long-Horizon Task Completion**: An eligible `Stop` event hands off the completed turn's public transcript slice in the background. It does not mean a multi-step engineering task or remote benchmark is finished; check remote job status (`remote_job_status` / `remote_TaskOutput`) and `coordinator` execution handles before concluding a long-horizon task.
+  - `mindie-consent.json` (`mindie-consent/1`) stores the persistent choice (`contribute` or `disabled`) governing both public knowledge sharing and sanitized product fault reporting, while `mindie-community.json` (`mindie-community-config/1`) stores authorized `project_roots` and repository bindings.
+  - Keep three states distinct when reporting status: (1) local consent config written, (2) background organizer/reporter worker running, and (3) external GitHub Issue or knowledge PR created (inspectable via `diagnostics_status` or `setup.py sharing --status`).
+- **Silent Opt-In `Stop` Capture vs. Long-Horizon Task Completion**:
+  - On turn end (`Stop`), `bridge.py` checks `mindie-consent.json` and `mindie-community.json` `project_roots` before opening SQLite: when community sharing is disabled or the workspace is out of scope, `Stop` exits immediately with zero SQLite I/O; when enabled and in scope, it auto-provisions the session lease (`not_before=0.0`) and hands off the turn's public transcript slice in the background.
+  - A `Stop` event never implies a multi-step engineering task or remote benchmark is finished; check `remote_job_status` / `remote_TaskOutput` and `coordinator` execution handles before concluding a long-horizon task.

@@ -125,8 +125,9 @@ class LauncherTests(unittest.TestCase):
             )
             manifest = json.loads((package / "kimi.plugin.json").read_text())
             hook = next(item for item in manifest["hooks"] if item["event"] == "Stop")
+            in_scope_stop = json.dumps({**json.loads(STOP_EVENT), "cwd": str(tmp)})
             result = subprocess.run(
-                shlex.split(hook["command"]), input=STOP_EVENT, text=True,
+                shlex.split(hook["command"]), input=in_scope_stop, text=True,
                 capture_output=True, env=env_for(config), timeout=hook["timeout"],
             )
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -326,10 +327,11 @@ class LauncherTests(unittest.TestCase):
                 },
             )
             write_current(config, generation)
+            in_scope_stop = json.dumps({**json.loads(STOP_EVENT), "cwd": str(tmp)})
             started = time.monotonic()
             result = run_launch(
                 ["hook", "stop"],
-                STOP_EVENT + "x" * 8000,
+                in_scope_stop + "x" * 8000,
                 env=env_for(config, extra={"MINDIE_HOOK_TOTAL_SECONDS": "1.5"}),
                 timeout=4,
             )
@@ -368,10 +370,11 @@ class LauncherTests(unittest.TestCase):
                     self.addCleanup(stream.close)
             try:
                 self.assertEqual(holder.stdout.readline().strip(), "held")
+                in_scope_stop = json.dumps({**json.loads(STOP_EVENT), "cwd": str(tmp)})
                 started = time.monotonic()
                 result = run_launch(
                     ["hook", "stop"],
-                    STOP_EVENT,
+                    in_scope_stop,
                     env=env_for(config, extra={"MINDIE_HOOK_LOCK_BUDGET_SECONDS": "0.3"}),
                 )
                 self.assertLess(time.monotonic() - started, 2)

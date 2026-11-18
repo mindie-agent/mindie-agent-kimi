@@ -360,14 +360,15 @@ class DomainActivationEntryTests(unittest.TestCase):
                 self.assertIsNone(self.target_admission.active_lease(session))
                 self.assertIsNone(self.default_admission.active_lease(session))
 
-    def test_target_query_without_binding_never_implicitly_activates(self):
+    def test_target_query_without_binding_succeeds_without_implicitly_activating(self):
+        self._start_services()
         session = "ses_activation_unbound"
         result = self._call(session, "nonce-unbound-target", "knowledge_query", {
             "query": "gradedfeedbackprobe",
+            "include_unknown": True,
             "domain": TARGET_DOMAIN,
         })
-        self.assertTrue(result["isError"], result)
-        self.assertIn("not bound", result["content"][0]["text"])
+        self.assertFalse(result["isError"], result)
         self.assertIsNone(self.target_admission.active_lease(session))
         self.assertIsNone(self.default_admission.active_lease(session))
 

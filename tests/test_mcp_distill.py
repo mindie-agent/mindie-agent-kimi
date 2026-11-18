@@ -43,9 +43,9 @@ class KnowledgeToolSchemaTests(unittest.TestCase):
             feedback["properties"]["evidence_source"]["enum"],
             ["agent_declared", "run_manifest_verified", "ablation_verified"],
         )
-        self.assertEqual(query["required"], ["request_nonce"])
-        self.assertEqual(explain["required"], ["request_nonce"])
-        self.assertEqual(feedback["required"], ["ref", "request_nonce"])
+        self.assertEqual(query["required"], [])
+        self.assertEqual(explain["required"], [])
+        self.assertEqual(feedback["required"], ["ref"])
         for schema in (query, explain, feedback):
             self.assertIs(schema["additionalProperties"], False)
             self.assertNotIn("_session_id", schema["properties"])

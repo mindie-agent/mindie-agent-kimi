@@ -16,4 +16,4 @@
 | [测试边界与故障检测](test-boundaries.md) | [Test Boundaries](test-boundaries.en.md) | 跨平台 CI 检查顺序、独立故障维度与 stdio 传输边界测试 |
 | [Windows 原生启动契约](windows-launch-contract.md) | [Windows Launch Contract](windows-launch-contract.en.md) | Windows 无 Shell MCP 启动、Job Object 后代进程归属与原生边界验证 |
 | [安装与授权指南 (`install/`)](install/user-notice.md) | [Install & Consent Guides (`install/`)](install/user-notice.md) | 用户须知（[`user-notice.md`](install/user-notice.md)）、GitHub 认证（[`github-authentication.md`](install/github-authentication.md)）与工作区配置（[`workspace-setup.md`](install/workspace-setup.md)） |
-| [发布记录 (`0.1.29`)](releases/mindie-agent-kimi-0.1.29.md) | [Release Notes (`0.1.29`)](releases/mindie-agent-kimi-0.1.29.en.md) | 正式版本发布说明与变更记录（[`releases/`](releases/)） |
+| [发布记录 (`0.1.30`)](releases/mindie-agent-kimi-0.1.30.md) | [Release Notes (`0.1.30`)](releases/mindie-agent-kimi-0.1.30.en.md) | 正式版本发布说明与变更记录（[`releases/`](releases/)） |

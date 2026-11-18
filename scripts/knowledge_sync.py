@@ -1,13 +1,13 @@
 """[Role] Run explicit feed synchronization through the shared knowledge CLI.
 
 [Invariants]
-- The MCP adapter must verify the current session's target-domain lease first.
+- Rejects calls only when the session has been explicitly deactivated.
 - Sync is a standalone CLI operation, not a knowledge-service RPC.
 - Feed failures and deferred rows remain visible even when the CLI exits zero.
 
 [Timeouts & Locks]
 - One bounded 120s child, plus process cleanup; the launcher reserves 150s
-  including native nonce claim/finish and target-domain admission reads.
+  including optional nonce claim/finish and target-domain admission reads.
 - The shared core owns feed locking and publication validation.
 
 [Side-Effect Policy]
@@ -24,9 +24,9 @@ TIMEOUT = 120.0
 TOOL = dict(
     name="knowledge_sync",
     description=(
-        "Synchronize the configured knowledge feeds after explicit /mindie-agent "
-        "activation in this session and target domain. Keeps each feed receipt, "
-        "including deferred or unavailable results. Does not start a knowledge service."
+        "Synchronize the configured knowledge feeds for the selected domain. "
+        "Keeps each feed receipt, including deferred or unavailable results. "
+        "Does not start a knowledge service."
     ),
     inputSchema=dict(
         type="object", additionalProperties=False, properties={

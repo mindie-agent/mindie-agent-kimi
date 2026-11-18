@@ -282,21 +282,19 @@ def test_ad03_concurrent_resident_mcp_and_ad11_unified_subcommand(tmp_path, monk
         cwd=str(ROOT),
     )
     try:
-        for req_id in range(1, 9):
-            proc.stdin.write(
-                json.dumps(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": req_id,
-                        "method": "tools/call",
-                        "params": {"name": "mindie_status", "arguments": {}},
-                    }
-                )
-                + "\n"
+        payload = "".join(
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "method": "tools/call",
+                    "params": {"name": "mindie_status", "arguments": {}},
+                }
             )
-        proc.stdin.flush()
-        proc.stdin.close()
-        out, err = proc.communicate(timeout=15)
+            + "\n"
+            for req_id in range(1, 9)
+        )
+        out, err = proc.communicate(input=payload, timeout=15)
         assert proc.returncode == 0, err
         replies = [json.loads(ln) for ln in out.splitlines() if ln.strip()]
         assert {r["id"] for r in replies} == set(range(1, 9))
@@ -307,10 +305,16 @@ def test_ad03_concurrent_resident_mcp_and_ad11_unified_subcommand(tmp_path, monk
             proc.wait(timeout=2)
 
 
-def test_runtime_skill_preserves_manual_trigger_and_excludes_install_onboarding():
+def test_runtime_skill_is_silent_semantic_and_excludes_slash_or_install_onboarding():
     skill_md = ROOT / "skills" / "mindie-agent" / "SKILL.md"
     skill_text = skill_md.read_text(encoding="utf-8")
-    assert "disableModelInvocation: true" in skill_text
+    assert "disableModelInvocation" not in skill_text
+    assert "disable-model-invocation" not in skill_text
+    assert len(skill_text.splitlines()) <= 30
+
+    manifest = json.loads((ROOT / "kimi.plugin.json").read_text(encoding="utf-8"))
+    assert manifest["version"] == "0.1.30"
+    assert "/mindie-agent" not in manifest["systemPrompt"]
 
     banned = (
         "workspace-setup.md",
@@ -321,11 +325,35 @@ def test_runtime_skill_preserves_manual_trigger_and_excludes_install_onboarding(
         "gh auth login",
         "GitHub Star",
         "Non-Intrusive First-Use Onboarding",
+        "/mindie-agent",
     )
     for doc in [skill_md, *sorted((ROOT / "skills" / "mindie-agent" / "references").glob("*.md"))]:
         text = doc.read_text(encoding="utf-8")
         for token in banned:
-            assert token not in text, f"{doc.name} unexpectedly contains install/onboarding token {token!r}"
+            assert token not in text, f"{doc.name} unexpectedly contains token {token!r}"
+
+    active_docs = [
+        *sorted(ROOT.glob("README*.md")),
+        *sorted(ROOT.glob("AGENTS.md")),
+        *sorted(ROOT.glob("CONTRIBUTING*.md")),
+        ROOT / "kimi.plugin.json",
+        *sorted((ROOT / "skills").rglob("*.md")),
+        *[
+            p
+            for p in sorted((ROOT / "docs").rglob("*.md"))
+            if not any(part in p.parts for part in ("releases", "archive"))
+        ],
+    ]
+    import re as re_mod
+
+    slash_re = re_mod.compile(
+        r"(?<![A-Za-z0-9_./:-])(?<!\})[/\$]mindie-agent(?::mindie-agent)?(?![A-Za-z0-9_./-])"
+    )
+    for user_doc in active_docs:
+        text = user_doc.read_text(encoding="utf-8")
+        assert slash_re.search(text) is None, (
+            f"{user_doc} unexpectedly contains user-facing /mindie-agent command"
+        )
 
     for name in ("workspace-setup.md", "github-authentication.md", "user-notice.md"):
         assert (ROOT / "docs" / "install" / name).is_file()

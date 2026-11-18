@@ -255,11 +255,9 @@ def _knowledge_status_payload(session=None):
         raise
     except (OSError, ValueError, TypeError, KeyError) as exc:
         return dict(
-            configured=None,
-            sharing=dict(enabled=None, status="unavailable"),
+            configured=None, sharing=dict(enabled=None, status="unavailable"),
             error=dict(stage="local_settings", type=type(exc).__name__),
-            config=str(config_path()),
-            diagnostics=_diagnostics(session),
+            config=str(config_path()), diagnostics=_diagnostics(session),
             hint="Inspect the existing adapter and community configuration. Native tools and independent SSH remain available; no setup or retry was started.",
         )
     choice = saved["choice"] if saved["state"] == "ok" else None
@@ -270,11 +268,9 @@ def _knowledge_status_payload(session=None):
         admission = diagnostics.get("admission") or {}
         state = admission.get("status", "unavailable")
         payload["this_session"] = dict(
-            status=state,
-            bound=state == "active",
+            status=state, bound=state == "active",
             enabled=state == "active" and admission.get("enabled") is True,
-            failures=admission.get("failures"),
-            project_root=admission.get("project_root"),
+            failures=admission.get("failures"), project_root=admission.get("project_root"),
         )
     payload["choices"] = []
     payload["repeat"] = bool(
@@ -327,18 +323,18 @@ def status_payload(session=None):
 def status_facts(session=None):
     """Deterministic control-plane facts, without knowledge setup guidance."""
     payload = dict(configured=_configured(), knowledge_enabled=False)
-    if payload["configured"] and session:
-        from admission import gate
-        lease = gate().knowledge_lease(session)
-        payload["knowledge_enabled"] = lease is not None
-        payload["this_session"] = dict(bound=lease is not None, enabled=lease is not None,
-                                       status="active" if lease else "inactive",
-                                       project_root=lease["project_root"] if lease else None)
     if payload["configured"]:
+        from admission import is_deactivated, knowledge_lease
+        deactivated = bool(session and is_deactivated(session))
+        lease = knowledge_lease(session) if (session and not deactivated) else None
+        payload["knowledge_enabled"] = not deactivated
         diagnostics = _diagnostics(session)
         payload["diagnostics"] = {key: value for key, value in diagnostics.items() if key != "hints"}
         if session:
-            payload["this_session"]["failures"] = (diagnostics.get("admission") or {}).get("failures")
+            status = "inactive" if deactivated else ("active" if lease else "ready")
+            failures = (diagnostics.get("admission") or {}).get("failures")
+            payload["this_session"] = dict(bound=lease is not None, enabled=not deactivated, status=status,
+                                           project_root=lease["project_root"] if lease else None, failures=failures)
     import diagnostic_support
     payload["reporting"] = diagnostic_support.reporting_status()
     return payload
@@ -634,7 +630,7 @@ def op_deactivate(session):
     consume_slash(session, "deactivate")
     if not _configured():
         return dict(session=session, deactivated=False, configured=False)
-    from admission import deactivate
+    from admission import _resolve_default_root, deactivate, gate
     from paths import domain_configs, engine_config_path
 
     mappings = domain_configs()
@@ -648,6 +644,10 @@ def op_deactivate(session):
         raise ValueError(
             "knowledge domain deactivation is unavailable in the installed runtime"
         ) from exc
+    default_adm = gate()
+    default_adm.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if default_adm.inspect(session).get("status") == "missing":
+        default_adm.associate(session, project_root=_resolve_default_root(session), not_before=0.0)
     result = deactivate_registered_domains(
         str(engine_config_path()),
         domain_configs=mappings,

@@ -1,8 +1,8 @@
-"""[Role] Declarative native MCP schemas for manually enabled knowledge tools.
+"""[Role] Declarative native MCP schemas for default-enabled knowledge tools.
 
 [Invariants]
-- Schemas describe the existing knowledge/entry contract; dispatch owns gates.
-- Request nonces carry native identity; tool arguments never grant authority.
+- Schemas expose knowledge_* tools out of the box without mandatory request_nonce.
+- Optional request nonces carry native identity hints; tool arguments never grant authority.
 
 [Timeouts & Locks]
 - Pure module data; no locks or child processes.
@@ -17,14 +17,14 @@ NONCE_PROP = {
     "type": "string",
     "minLength": 8,
     "maxLength": 128,
-    "description": "Fresh per-call nonce. Native PreToolUse binds it; do not pass a session id.",
+    "description": "Optional per-call nonce hint. Native PreToolUse binds it when supplied; do not pass a session id.",
 }
 
 KNOWLEDGE_TOOLS = [
     dict(
         name="mindie_entry",
         description=(
-            "Native MindIE entry for Kimi Code (requires a fresh request_nonce). "
+            "Native MindIE session and configuration helper for Kimi Code. "
             "op='init' binds this session (or an optional configured target domain); "
             "op='choose' configures contribution ('contribute' or 'disabled') for "
             "public knowledge sharing and sanitized fault reporting; op='status' "
@@ -51,7 +51,7 @@ KNOWLEDGE_TOOLS = [
                 },
                 arguments={"type": "string"},
             ),
-            required=["op", "request_nonce"],
+            required=["op"],
             additionalProperties=False,
         ),
     ),
@@ -92,7 +92,7 @@ KNOWLEDGE_TOOLS = [
                 **rsi_explore.schema_properties(),
                 request_nonce=NONCE_PROP,
             ),
-            required=["request_nonce"],
+            required=[],
             additionalProperties=False,
         ),
     ),
@@ -100,8 +100,7 @@ KNOWLEDGE_TOOLS = [
         name="knowledge_distill",
         description=(
             "Distill caller-selected, authorized evidence into graded knowledge units "
-            "at task_state='verified_milestone' or 'completed' (requires an active "
-            "/mindie-agent session and a fresh request_nonce). Pass related_refs to "
+            "at task_state='verified_milestone' or 'completed'. Pass related_refs to "
             "compare against existing units as a delta, or pass a mindie-distill-decision/1 "
             "proposal for deterministic validation and local application with zero model calls."
         ),
@@ -157,7 +156,7 @@ KNOWLEDGE_TOOLS = [
                 },
                 request_nonce=NONCE_PROP,
             ),
-            required=["inputs", "task_state", "request_nonce"],
+            required=["inputs", "task_state"],
             additionalProperties=False,
         ),
     ),
@@ -186,7 +185,7 @@ KNOWLEDGE_TOOLS = [
                 **rsi_explore.schema_properties(),
                 request_nonce=NONCE_PROP,
             ),
-            required=["request_nonce"],
+            required=[],
             additionalProperties=False,
         ),
     ),
@@ -225,7 +224,7 @@ KNOWLEDGE_TOOLS = [
                 },
                 request_nonce=NONCE_PROP,
             ),
-            required=["ref", "request_nonce"],
+            required=["ref"],
             additionalProperties=False,
         ),
     ),
@@ -417,48 +416,3 @@ def remote_result(name, payload):
     else:
         is_error = False
     return dict(content=blocks, structuredContent=result_payload, isError=is_error)
-
-
-def has_any_active_knowledge_lease() -> bool:
-    """Read-only check (`?mode=ro`, Iron Rule 1) for any active manual `/mindie-agent` lease (`P2.1`/`AD-11`)."""
-    from paths import admission_path, domain_configs, engine_config_path, load_engine_config_at
-
-    candidate_engines: list[Path] = []
-    try:
-        candidate_engines.append(engine_config_path())
-    except TimeoutError:
-        raise
-    except (OSError, ValueError):
-        return False
-    try:
-        extra = domain_configs()
-        if isinstance(extra, dict):
-            for item in extra.values():
-                if isinstance(item, str) and os.path.isabs(item):
-                    candidate_engines.append(Path(item))
-    except TimeoutError:
-        raise
-    except (OSError, ValueError):
-        pass
-    for eng_file in candidate_engines:
-        try:
-            if not eng_file.is_file():
-                continue
-            eng = load_engine_config_at(eng_file)
-            db_path = admission_path(eng)
-            if not db_path.is_file():
-                continue
-            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2.0)
-            try:
-                row = conn.execute(
-                    "SELECT 1 FROM leases WHERE enabled = 1 AND entry_enabled = 1 LIMIT 1"
-                ).fetchone()
-                if row is not None:
-                    return True
-            finally:
-                conn.close()
-        except TimeoutError:
-            raise
-        except (OSError, ValueError, sqlite3.Error):
-            continue
-    return False

@@ -316,7 +316,9 @@ class DomainRoutingEntryTests(unittest.TestCase):
         self.assertTrue(rejected["isError"], rejected)
         self.assertIn("routing is unavailable", rejected["content"][0]["text"])
 
-    def test_missing_target_distill_lease_fails_before_service_or_model(self):
+    def test_deactivated_target_distill_fails_before_service_and_fresh_target_autoprovisions_distinct_token(self):
+        self.target_admission.activate(MISSING_SESSION, project_root=str(self.tmp / "project-target"))
+        self.target_admission.deactivate(MISSING_SESSION)
         before = self.connection_mock.call_count
         with patch("mindie_knowledge.loop.cli.distill_selected") as distill:
             failed = self._call("nonce-domain-missing-lease", "knowledge_distill", {
@@ -332,10 +334,31 @@ class DomainRoutingEntryTests(unittest.TestCase):
             }, session=MISSING_SESSION)
         self.assertTrue(failed["isError"], failed)
         text = failed["content"][0]["text"]
-        self.assertIn("not bound", text)
+        self.assertIn("deactivated", text)
         self.assertIn(TARGET_DOMAIN, text)
         distill.assert_not_called()
         self.assertEqual(self.connection_mock.call_count, before)
+
+        fresh_session = "ses_domain_routing_auto"
+        default_lease = self.default_admission.activate(fresh_session, project_root=str(self.tmp / "project-default"))
+        with patch("mindie_knowledge.loop.cli.distill_selected", return_value={"status": "noop", "model_calls": 0}) as distill:
+            succeeded = self._call("nonce-domain-auto-lease", "knowledge_distill", {
+                "domain": TARGET_DOMAIN,
+                "inputs": [{
+                    "kind": "authorized_transcript",
+                    "outcome": "completed",
+                    "source_locator": "fixture@abcdef1:probe.txt",
+                    "content": "Target-domain lease fixture.",
+                    "evidence_refs": ["fixture-observation"],
+                }],
+                "task_state": "completed",
+            }, session=fresh_session)
+        self.assertFalse(succeeded["isError"], succeeded)
+        target_lease = self.target_admission.active_lease(fresh_session)
+        self.assertIsNotNone(target_lease)
+        self.assertEqual(target_lease["activated_at"], 0.0)
+        self.assertNotEqual(target_lease["token"], default_lease["token"])
+        self.assertEqual(distill.call_args.args[1]["_activation"], target_lease["token"])
 
     def test_bound_native_task_can_read_target_without_capture_authority(self):
         self.assertIsNone(self.target_admission.active_lease(MISSING_SESSION))
@@ -350,12 +373,12 @@ class DomainRoutingEntryTests(unittest.TestCase):
         }, session=MISSING_SESSION)
         self.assertFalse(explained["isError"], explained)
         self.assertEqual(explained["structuredContent"]["revision"], 7)
-        rejected = self._call("nonce-public-feedback", "knowledge_feedback", {
-            "ref": hit["feedback_ref"], "rating": "up", "reason": "read-only task",
-        }, session=MISSING_SESSION)
-        self.assertTrue(rejected["isError"], rejected)
         self.assertIsNone(self.target_admission.active_lease(MISSING_SESSION))
-        self.assertEqual(self._votes(self.target_store), [])
+        voted = self._call("nonce-public-feedback", "knowledge_feedback", {
+            "ref": hit["feedback_ref"], "rating": "up", "reason": "local-only task",
+        }, session=MISSING_SESSION)
+        self.assertFalse(voted["isError"], voted)
+        self.assertIs(voted["structuredContent"]["publishable"], False)
 
     def test_distill_forwards_the_target_engines_own_lease(self):
         default_token = self.default_admission.active_lease(SESSION)["token"]
