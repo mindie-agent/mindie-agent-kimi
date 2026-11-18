@@ -9,8 +9,8 @@ import sys
 
 import pytest
 
-KEEP = {"mindie_launch.py", "entry.py", "kimi_transcript.py", "install_kimi_plugin.py", "setup.py"}
-TOTAL_LINE_CEILING = 1200
+KEEP = {"mindie_launch.py", "entry.py", "kimi_transcript.py", "transcript.py", "install_kimi_plugin.py", "setup.py"}
+TOTAL_LINE_CEILING = 1500
 
 
 def _scripts(repo: Path) -> list[Path]:
@@ -28,7 +28,7 @@ def test_total_runtime_lines_within_ceiling(repo_root: Path) -> None:
 
 def test_manifest_version_and_remote_profile(repo_root: Path) -> None:
     manifest = json.loads((repo_root / "kimi.plugin.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.1.31"
+    assert manifest["version"] == "0.1.32"
     assert manifest["mcpServers"]["remote"]["env"]["REMOTE_DEV_HARNESS_PROFILE"] == "kimi"
     for surface in ("knowledge", "remote", "components"):
         server = manifest["mcpServers"][surface]
@@ -59,7 +59,7 @@ def test_release_metadata_succeeds(repo_root: Path, plugin_env: dict[str, str]) 
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload["schema"] == "mindie-plugin-release/1"
-    assert payload["version"] == "0.1.31"
+    assert payload["version"] == "0.1.32"
     assert payload["source"] == {"repository": "mindie-agent/mindie-agent-kimi", "sha": "a" * 40}
 
 

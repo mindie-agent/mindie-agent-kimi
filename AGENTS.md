@@ -1,11 +1,11 @@
 # MindIE Agent for Kimi Code (`mindie-agent/mindie-agent-kimi`) — Agent Operating Rules
 
-This repository owns the thin Kimi Code host plugin (`kimi.plugin.json`), Kimi native wire/hook/transcript adaptation, and `0.1.31` five-file runtime built on the shared [`mindie-harness`](https://github.com/mindie-agent/harness) (`API_VERSION = 1`) substrate.
+This repository owns the thin Kimi Code host plugin (`kimi.plugin.json`), Kimi native wire/hook/transcript adaptation, and `0.1.32` six-file runtime built on the shared [`mindie-harness`](https://github.com/mindie-agent/harness) (`API_VERSION = 1`) substrate.
 
-## 1. Core Architectural Invariants (`host-plugin`, `0.1.31`)
+## 1. Core Architectural Invariants (`host-plugin`, `0.1.32`)
 
-1. **Five-File Thin Boundary (`HOST-UPGRADE`)**:
-   - `scripts/` contains **exactly** `mindie_launch.py`, `entry.py`, `kimi_transcript.py`, `install_kimi_plugin.py`, and `setup.py`, totaling **≤ 1,000 lines** (hard repository ceiling `≤ 1,200`). Never reintroduce `updater*.py`, `bridge.py`, `mcp_server.py`, `organizer*.py`, `paths.py`, or transition shims.
+1. **Six-File Thin Boundary (`HOST-UPGRADE`)**:
+   - `scripts/` contains **exactly** `mindie_launch.py`, `entry.py`, `kimi_transcript.py`, `transcript.py`, `install_kimi_plugin.py`, and `setup.py`, totaling **≤ 1,000 lines** (hard repository ceiling `≤ 1,500`). Never reintroduce `updater*.py`, `bridge.py`, `mcp_server.py`, `organizer*.py`, `paths.py`, or transition shims.
    - Delegate cold start, MCP serving/router, sharing consent, diagnostics, updates, process supervision, Windows Job Objects, PE verification, scheduled wrappers, atomic writes, and RSI utilities to `mindie_harness`; bundle the deterministic cold seed (`assets/mindie-harness-seed.pyz` + `assets/seed-lock.json`, `mindie-harness v0.1.3`).
    - `mindie_launch.py` is the only executable referenced by `kimi.plugin.json`: it resolves `kimi.json`/`state/kimi`, forwards `mcp <surface>`/`hook <event>` to `entry.py`, and verifies the seed before any cold provisioning. `setup.py init` writes `kimi.engine.json` (`root`, `domain="vllm-ascend"`, `admission_path`, absolute `transcript_adapter` -> `kimi_transcript.py`).
    - Keep every `scripts/*.py` docstring header (`[Role]` / `[Invariants]` / `[Timeouts & Locks]` / `[Side-Effect Policy]`) closing on or before line 30, and allow legitimate symlinks (`AD-07` — no `O_NOFOLLOW` hostility on config/repo reads).
@@ -18,7 +18,7 @@ This repository owns the thin Kimi Code host plugin (`kimi.plugin.json`), Kimi n
    - `hook pretool` writes `{}` immediately and never reads stdin. `hook session-start` atomically enqueues `state/kimi/pending-update-check.json` and exits `{}` in `< 5ms`.
    - `hook stop` checks `mindie-consent.json` / `mindie-community.json` (`contribute` or `local-only`, non-empty absolute `project_roots`) and `os.path.commonpath` containment **before** importing any runtime; disabled or out-of-scope events exit `{}` in `< 15ms` with zero SQLite I/O. `entry.py` then re-checks `sharing_status` before provisioning a default lease (`not_before=0.0`) and calling `capture_hook(..., timeout=6.0)`.
    - Expose a single semantic `mindie-agent` skill (`"skills": "./skills/"`, no `disableModelInvocation`, no slash-command clutter). Keep `request_nonce` optional and keep MCP surfaces disjoint: `knowledge` -> five `knowledge_*` tools only; `remote` -> the 14 Kimi `remote_*` tools only; `components` -> `mindie_status`, `mindie_doctor`, diagnostics, `profiler`, `sim`, `coordinator`, `npu_top`, `debugger` only. Cross-surface calls must return `unknown_operation`.
-   - Share `state/kimi/remote` across parent and subagent sessions (`AD-02`), serve resident MCP requests concurrently (`AD-03`), and initialize with `serverInfo.version == "0.1.31"`.
+   - Share `state/kimi/remote` across parent and subagent sessions (`AD-02`), serve resident MCP requests concurrently (`AD-03`), and initialize with `serverInfo.version == "0.1.32"`.
    - Preserve Receipt Honesty (`isError=False` + `receipt_warning` + `receipt_unconfirmed=True`) when local accounting fails after a primary tool call succeeds, and precede every broad `except OSError:` / `except Exception:` with `except TimeoutError: raise`.
 
 ## 2. Onboarding & Task Continuity

@@ -72,7 +72,12 @@ def _text(document: dict, key: str, default: str) -> str:
     return document[key] if isinstance(document.get(key), str) else default
 
 def _engine(profile: ProfileRef) -> tuple[Path, dict]:
-    path, document = profile.config_path.with_suffix(".engine.json"), _read_json(profile.config_path.with_suffix(".engine.json"))
+    path = profile.config_path.with_suffix(".engine.json")
+    document = _read_json(path)
+    if not document:
+        prev_ep = _read_json(profile.config_path).get("engine_config")
+        if isinstance(prev_ep, str) and os.path.isabs(prev_ep):
+            document = _read_json(Path(prev_ep))
     desired = str(HERE / "kimi_transcript.py")
     if document.get("transcript_adapter") == desired:
         return path, document

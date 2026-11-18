@@ -32,6 +32,6 @@ python3 -m unittest discover -s tests/native -v
 python3 scripts/setup.py release-metadata --source . --tests tests --revision "$(git rev-parse HEAD)"
 ```
 
-- **Thin-Plugin Gates**: `tests/test_thin_plugin_contract.py` verifies that `scripts/` keeps exactly five runtime files, totals ≤ 1,000 lines, reports plugin version `0.1.31`, verifies the bundled seed, and validates release metadata through `scripts/setup.py release-metadata`.
+- **Thin-Plugin Gates**: `tests/test_thin_plugin_contract.py` verifies that `scripts/` keeps exactly five runtime files, totals ≤ 1,000 lines, reports plugin version `0.1.32`, verifies the bundled seed, and validates release metadata through `scripts/setup.py release-metadata`.
 - **Release Benchmark (`benchmarks/release.json`)**: Defines the `public-transcript-parsing` microbenchmark (`public_transcript_parse`, `us/op`), executed via `benchmarks/release.py` to measure `wire.jsonl` public transcript extraction and non-public reasoning filtering latency, published alongside formal releases in `benchmark-results.json`, `benchmark-results.md`.
 - **Explicit Acceptance Boundaries**: Automated CI and CPU microbenchmarks verify locked dependencies, OS file locks, stdio transport contracts, and local parser latency; live host sessions and standing Ascend A2/A3 NPU execution remain separate acceptance gates.

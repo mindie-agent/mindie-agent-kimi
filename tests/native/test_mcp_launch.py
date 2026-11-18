@@ -125,21 +125,21 @@ class NativeMCPLaunchTests(unittest.TestCase):
 
     def test_knowledge_surface(self) -> None:
         payload = self._launch("knowledge")
-        self.assertEqual(payload["version"], "0.1.31")
+        self.assertEqual(payload["version"], "0.1.32")
         self.assertEqual(set(payload["tools"]), KNOWLEDGE)
         self.assertEqual(payload["parse_error"], -32700)
         self.assertEqual(payload["ping"], {})
 
     def test_remote_surface(self) -> None:
         payload = self._launch("remote")
-        self.assertEqual(payload["version"], "0.1.31")
+        self.assertEqual(payload["version"], "0.1.32")
         self.assertEqual(set(payload["tools"]), REMOTE)
         self.assertEqual(payload["parse_error"], -32700)
         self.assertEqual(payload["ping"], {})
 
     def test_components_surface(self) -> None:
         payload = self._launch("components")
-        self.assertEqual(payload["version"], "0.1.31")
+        self.assertEqual(payload["version"], "0.1.32")
         tools = set(payload["tools"])
         for expected in ("mindie_doctor", "mindie_status", "diagnostics_status", "profiler", "sim", "coordinator", "debugger"):
             self.assertIn(expected, tools)
