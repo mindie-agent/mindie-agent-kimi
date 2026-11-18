@@ -259,7 +259,9 @@ def handle_stop():
             if hasattr(cli_mod, "config_at"):
                 eng_doc = _read_json(Path(eng)) or {}
                 if isinstance(eng_doc.get("root"), str) and isinstance(eng_doc.get("domain"), str):
-                    if not (Path(eng_doc["root"]) / eng_doc["domain"] / "state-v4.sqlite3").is_file():
+                    from mindie_knowledge import state_layout
+
+                    if not (state_layout.state_root(eng_doc["root"], eng_doc["domain"]) / state_layout.DATABASE).is_file():
                         from mindie_knowledge.loop.handoff import prepare_schema
 
                         prepare_schema(str(eng))
