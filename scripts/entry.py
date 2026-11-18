@@ -186,8 +186,8 @@ def main(argv: list[str] | None = None) -> int:
             raise
         except Exception:
             pass
-    sys.stdout.write("{}\n")
-    sys.stdout.flush()
+    sys.stdout.buffer.write(b"{}\n")
+    sys.stdout.buffer.flush()
     return 0
 
 if __name__ == "__main__":

@@ -172,8 +172,8 @@ def _dispatch(python: Path, cfg_path: Path, forwarded: list[str], stdin_buf: byt
     return subprocess.run(argv, **io_kw, creationflags=_NO_WIN).returncode
 
 def _empty() -> int:
-    sys.stdout.write("{}\n")
-    sys.stdout.flush()
+    sys.stdout.buffer.write(b"{}\n")
+    sys.stdout.buffer.flush()
     return 0
 
 def main(argv: list[str] | None = None) -> int:
