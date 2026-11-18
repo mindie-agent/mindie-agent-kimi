@@ -327,18 +327,18 @@ def status_payload(session=None):
 def status_facts(session=None):
     """Deterministic control-plane facts, without knowledge setup guidance."""
     payload = dict(configured=_configured(), knowledge_enabled=False)
-    if payload["configured"] and session:
-        from admission import gate
-        lease = gate().knowledge_lease(session)
-        payload["knowledge_enabled"] = lease is not None
-        payload["this_session"] = dict(bound=lease is not None, enabled=lease is not None,
-                                       status="active" if lease else "inactive",
-                                       project_root=lease["project_root"] if lease else None)
     if payload["configured"]:
+        from admission import is_deactivated, knowledge_lease
+        deactivated = bool(session and is_deactivated(session))
+        lease = knowledge_lease(session) if (session and not deactivated) else None
+        payload["knowledge_enabled"] = not deactivated
         diagnostics = _diagnostics(session)
         payload["diagnostics"] = {key: value for key, value in diagnostics.items() if key != "hints"}
         if session:
-            payload["this_session"]["failures"] = (diagnostics.get("admission") or {}).get("failures")
+            status = "inactive" if deactivated else ("active" if lease else "ready")
+            failures = (diagnostics.get("admission") or {}).get("failures")
+            payload["this_session"] = dict(bound=lease is not None, enabled=not deactivated, status=status,
+                                           project_root=lease["project_root"] if lease else None, failures=failures)
     import diagnostic_support
     payload["reporting"] = diagnostic_support.reporting_status()
     return payload

@@ -91,6 +91,16 @@ def session_from_hook(event: dict) -> str:
     return require_session(event.get("session_id"))
 
 
+def session_from_meta(meta) -> str | None:
+    if not isinstance(meta, dict):
+        return None
+    for key in ("session_id", "sessionId", "conversation_id", "conversationId"):
+        value = meta.get(key)
+        if isinstance(value, str) and SESSION_RE.fullmatch(value):
+            return value
+    return None
+
+
 def is_mindie_mcp_tool(name) -> bool:
     return isinstance(name, str) and name.startswith(MCP_QUALIFIED_PREFIX)
 
@@ -591,6 +601,76 @@ def claim_nonce(nonce: str, tool_name: str, arguments, *, config=None) -> str:
                 raise ValueError("request_nonce does not match this tool and arguments")
             db.execute("UPDATE binds SET status='claimed', updated=? WHERE nonce=?", (now, nonce))
             return session
+    finally:
+        db.close()
+
+
+def publish_auto_bind(
+    session_id: str,
+    tool_name: str,
+    tool_call_id,
+    arguments,
+    *,
+    config=None,
+) -> str:
+    session_id = require_session(session_id)
+    if not isinstance(tool_name, str) or not tool_name or len(tool_name) > 256:
+        raise ValueError("invalid tool name")
+    if not isinstance(tool_call_id, str) or not 0 < len(tool_call_id) <= 256:
+        raise ValueError("native tool_call_id is required")
+    if not isinstance(arguments, dict):
+        raise ValueError("tool_input must be an object")
+    clean_args = {k: v for k, v in arguments.items() if k != "request_nonce"}
+    key = "auto-" + hashlib.sha256(f"{session_id}:{tool_call_id}".encode("utf-8")).hexdigest()[:32]
+    digest = bind_digest(tool_name, clean_args, tool_call_id)
+    adigest = args_digest(clean_args)
+    local = local_tool_name(tool_name)
+    now = time.time()
+    db = _connect(bind_db_path(config), create=True)
+    try:
+        with db:
+            db.execute("BEGIN IMMEDIATE")
+            _ensure_binds(db)
+            row = db.execute("SELECT status FROM binds WHERE nonce=?", (key,)).fetchone()
+            if row is None:
+                db.execute(
+                    "INSERT INTO binds VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (key, session_id, tool_name, local, adigest, digest, tool_call_id, "bound", now, now),
+                )
+                return "bound"
+            return row[0]
+    finally:
+        db.close()
+
+
+def claim_auto_bind(tool_name: str, arguments, *, config=None) -> tuple[str, str] | None:
+    if not isinstance(tool_name, str) or not tool_name or not isinstance(arguments, dict):
+        return None
+    path = bind_db_path(config)
+    if not path.is_file():
+        return None
+    now = time.time()
+    adigest = args_digest({k: v for k, v in arguments.items() if k != "request_nonce"})
+    local = local_tool_name(tool_name)
+    db = _connect(path, create=False)
+    try:
+        with db:
+            db.execute("BEGIN IMMEDIATE")
+            _ensure_binds(db)
+            row = db.execute(
+                "SELECT nonce, session, created FROM binds "
+                "WHERE nonce LIKE 'auto-%' AND status='bound' AND args_digest=? "
+                "AND (tool=? OR local_tool=? OR tool LIKE ?) "
+                "ORDER BY created DESC LIMIT 1",
+                (adigest, tool_name, local, "%__" + local),
+            ).fetchone()
+            if row is None:
+                return None
+            nonce, session, created = row
+            if now - created > 120:
+                return None
+            db.execute("UPDATE binds SET status='claimed', updated=? WHERE nonce=?", (now, nonce))
+            return session, nonce
     finally:
         db.close()
 

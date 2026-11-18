@@ -240,21 +240,86 @@ class HookTests(unittest.TestCase):
             fresh = admission_mod.gate().check("ses_ev")
             self.assertEqual(fresh.get("failures", 0), 0)
 
-    def test_stop_inactive_session_is_quiet_no_notification(self):
+    def test_stop_auto_ensures_lease_when_sharing_enabled_and_skips_when_deactivated_or_off(self):
+        import time as time_mod
+
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
             diag = Path(raw).resolve() / "diag"
             config = make_config(tmp, sharing=True, roots=[tmp])
             os.environ["MINDIE_KIMI_CONFIG"] = str(config)
             os.environ["MINDIE_DIAGNOSTICS_ROOT"] = str(diag)
+            import admission as admission_mod
+            from paths import admission_path
+
+            # 1. Fresh in-scope session auto-provisions default lease (not_before=0.0) and captures
             captured = []
             self._run_stop_in_process(
                 config,
-                {"hook_event_name": "Stop", "session_id": "ses_never", "cwd": str(tmp)},
+                {"hook_event_name": "Stop", "session_id": "ses_auto_stop", "cwd": str(tmp)},
                 captured,
             )
-            self.assertEqual(captured, [])
+            self.assertEqual(len(captured), 1)
+            lease = admission_mod.knowledge_lease("ses_auto_stop")
+            self.assertIsNotNone(lease)
+            self.assertEqual(lease["activated_at"], 0.0)
+            self.assertEqual(captured[0][1]["mindie_activation"], lease["token"])
+
+            # 2. Explicitly deactivated session skips quietly
+            admission_mod.deactivate("ses_auto_stop")
+            captured_deact = []
+            self._run_stop_in_process(
+                config,
+                {"hook_event_name": "Stop", "session_id": "ses_auto_stop", "cwd": str(tmp)},
+                captured_deact,
+            )
+            self.assertEqual(captured_deact, [])
             self.assertEqual(self._diagnostic_events(diag), [])
+
+        # 3. Sharing disabled & out-of-scope: < 100ms (min of 5 samples) and zero SQLite created
+        with tempfile.TemporaryDirectory() as raw_off:
+            off_root = Path(raw_off)
+            off_cfg = make_config(off_root, sharing=False)
+            os.environ["MINDIE_KIMI_CONFIG"] = str(off_cfg)
+            from paths import admission_path as adm_path_fn
+
+            run_bridge("stop", {"hook_event_name": "Stop", "session_id": "ses_warm", "cwd": str(off_root)}, off_cfg)
+            samples_off = []
+            for i in range(5):
+                t0 = time_mod.perf_counter()
+                res = run_bridge(
+                    "stop",
+                    {"hook_event_name": "Stop", "session_id": f"ses_off_{i}", "cwd": str(off_root)},
+                    off_cfg,
+                )
+                samples_off.append((time_mod.perf_counter() - t0) * 1000.0)
+                self.assertEqual(res.returncode, 0)
+            self.assertLess(min(samples_off), 100.0, samples_off)
+            self.assertFalse(adm_path_fn().exists())
+
+        with tempfile.TemporaryDirectory() as raw_oos:
+            oos_root = Path(raw_oos)
+            allowed_dir = oos_root / "allowed"
+            outside_dir = oos_root / "outside"
+            allowed_dir.mkdir()
+            outside_dir.mkdir()
+            oos_cfg = make_config(oos_root, sharing=True, roots=[allowed_dir])
+            os.environ["MINDIE_KIMI_CONFIG"] = str(oos_cfg)
+            from paths import admission_path as adm_path_fn
+
+            run_bridge("stop", {"hook_event_name": "Stop", "session_id": "ses_warm", "cwd": str(outside_dir)}, oos_cfg)
+            samples_oos = []
+            for i in range(5):
+                t0 = time_mod.perf_counter()
+                res = run_bridge(
+                    "stop",
+                    {"hook_event_name": "Stop", "session_id": f"ses_oos_{i}", "cwd": str(outside_dir)},
+                    oos_cfg,
+                )
+                samples_oos.append((time_mod.perf_counter() - t0) * 1000.0)
+                self.assertEqual(res.returncode, 0)
+            self.assertLess(min(samples_oos), 100.0, samples_oos)
+            self.assertFalse(adm_path_fn().exists())
 
     def test_stop_unreadable_admission_is_recorded_not_inactive(self):
         with tempfile.TemporaryDirectory() as raw:

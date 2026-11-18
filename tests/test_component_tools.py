@@ -203,7 +203,8 @@ def test_factual_status_nonce_requires_no_manual_entry(adapter, tmp_path):
     }))
     result = call("mindie_status", {})
     assert not result["isError"], result
-    assert result["structuredContent"]["knowledge_enabled"] is False
+    assert result["structuredContent"]["knowledge_enabled"] is True
+    assert result["structuredContent"]["this_session"]["bound"] is False
     assert not {"hint", "next", "choices"}.intersection(result["structuredContent"])
     assert not (tmp_path / "domain").exists()
 

@@ -34,4 +34,4 @@ GitHub PR、提交及版本历史是公开发布的一部分。从当前知识�
 - **显式开启（`contribute`）**：允许配置范围内的公开知识共享，并启动后台上报 worker 向 `mindie-agent/mindie-agent` 自动提交经筛选的工具故障报告。故障报告仅包含白名单内的产品与版本元数据、事件标识和脱敏错误类别，不包含提示词、会话正文、命令参数、环境变量值、凭据或个人路径。
 - **显式关闭（`disabled`）**：同时停止新的知识采集与待发送的故障报告（已公开的 GitHub Issue、PR 与 Git 历史不会自动删除；知识只读检索与 `remote-dev` 工具保持可用）。重新开启后仅处理新产生的获准材料，不补传关闭期间的事件。
 - **旧版记录升级边界**：已有的 `disabled`、`later`、`read-only` 选择在升级后保持关闭；旧版仅含知识共享授权（无统一授权 `choice_revision` / 标记为 `needs_choice`）的记录在常规启动或升级时**不会**自动开启故障上传，须由用户显式重新确认一次后才允许上传故障。
-- **三态分离**：（1）本地授权配置已保存、（2）后台上报/整理 worker 正在运行、（3）外部 GitHub Issue 或 PR 已创建三者严格区分。可通过返回值或 `/mindie-agent reporting-status` 只读查看 worker 与队列状态；若 worker 处于 `degraded` 或 `unavailable`，将如实呈现错误原因。
+- **三态分离**：（1）本地授权配置已保存、（2）后台上报/整理 worker 正在运行、（3）外部 GitHub Issue 或 PR 已创建三者严格区分。可通过 `diagnostics_status` 或 `setup.py sharing --status` 只读查看 worker 与队列状态；若 worker 处于 `degraded` 或 `unavailable`，将如实呈现错误原因。

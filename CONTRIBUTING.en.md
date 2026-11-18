@@ -15,8 +15,8 @@ This repository owns the thin Kimi Code host plugin (`kimi.plugin.json`, native 
 Every Pull Request must complete the four `host-plugin` checklist IDs in [`.github/pull_request_template.md`](.github/pull_request_template.md):
 
 - **`HOST-NATIVE`**: Zero Windows console popups (`CREATE_NO_WINDOW`, no `CREATE_NEW_CONSOLE` / `DETACHED_PROCESS`, verified PE `Subsystem == 2` `pythonw.exe` for `MindIEKimiUpdate`).
-- **`HOST-WIRE`**: Single `/mindie-agent` entry, concurrent resident MCP dispatch, profile-shared `remote` job store across subagents, and Receipt Honesty (`receipt_warning` + `receipt_unconfirmed=True`).
-- **`HOST-ADMISSION`**: `P2.7` zero required `request_nonce` on deterministic tools; `P2.1` unactivated hiding and strict per-session nonce/lease admission on `knowledge_*`.
+- **`HOST-WIRE`**: Single semantic `mindie-agent` skill, concurrent resident MCP dispatch, profile-shared `remote` job store across subagents, and Receipt Honesty (`receipt_warning` + `receipt_unconfirmed=True`).
+- **`HOST-ADMISSION`**: Zero required `request_nonce` across `remote`, `components`, and default-enabled `knowledge_*` tools; on-demand `not_before=0.0` default session leases and consent/scope check before SQLite in `Stop`.
 - **`HOST-UPGRADE`**: `0.1.26 -> 0.1.27` transition shims (`< 30` LOC), `update/current.json` compatibility, `assets/mindie-harness-seed.pyz` lock match, and Scheduled Task migration before GC.
 
 ## 3. Local Verification

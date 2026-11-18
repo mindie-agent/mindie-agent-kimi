@@ -165,7 +165,7 @@ class KnowledgePageTests(unittest.TestCase):
                 "native_subcontext", "goal", "request_nonce",
             },
         )
-        self.assertEqual(explain["inputSchema"]["required"], ["request_nonce"])
+        self.assertEqual(explain["inputSchema"]["required"], [])
         self.assertIn("next_block_ref", explain["description"])
         self.assertIn("slice", explain["description"])
         self.assertNotIn("offset", query["inputSchema"]["properties"])
@@ -186,7 +186,7 @@ class KnowledgePageTests(unittest.TestCase):
                 "outcome", "evidence_source", "request_nonce",
             },
         )
-        self.assertEqual(feedback["inputSchema"]["required"], ["ref", "request_nonce"])
+        self.assertEqual(feedback["inputSchema"]["required"], ["ref"])
         distill = next(item for item in mcp_server.KNOWLEDGE_TOOLS if item["name"] == "knowledge_distill")
         self.assertEqual(
             set(distill["inputSchema"]["properties"]),
@@ -194,7 +194,7 @@ class KnowledgePageTests(unittest.TestCase):
         )
         self.assertEqual(
             distill["inputSchema"]["required"],
-            ["inputs", "task_state", "request_nonce"],
+            ["inputs", "task_state"],
         )
         self.assertEqual(
             set(distill["inputSchema"]["properties"]["inputs"]["items"]["properties"]),
@@ -262,7 +262,7 @@ class KnowledgePageTests(unittest.TestCase):
             self.assertFalse(worker.is_alive())
         self.assertEqual(len(calls), 1)
 
-    def test_explain_without_host_bind_fails_closed(self):
+    def test_explain_without_host_bind_reaches_reference_validation_directly(self):
         message = {
             "jsonrpc": "2.0",
             "id": "no-host",
@@ -271,7 +271,6 @@ class KnowledgePageTests(unittest.TestCase):
                 "name": "knowledge_explain",
                 "arguments": {
                     "ref": "mindie://vllm-ascend/missing",
-                    "request_nonce": "nonce-missing-host",
                 },
             },
         }
@@ -287,7 +286,8 @@ class KnowledgePageTests(unittest.TestCase):
         response = json.loads(proc.stdout.decode())
         text = response["result"]["content"][0]["text"]
         self.assertTrue(response["result"]["isError"])
-        self.assertIn("host did not authorize", text)
+        self.assertIn("Use a complete task navigation or block reference", text)
+        self.assertNotIn("host did not authorize", text)
         self.assertNotIn("content_offset", text)
 
     def test_store_navigation_and_blocks_fit_knowledge_bound(self):

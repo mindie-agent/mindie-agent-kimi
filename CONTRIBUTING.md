@@ -15,8 +15,8 @@ English version: [`CONTRIBUTING.en.md`](CONTRIBUTING.en.md)
 提交 Pull Request 前，请逐项核验并完成 [`.github/pull_request_template.md`](.github/pull_request_template.md) 中的四项机器校验 ID：
 
 - **`HOST-NATIVE`**：Windows 无窗进程监管（禁绝 `CREATE_NEW_CONSOLE` / `DETACHED_PROCESS`，计划任务校验 PE `Subsystem == 2` `pythonw.exe`）。
-- **`HOST-WIRE`**：单一 `/mindie-agent` 入口、并发常驻 MCP 派发、父子会话共享 `remote` 作业句柄（`job_id`），以及主操作成功后的 Receipt Honesty。
-- **`HOST-ADMISSION`**：确定性工具零必填 `request_nonce`（`P2.7`）；未激活默认会话隐藏 `knowledge_*` 工具且 `tools/call` 严格校验会话租约与 `mindie-consent.json`（`P2.1`）。
+- **`HOST-WIRE`**：单一语义 `mindie-agent` Skill 入口、并发常驻 MCP 派发、父子会话共享 `remote` 作业句柄（`job_id`），以及主操作成功后的 Receipt Honesty。
+- **`HOST-ADMISSION`**：`remote`、`components` 与 `knowledge` 全表面零必填 `request_nonce` 且默认开箱可用；按需自动补齐默认会话租约（`not_before=0.0`），`Stop` Hook 在打开 SQLite 前校验 `mindie-consent.json` 与 `project_roots`。
 - **`HOST-UPGRADE`**：保留 `0.1.26 -> 0.1.27` 过渡桩文件、`update/current.json` 兼容结构与 `assets/mindie-harness-seed.pyz` 锁校验，计划任务先迁移再执行旧代 GC。
 
 ## 3. 本地验证命令

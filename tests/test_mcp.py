@@ -49,7 +49,15 @@ class McpTests(unittest.TestCase):
                 self.assertEqual(init["result"]["serverInfo"]["version"], manifest["version"])
                 listed = self.rpc(proc, dict(jsonrpc="2.0", id=2, method="tools/list"))
                 names = {item["name"] for item in listed["result"]["tools"]}
-                self.assertEqual(names, {"mindie_entry"})
+                self.assertEqual(
+                    names,
+                    {
+                        "mindie_entry", "knowledge_query", "knowledge_explain",
+                        "knowledge_feedback", "knowledge_distill", "knowledge_sync",
+                    },
+                )
+                for item in listed["result"]["tools"]:
+                    self.assertNotIn("request_nonce", item["inputSchema"].get("required", []))
                 missing = self.rpc(
                     proc,
                     dict(
@@ -63,18 +71,6 @@ class McpTests(unittest.TestCase):
                     ),
                 )
                 self.assertTrue(missing["result"]["isError"])
-                with patch.dict(os.environ, MINDIE_KIMI_CONFIG=str(config)):
-                    import admission
-                    admission.gate().activate("ses_active", project_root=str(raw))
-                listed_active = self.rpc(proc, dict(jsonrpc="2.0", id=4, method="tools/list"))
-                active_names = {item["name"] for item in listed_active["result"]["tools"]}
-                self.assertEqual(
-                    active_names,
-                    {
-                        "mindie_entry", "knowledge_query", "knowledge_explain",
-                        "knowledge_feedback", "knowledge_distill", "knowledge_sync",
-                    },
-                )
             finally:
                 proc.stdin.close()
                 proc.kill()
@@ -424,12 +420,13 @@ class McpTests(unittest.TestCase):
                         self.assertEqual(response["structuredContent"]["result"], payload["result"])
                         self.assertIn("do not repeat", response["structuredContent"]["operation_message"])
 
-    def test_knowledge_distill_unbound_never_starts_service_or_model(self):
+    def test_knowledge_distill_deactivated_never_starts_service_or_model_and_fresh_autoprovisions(self):
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
             config = self.config(tmp)
             os.environ["MINDIE_KIMI_CONFIG"] = str(config)
             sys.path.insert(0, str(SCRIPTS))
+            import admission
             import mcp_server
 
             args = dict(
@@ -440,14 +437,24 @@ class McpTests(unittest.TestCase):
                 }],
                 task_state="in_flight",
             )
+            admission.activate("ses_deactivated", project_root=str(tmp.resolve()))
+            admission.deactivate("ses_deactivated")
             with patch("knowledge_service.existing_service") as existing, \
                     patch("knowledge_service.ensure_service") as ensure, \
                     patch("mindie_knowledge.loop.cli.distill_selected") as distill:
-                with self.assertRaisesRegex(ValueError, "not bound"):
-                    mcp_server.knowledge_call("knowledge_distill", args, "ses_unbound")
+                with self.assertRaisesRegex(ValueError, "deactivated"):
+                    mcp_server.knowledge_call("knowledge_distill", args, "ses_deactivated")
                 existing.assert_not_called()
                 ensure.assert_not_called()
                 distill.assert_not_called()
+
+            with patch("knowledge_service.existing_service", return_value={"url": "http://127.0.0.1:1", "token": "t"}), \
+                    patch("mindie_knowledge.loop.cli.distill_selected", return_value={"status": "noop", "model_calls": 0}):
+                out = mcp_server.knowledge_call("knowledge_distill", args, "ses_fresh_auto")
+            self.assertEqual(out["status"], "noop")
+            lease = admission.knowledge_lease("ses_fresh_auto")
+            self.assertIsNotNone(lease)
+            self.assertEqual(lease["activated_at"], 0.0)
 
     def test_knowledge_query_forwards_graded_filters_to_shared_runtime(self):
         with tempfile.TemporaryDirectory() as raw:

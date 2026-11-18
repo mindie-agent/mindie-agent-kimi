@@ -1,8 +1,8 @@
-"""[Role] Declarative native MCP schemas for manually enabled knowledge tools.
+"""[Role] Declarative native MCP schemas for default-enabled knowledge tools.
 
 [Invariants]
-- Schemas describe the existing knowledge/entry contract; dispatch owns gates.
-- Request nonces carry native identity; tool arguments never grant authority.
+- Schemas expose knowledge_* tools out of the box without mandatory request_nonce.
+- Optional request nonces carry native identity hints; tool arguments never grant authority.
 
 [Timeouts & Locks]
 - Pure module data; no locks or child processes.
@@ -17,14 +17,14 @@ NONCE_PROP = {
     "type": "string",
     "minLength": 8,
     "maxLength": 128,
-    "description": "Fresh per-call nonce. Native PreToolUse binds it; do not pass a session id.",
+    "description": "Optional per-call nonce hint. Native PreToolUse binds it when supplied; do not pass a session id.",
 }
 
 KNOWLEDGE_TOOLS = [
     dict(
         name="mindie_entry",
         description=(
-            "Native MindIE entry for Kimi Code (requires a fresh request_nonce). "
+            "Native MindIE session and configuration helper for Kimi Code. "
             "op='init' binds this session (or an optional configured target domain); "
             "op='choose' configures contribution ('contribute' or 'disabled') for "
             "public knowledge sharing and sanitized fault reporting; op='status' "
@@ -51,7 +51,7 @@ KNOWLEDGE_TOOLS = [
                 },
                 arguments={"type": "string"},
             ),
-            required=["op", "request_nonce"],
+            required=["op"],
             additionalProperties=False,
         ),
     ),
@@ -92,7 +92,7 @@ KNOWLEDGE_TOOLS = [
                 **rsi_explore.schema_properties(),
                 request_nonce=NONCE_PROP,
             ),
-            required=["request_nonce"],
+            required=[],
             additionalProperties=False,
         ),
     ),
@@ -100,8 +100,7 @@ KNOWLEDGE_TOOLS = [
         name="knowledge_distill",
         description=(
             "Distill caller-selected, authorized evidence into graded knowledge units "
-            "at task_state='verified_milestone' or 'completed' (requires an active "
-            "/mindie-agent session and a fresh request_nonce). Pass related_refs to "
+            "at task_state='verified_milestone' or 'completed'. Pass related_refs to "
             "compare against existing units as a delta, or pass a mindie-distill-decision/1 "
             "proposal for deterministic validation and local application with zero model calls."
         ),
@@ -157,7 +156,7 @@ KNOWLEDGE_TOOLS = [
                 },
                 request_nonce=NONCE_PROP,
             ),
-            required=["inputs", "task_state", "request_nonce"],
+            required=["inputs", "task_state"],
             additionalProperties=False,
         ),
     ),
@@ -186,7 +185,7 @@ KNOWLEDGE_TOOLS = [
                 **rsi_explore.schema_properties(),
                 request_nonce=NONCE_PROP,
             ),
-            required=["request_nonce"],
+            required=[],
             additionalProperties=False,
         ),
     ),
@@ -225,7 +224,7 @@ KNOWLEDGE_TOOLS = [
                 },
                 request_nonce=NONCE_PROP,
             ),
-            required=["ref", "request_nonce"],
+            required=["ref"],
             additionalProperties=False,
         ),
     ),

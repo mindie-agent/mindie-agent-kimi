@@ -1,29 +1,28 @@
 #!/usr/bin/env python3
-"""Adapter-owned MCP server for Kimi's component and explicit knowledge tools.
+"""Adapter-owned MCP server for Kimi's component and default-enabled knowledge tools.
 
 [Role]
-Serves MCP discovery and nonce-bound calls for knowledge, remote-dev,
-coordinator, profiler, sim, local diagnostics and factual status.
+Serves MCP discovery and concurrent tool calls for default-enabled knowledge,
+remote-dev, coordinator, profiler, sim, debugger, local diagnostics and status.
 
 [Invariants]
 - Native task identity is never accepted from tool arguments (`sessionId`,
   `thread_id`, `session_id`, `_session_id`, `_session_verified`, `_activation`,
   and `mindie_activation` on the `knowledge` surface are rejected).
-- `knowledge` surface `tools/call` strictly requires a fresh `request_nonce`
-  bound by native `PreToolUse` (`claim_nonce`). Deterministic surfaces (`remote`
-  and `components`) treat `request_nonce` as an opportunistic hint: when bound,
-  it supplies native session/cwd and rejects replay; when omitted or unbound
-  (e.g. subagents, automations, or direct MCP calls), execution proceeds under
-  `_CONNECTION_SESSION_ID` without pre-call session-binding failure.
+- All surfaces (`knowledge`, `remote`, and `components`) expose their tools by
+  default on startup without requiring `/mindie-agent` or `request_nonce`.
+  When `request_nonce` or `PreToolUse` binding is present, it supplies native
+  session/cwd and rejects replay; otherwise session resolves via optional `_meta`
+  hint falling back cleanly to `_CONNECTION_SESSION_ID`.
 - Knowledge domains select trusted `domain_configs` paths; arbitrary paths
   and unknown or conflicting domains are rejected.
-- Distillation requires an active capture lease from the selected target
-  engine's own admission store; default-domain authority is never forwarded.
+- Distillation and feedback auto-provision a default session lease (`not_before=0.0`)
+  on the selected target engine's own admission store when not explicitly deactivated;
+  default-domain tokens are never forwarded across domains.
 - Remote failures preserve `submission_state` (`not_sent`, `uncertain`,
   `acknowledged`) and job references so callers never blindly replay writes.
-  Caller/`not_sent` failures retain bounded input_repair without private prose.
 - Only the successful nonce claimant finalizes its receipt. Accounting failures
-  add `bind_warning` and `diagnostic_ref` without changing the tool outcome.
+  add `bind_warning` / `receipt_warning` without changing `isError`.
 
 [Timeouts & Locks]
 - Clamps `remote-dev` `yield_time_ms` to `MAX_YIELD_TIME_MS = 30000` (30s).
@@ -32,12 +31,13 @@ coordinator, profiler, sim, local diagnostics and factual status.
 - Nonce claim uses SQLite `BEGIN IMMEDIATE` (`busy_timeout=5000`).
 
 [Side-Effect Policy]
-- Persists nonce receipts, dispatches manually authorized knowledge calls,
-  and runs explicitly requested remote operations or component CLIs.
+- Persists optional nonce receipts, provisions default leases on demand for
+  mutating knowledge calls, and runs requested remote or component CLIs.
 """
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 import json
 import os
@@ -52,7 +52,16 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-from identity import MissingBind, claim_nonce, finish_nonce, local_tool_name, require_nonce
+from identity import (
+    MissingBind,
+    bind_db_path,
+    claim_auto_bind,
+    claim_nonce,
+    finish_nonce,
+    local_tool_name,
+    require_nonce,
+    session_from_meta,
+)
 from paths import (
     domain_configs,
     domain_from_ref,
@@ -93,6 +102,9 @@ from mcp_catalog import (
 
 _SEND_LOCK = threading.Lock()
 _REMOTE_ENV_LOCK = threading.Lock()
+_NONCE_MEM_LOCK = threading.Lock()
+_CLAIMED_NONCES: OrderedDict[str, None] = OrderedDict()
+_MAX_CLAIMED_NONCES = 4096
 _READ_ONLY_TOOLS = frozenset({
     "remote_read", "remote_Read", "remote_glob", "remote_Glob", "remote_grep", "remote_Grep",
     "remote_ReadMediaFile", "remote_ls", "remote_job_status", "remote_job_tail", "remote_job_output",
@@ -254,11 +266,12 @@ def _knowledge_distill_call(engine_path, connection, body, session, token):
 
 
 def knowledge_call(name, args, session):
+    from admission import ensure_default_lease, is_deactivated
     from knowledge_service import ensure_service, existing_service
-    from mindie_knowledge.loop.activation import Admission
     from mindie_knowledge.loop.cli import rpc
-    from paths import admission_path
 
+    if is_deactivated(session):
+        raise ValueError("MindIE knowledge is deactivated for this session")
     body = rsi_explore.forwarded(args) if name in {"knowledge_query", "knowledge_explain"} else dict(args)
     if name == "knowledge_query":
         # Boundary check, not the Store's duplicate: reject a malformed call
@@ -267,19 +280,8 @@ def knowledge_call(name, args, session):
 
         query_request(body.get("query"), body.get("limit", 5), body.get("conditions"), body.get("continuation"))
     engine_path, engine, routed = _engine_for_call(name, body)
-    lease = Admission(admission_path(engine)).knowledge_lease(session)
-    # A bound native task may read a configured public domain without granting
-    # that domain contribution rights. Mutations still need its own lease.
-    read_bound = False
-    if lease is None and routed and name in {"knowledge_query", "knowledge_explain"}:
-        default_engine = load_engine_config_at(engine_config_path())
-        read_bound = Admission(admission_path(default_engine)).knowledge_lease(session) is not None
-    if lease is None and not read_bound:
-        domain_note = f" for domain {engine['domain']}" if routed else ""
-        raise ValueError(
-            f"this task is not bound yet{domain_note}; invoke /mindie-agent once in this "
-            "task — the saved install-level choice is reused, nothing is re-asked"
-        )
+    if routed and is_deactivated(session, engine=engine):
+        raise ValueError(f"MindIE knowledge is deactivated for domain {engine['domain']} in this session")
     method = name.removeprefix("knowledge_")
     if method == "sync":
         from knowledge_sync import execute
@@ -290,18 +292,27 @@ def knowledge_call(name, args, session):
     token = None
     if method == "distill":
         allowed = {"inputs", "task_state", "related_refs", "proposal"}
-        if not {"inputs", "task_state"} <= set(body) or not set(body) <= allowed:
+        inputs = body.get("inputs")
+        if (
+            not {"inputs", "task_state"} <= set(body)
+            or not set(body) <= allowed
+            or not isinstance(inputs, list)
+            or not inputs
+        ):
             raise ValueError(
-                "knowledge_distill accepts inputs, task_state and optional "
+                "knowledge_distill accepts non-empty inputs, task_state and optional "
                 "related_refs/proposal plus an optional domain"
             )
-        token = lease.get("token")
-        if not isinstance(token, str) or not token:
-            raise ValueError("distill requires an active capture lease")
         try:
             from mindie_knowledge.loop.cli import distill_selected  # noqa: F401
         except ImportError as exc:
             raise ValueError("knowledge distill is unavailable in the installed runtime") from exc
+    if method in {"feedback", "distill"}:
+        lease = ensure_default_lease(session, not_before=0.0, engine=engine)
+        if method == "distill":
+            token = lease.get("token")
+            if not isinstance(token, str) or not token:
+                raise ValueError("distill requires an active capture lease")
     from urllib.error import URLError
 
     try:
@@ -330,7 +341,7 @@ def bind_remote_profile() -> None:
     os.environ["REMOTE_DEV_HARNESS_PROFILE"] = REMOTE_PROFILE
 
 
-def _nonce_tools(catalog, *, require=True):
+def _nonce_tools(catalog, *, require=False):
     tools = []
     for item in catalog:
         schema = dict(item.get("inputSchema") or {"type": "object", "properties": {}})
@@ -361,7 +372,7 @@ def component_tools():
 
     status = dict(
         name="mindie_status",
-        description="Read factual local MindIE configuration and this session's status. Does not enable knowledge or start a service.",
+        description="Read factual local MindIE configuration and this session's status. Does not start a background service.",
         inputSchema=dict(type="object", properties={}, additionalProperties=False),
         annotations=dict(readOnlyHint=True, destructiveHint=False, openWorldHint=False),
     )
@@ -369,11 +380,9 @@ def component_tools():
 
 
 def knowledge_tools():
-    if not _has_any_active_knowledge_lease():
-        return [KNOWLEDGE_TOOLS[0]]
     from knowledge_sync import TOOL
 
-    return [*KNOWLEDGE_TOOLS, *_nonce_tools([TOOL])]
+    return [*KNOWLEDGE_TOOLS, *_nonce_tools([TOOL], require=False)]
 
 
 def remote_call(name, args, session):
@@ -435,22 +444,31 @@ def handle(surface, message):
         if not isinstance(args, dict):
             raise ValueError("invalid tool arguments")
         reject_native_identity_args(args, surface)
-        if surface == "knowledge":
-            nonce = require_nonce(args.get("request_nonce"))
-            session = claim_nonce(nonce, name, args)
-            claimed = True
-            _, body = strip_nonce(args, surface)
-        elif isinstance(args.get("request_nonce"), str) and args["request_nonce"].strip():
-            nonce = require_nonce(args.get("request_nonce"))
+        body = {k: v for k, v in args.items() if k != "request_nonce"}
+        meta_session = session_from_meta(params.get("_meta")) or session_from_meta(message.get("_meta"))
+        raw_nonce = args.get("request_nonce")
+        if raw_nonce is not None:
+            nonce = require_nonce(raw_nonce)
+            nonce_scope = (str(bind_db_path()), nonce)
+            with _NONCE_MEM_LOCK:
+                if nonce_scope in _CLAIMED_NONCES:
+                    raise ValueError("request_nonce has already been used; replay rejected")
             try:
                 session = claim_nonce(nonce, name, args)
                 claimed = True
+                with _NONCE_MEM_LOCK:
+                    _CLAIMED_NONCES[nonce_scope] = None
+                    if len(_CLAIMED_NONCES) > _MAX_CLAIMED_NONCES:
+                        _CLAIMED_NONCES.popitem(last=False)
             except MissingBind:
-                session = _CONNECTION_SESSION_ID
-            body = {k: v for k, v in args.items() if k != "request_nonce"}
+                session = meta_session or _CONNECTION_SESSION_ID
+        elif meta_session is not None:
+            session = meta_session
+        elif (auto_bound := claim_auto_bind(name, body)) is not None:
+            session, nonce = auto_bound
+            claimed = True
         else:
             session = _CONNECTION_SESSION_ID
-            body = {k: v for k, v in args.items() if k != "request_nonce"}
         if surface == "knowledge" and name == "mindie_entry":
             from entry import dispatch
             from identity import session_cwd

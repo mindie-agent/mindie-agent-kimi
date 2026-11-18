@@ -307,10 +307,16 @@ def test_ad03_concurrent_resident_mcp_and_ad11_unified_subcommand(tmp_path, monk
             proc.wait(timeout=2)
 
 
-def test_runtime_skill_preserves_manual_trigger_and_excludes_install_onboarding():
+def test_runtime_skill_is_silent_semantic_and_excludes_slash_or_install_onboarding():
     skill_md = ROOT / "skills" / "mindie-agent" / "SKILL.md"
     skill_text = skill_md.read_text(encoding="utf-8")
-    assert "disableModelInvocation: true" in skill_text
+    assert "disableModelInvocation" not in skill_text
+    assert "disable-model-invocation" not in skill_text
+    assert len(skill_text.splitlines()) <= 30
+
+    manifest = json.loads((ROOT / "kimi.plugin.json").read_text(encoding="utf-8"))
+    assert manifest["version"] == "0.1.30"
+    assert "/mindie-agent" not in manifest["systemPrompt"]
 
     banned = (
         "workspace-setup.md",
@@ -321,11 +327,28 @@ def test_runtime_skill_preserves_manual_trigger_and_excludes_install_onboarding(
         "gh auth login",
         "GitHub Star",
         "Non-Intrusive First-Use Onboarding",
+        "/mindie-agent",
     )
     for doc in [skill_md, *sorted((ROOT / "skills" / "mindie-agent" / "references").glob("*.md"))]:
         text = doc.read_text(encoding="utf-8")
         for token in banned:
-            assert token not in text, f"{doc.name} unexpectedly contains install/onboarding token {token!r}"
+            assert token not in text, f"{doc.name} unexpectedly contains token {token!r}"
+
+    for user_doc in [
+        ROOT / "README.md",
+        ROOT / "README.en.md",
+        ROOT / "docs" / "README.md",
+        ROOT / "docs" / "README.en.md",
+        *sorted((ROOT / "docs" / "install").glob("*.md")),
+    ]:
+        text = user_doc.read_text(encoding="utf-8")
+        # Repository/config path segments like `mindie-agent/mindie-agent` or `${...}/mindie-agent/kimi.json` are valid;
+        # user-facing slash command `/mindie-agent` (not part of a URL or filesystem path) is forbidden.
+        import re as re_mod
+
+        assert re_mod.search(r"(?<![A-Za-z0-9_./:-}])/mindie-agent(?![/A-Za-z0-9_-])", text) is None, (
+            f"{user_doc} unexpectedly contains user-facing /mindie-agent command"
+        )
 
     for name in ("workspace-setup.md", "github-authentication.md", "user-notice.md"):
         assert (ROOT / "docs" / "install" / name).is_file()

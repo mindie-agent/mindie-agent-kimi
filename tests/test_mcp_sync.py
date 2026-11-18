@@ -68,15 +68,19 @@ def test_discovered_sync_uses_real_local_feed_without_a_service(local_feed, tmp_
     assert child >= knowledge_sync.TIMEOUT + 5 + 5 + 5 + 2.2
     assert native["toolTimeoutMs"] / 1000 >= child + mindie_launch.CALL_LOCK_BUDGET + mindie_launch.OUTPUT_BUDGET
     unactivated = mcp_server.handle("knowledge", {"id": 1, "method": "tools/list"})
-    assert {t["name"] for t in unactivated["result"]["tools"]} == {"mindie_entry"}
-    admission.activate("session-sync", project_root=str(tmp_path))
-    listed = mcp_server.handle("knowledge", {"id": 1, "method": "tools/list"})
-    schema = next(tool["inputSchema"] for tool in listed["result"]["tools"]
+    assert {t["name"] for t in unactivated["result"]["tools"]} == {
+        "mindie_entry", "knowledge_query", "knowledge_explain",
+        "knowledge_feedback", "knowledge_distill", "knowledge_sync",
+    }
+    schema = next(tool["inputSchema"] for tool in unactivated["result"]["tools"]
                   if tool["name"] == "knowledge_sync")
-    assert schema["required"] == ["request_nonce"]
+    assert schema["required"] == []
     with patch("knowledge_service.ensure_service") as ensure, \
             patch("knowledge_service.existing_service") as existing:
-        result = sync()
+        result = mcp_server.handle("knowledge", {
+            "id": 1, "method": "tools/call",
+            "params": {"name": "knowledge_sync", "arguments": {}},
+        })["result"]
         ensure.assert_not_called()
         existing.assert_not_called()
     assert not result["isError"], result
@@ -89,15 +93,16 @@ def test_discovered_sync_uses_real_local_feed_without_a_service(local_feed, tmp_
     assert repeated["structuredContent"]["feeds"][0]["status"] == "unchanged"
 
 
-def test_sync_requires_current_manual_lease_before_cli_effects(local_feed, tmp_path):
+def test_sync_deactivated_session_blocks_before_cli_effects(local_feed, tmp_path):
     _, engine_path = local_feed
     root = Path(json.loads(engine_path.read_text())["root"])
-    admission.activate("parent-session", project_root=str(tmp_path))
+    admission.activate("session-sync", project_root=str(tmp_path))
+    admission.deactivate("session-sync")
     with patch("knowledge_sync.execute") as execute:
         result = sync()
         execute.assert_not_called()
     assert result["isError"]
-    assert "/mindie-agent" in result["content"][0]["text"]
+    assert "deactivated" in result["content"][0]["text"]
     assert not (root / "vllm-ascend").exists()
 
 
