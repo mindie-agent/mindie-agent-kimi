@@ -28,6 +28,10 @@ GitHub PR、提交及版本历史是公开发布的一部分。从当前知识�
 
 状态分别报告本地材料、索引、提交与同步结果。保存正文不等于已发布；提交结果不确定时先核对原操作，不自动重复写入。
 
+## 贡献层级与就绪检查（`mindie_doctor`）
+
+首次使用通过 `AskUserQuestion` 选择贡献层级：`contribute`（公开知识 PR + 脱敏故障上报）、`local-only`（仅在授权 `project_roots` 内本地脱敏采集，不创建公开 PR / Issue）或 `disabled`。`gh` 仅为 `contribute` 的可选 GitHub 通道，未安装或未登录时请选择 `local-only` 继续，**不应阻塞安装或研发任务**。可随时调用 `mindie_doctor` 查看 `runtime`、`github_channel` 与 `experience_and_privacy` 的真实状态，或运行 `setup.py sharing --status` 只读核对；`attention_needed` 表示存在可修复的引导项，不代表任务被阻塞。
+
 ## 统一贡献开关（知识共享与故障自动上报）
 
 社区知识共享与工具故障自动上报共用 `mindie-consent.json` 中的单一持久化开关：

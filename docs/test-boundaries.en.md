@@ -2,18 +2,19 @@
 
 <a href="test-boundaries.md">中文</a> | <b>English</b> · <a href="README.en.md">Documentation Index</a>
 
-`mindie-agent-kimi` runs its cross-platform test suite in a strict fail-fast order so dependency mismatches or native launch regressions are caught immediately without masking OS-specific behavior.
+`mindie-agent-kimi` `0.1.31` runs its thin-plugin suite in a strict fail-fast order so line-ending, contract, native-launch, or release-metadata regressions are caught immediately without masking OS-specific behavior.
 
 ---
 
 ## 1. CI Execution Order
 
-Checks execute in the following order within a single job:
-1. **Commit Pin & Peer Preflight (`tests/preflight.py`)**: Verifies installed runtime commit pins and the explicitly supplied peer repository checkout (exiting immediately with code `2` if missing).
-2. **Installed Runtime Probe**: Runs the unmodified production probe in a clean child interpreter, paired with a negative control that removes a consumed method and verifies rejection.
-3. **Real Node.js MCP Launch & Descendant Ownership (`tests/native`)**: Uses Node.js (`shell: false`) to execute the generated MCP manifest and complete real `initialize` and `tools/list` exchanges; on Windows, also verifies descendant cleanup on normal exit and timeout via a watchdog.
-4. **Stdio Transport & Backpressure Cases**: Exercises frontend cancellation, `EOF`, unread large responses, and complete large responses on both POSIX and Windows.
-5. **Full Component Suite**: Covers consent persistence, project scope, task identity, publication compatibility, update rollback, and diagnostics.
+Checks execute in this order within a single job:
+
+1. **Line-Ending & Syntax Gates**: `python .github/scripts/check_lf_eol.py` rejects CRLF; `python -m compileall -q scripts tests` rejects syntax errors.
+2. **Thin-Plugin Contract (`tests/test_thin_plugin_contract.py`)**: `scripts/` keeps exactly five files totaling ≤ 1,000 lines, version `0.1.31`, `REMOTE_DEV_HARNESS_PROFILE == "kimi"`, `entry.verify_bundled_seed()`, and a `KimiHostAdapter` satisfying `mindie_harness.api.HostAdapter`.
+3. **Release Metadata (`scripts/setup.py release-metadata --source . --tests tests --revision <sha>`)**: `harness_name="kimi-code"` compatibility, AST `code_paths`, `test_ids`, and the `mindie-plugin-release/1` payload.
+4. **Real Node.js MCP Launch (`tests/native`)**: `child_process.spawn` (`windowsHide: true`, `shell: false`) starts all three MCP servers with the exact `kimi.plugin.json` arguments and verifies `initialize` (`0.1.31`), `tools/list`, a JSON-RPC `-32700` parse error, and `ping` recovery.
+5. **Full Contract Suite (`pytest -o "pythonpath=tests scripts" tests`)**: cold hook fast paths, project-root scope, MCP surface isolation, `setup.py` subcommands, installer resource verification, and `wire.jsonl` parsing.
 
 ---
 
@@ -21,9 +22,9 @@ Checks execute in the following order within a single job:
 
 | Verification Boundary | What the Assertion Observes | What May Be Replaced by Fixtures |
 |---|---|---|
-| **Dependency Compatibility** | Unmodified installed package and consumed API signatures | Missing API only in the rejecting negative control |
-| **Manifest Launch** | Node.js actually spawns the selected executable with exact arguments | Argument-echo child for quoting check; a second test runs the real MCP modules |
-| **Process Ownership** | Real descendant processes are dead after the leader exits | Nothing in launch, Windows Job assignment, or liveness checks |
-| **Output Backpressure** | Complete large response delivery, or bounded exit when the reader closes | The remote tool's synthetic payload |
-| **Concurrent Configuration** | All fields survive real OS kernel file-lock contention | Observation wrapper to synchronize contention timing only |
-| **Update Rollback** | Pointer/package restoration and cleanup of incomplete generations | Network download/build and native registry HTTP stub in unit tests |
+| **Thin-Plugin Size & Version** | The real `scripts/` file set, `wc -l` total, and `kimi.plugin.json` version | Nothing |
+| **Seed Integrity** | Real `assets/mindie-harness-seed.pyz` SHA-256 and byte size | Nothing |
+| **Cold Hook Scope** | Real `mindie_launch.py` child exit code, `{}` stdout, and zero SQLite | Authorized roots use temporary directories |
+| **Manifest Launch** | Node.js actually spawns `python3 ./scripts/mindie_launch.py` with exact arguments | Current interpreter via `MINDIE_TEST_PYTHON_CMD` / PATH shim |
+| **MCP Surface Isolation** | Exact `tools/list` sets and cross-surface `tools/call` `unknown_operation` | Nothing |
+| **Release Metadata** | `mindie-plugin-release/1` payload and AST target existence | Fixed 40-hex `--revision` test value |

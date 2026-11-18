@@ -1,288 +1,113 @@
+"""Kimi `wire.jsonl` public-record parsing, fork boundaries, and byte accounting."""
+from __future__ import annotations
+
+import hashlib
+import importlib.util
 import json
-import sys
-import tempfile
-import unittest
 from pathlib import Path
+import sys
 
-from support import FIXTURES, SCRIPTS, write_session
-
-sys.path.insert(0, str(SCRIPTS))
-import transcript  # noqa: E402
+REPO = Path(__file__).resolve().parents[1]
 
 
-def rec(kind, **fields):
-    fields.setdefault("time", 2_000_000_000_000)
-    fields["type"] = kind
-    return fields
+def _transcript():
+    if str(REPO / "scripts") not in sys.path:
+        sys.path.insert(0, str(REPO / "scripts"))
+    spec = importlib.util.spec_from_file_location("kimi_transcript_test", REPO / "scripts/kimi_transcript.py")
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
-class TranscriptTests(unittest.TestCase):
-    def test_missing_or_damaged_lineage_waits_then_excludes_parent(self):
-        with tempfile.TemporaryDirectory() as raw:
-            records = [rec('context.append_message', time=when, message=dict(
-                role='user', origin=dict(kind='user'), content=[dict(type='text', text=text)]))
-                for when, text in ((2_000_000_000_000, 'inherited parent'),
-                                   (2_000_000_001_000, 'new child'))]
-            root, wire = write_session(Path(raw), 'ses_child', records,
-                state=dict(forkedFrom='ses_parent', createdAt=2_000_000_000_500))
-            state = root / 'state.json'
-            original = state.read_bytes()
-            for fault in (None, b'{broken', b'[]'):
-                with self.subTest(fault=fault):
-                    if fault is None:
-                        state.unlink()
-                    else:
-                        state.write_bytes(fault)
-                    with self.assertRaisesRegex(OSError, 'inherited material not read'):
-                        transcript.read_material(str(wire), 0, session_id='ses_child')
-                    state.write_bytes(original)
-                    result = transcript.read_material(str(wire), 0, session_id='ses_child')
-                    self.assertNotIn('inherited parent', result['text'])
-                    self.assertIn('new child', result['text'])
+def _write_session(root: Path, records: list[dict], state: dict | None = None, session: str = "ses_test") -> Path:
+    base = root / "sessions" / "workdir" / session
+    wire = base / "agents" / "main" / "wire.jsonl"
+    wire.parent.mkdir(parents=True)
+    wire.write_text("".join(json.dumps(row) + "\n" for row in records), encoding="utf-8")
+    (base / "state.json").write_text(json.dumps(state or {"createdAt": 1000}), encoding="utf-8")
+    return wire
 
-    def test_native_shaped_fork_uses_state_created_at_not_inherited_metadata(self):
-        home = FIXTURES / "native-shaped"
-        src = home / "sessions" / "wd_fixture" / "ses_source" / "agents" / "main" / "wire.jsonl"
-        fork = home / "sessions" / "wd_fixture" / "ses_fork" / "agents" / "main" / "wire.jsonl"
-        after_source_end = 1789911728.727
-        source = transcript.read_material(
-            str(src), 0, session_id="ses_source", not_before=after_source_end
-        )
-        self.assertEqual(source["records"], 0, source.get("text", "")[:200])
-        forked = transcript.read_material(str(fork), 0, session_id="ses_fork")
-        self.assertEqual(forked["records"], 0, forked.get("text", "")[:200])
-        public = transcript.read_material(
-            str(src), 0, session_id="ses_source", not_before=1789911712
-        )
-        self.assertGreaterEqual(public["records"], 1, public.get("text", "")[:200])
-        self.assertNotIn("call_id=", public["text"])
-        self.assertIn("fix the hang", public["text"])
 
-    def test_public_user_allowlist_skips_injection_and_think(self):
-        with tempfile.TemporaryDirectory() as raw:
-            home = Path(raw)
-            records = [
-                rec("metadata", protocol_version="1.5", created_at=1_500_000_000_000),
-                rec(
-                    "context.append_message",
-                    message=dict(
-                        role="user",
-                        content=[dict(type="text", text="fix the npu hang")],
-                        origin=dict(kind="user"),
-                    ),
-                    time=2_000_000_000_000,
-                ),
-                rec(
-                    "context.append_message",
-                    message=dict(
-                        role="user",
-                        content=[dict(type="text", text="Today's date is secret")],
-                        origin=dict(kind="injection", variant="date_change"),
-                    ),
-                    time=2_000_000_000_100,
-                ),
-                rec(
-                    "context.append_loop_event",
-                    event=dict(type="content.part", part=dict(type="think", think="secret chain")),
-                    time=2_000_000_000_200,
-                ),
-                rec(
-                    "context.append_loop_event",
-                    event=dict(type="content.part", part=dict(type="text", text="try CANN log")),
-                    time=2_000_000_000_300,
-                ),
-            ]
-            _root, wire = write_session(home, "ses_t", records, state=dict(createdAt=1_000_000_000_000))
-            result = transcript.read_material(str(wire), 0, session_id="ses_t")
-            self.assertIn("fix the npu hang", result["text"])
-            self.assertIn("try CANN log", result["text"])
-            self.assertNotIn("Today's date", result["text"])
-            self.assertNotIn("secret chain", result["text"])
+def _record(role: str, text: str, stamp: int, *, origin: str | None = "user") -> dict:
+    message = {"role": role, "content": [{"type": "text", "text": text}, {"type": "think", "think": "hidden-reasoning"}]}
+    if origin is not None:
+        message["origin"] = {"kind": origin}
+    return {"type": "context.append_message", "time": stamp, "message": message}
 
-    def test_ms_not_before_filters_old_records(self):
-        with tempfile.TemporaryDirectory() as raw:
-            home = Path(raw)
-            records = [
-                rec(
-                    "context.append_message",
-                    message=dict(
-                        role="user",
-                        content=[dict(type="text", text="old work")],
-                        origin=dict(kind="user"),
-                    ),
-                    time=1_789_911_712_808,
-                )
-            ]
-            _root, wire = write_session(home, "ses_old", records)
-            result = transcript.read_material(
-                str(wire), 0, session_id="ses_old", not_before=1789911728.727
-            )
-            self.assertEqual(result["records"], 0)
-            self.assertNotIn("old work", result["text"])
 
-    def test_unknown_format(self):
-        with tempfile.TemporaryDirectory() as raw:
-            home = Path(raw)
-            _root, wire = write_session(home, "ses_u", [{"hello": "codex-rollout"}])
-            result = transcript.read_material(str(wire), 0, session_id="ses_u")
-            self.assertEqual(result["status"], "unknown-format")
-            self.assertEqual(result["text"], "")
+def test_to_seconds_handles_unix_milliseconds() -> None:
+    transcript = _transcript()
+    assert transcript.to_seconds(2_000_000_000_000) == 2_000_000_000.0
+    assert transcript.to_seconds(1.5) == 1.5
+    assert transcript.to_seconds(None) is None
+    assert transcript.to_seconds(0) is None
+    assert transcript.to_seconds("1") is None
 
-    def test_continuation_page_without_recognized_records_is_not_unknown_format(self):
-        with tempfile.TemporaryDirectory() as raw:
-            home = Path(raw)
-            known = rec(
-                "context.append_message",
-                message=dict(
-                    role="user",
-                    content=[dict(type="text", text="first page")],
-                    origin=dict(kind="user"),
-                ),
-            )
-            filler = [rec("llm.request", model="k", turnStep="1.%d" % i) for i in range(8)]
-            _root, wire = write_session(
-                home, "ses_cont", [known, *filler], state=dict(createdAt=1_000_000_000_000)
-            )
-            cursor = len(wire.read_bytes().splitlines(keepends=True)[0])
-            page = transcript.read_material(str(wire), cursor, session_id="ses_cont")
-            self.assertEqual(page["status"], "ok", page.get("coverage_note"))
-            self.assertEqual(page["records"], 0)
-            self.assertGreater(page["end"], cursor)
-            self.assertFalse(page["more"])
-            last = transcript.read_material(str(wire), page["end"], session_id="ses_cont")
-            self.assertEqual(last["status"], "unchanged")
 
-    def test_trailing_partial_record_is_pending_not_unchanged(self):
-        with tempfile.TemporaryDirectory() as raw:
-            home = Path(raw)
-            _root, wire = write_session(
-                home, "ses_part", [rec("metadata", created_at=1_500_000_000_000)]
-            )
-            first = transcript.read_material(str(wire), 0, session_id="ses_part")
-            cursor = first["end"]
-            with wire.open("a", encoding="utf-8", newline="\n") as stream:
-                stream.write('{"type":"context.append_message","message":{"role":"user"')
-            pending = transcript.read_material(str(wire), cursor, session_id="ses_part")
-            self.assertEqual(pending["status"], "ok")
-            self.assertTrue(pending["partial"])
-            self.assertTrue(pending["more"])
-            self.assertEqual(pending["end"], cursor)
-            self.assertEqual(pending["records"], 0)
+def test_file_identity_roundtrip(tmp_path: Path) -> None:
+    transcript = _transcript()
+    wire = _write_session(tmp_path, [_record("user", "hello", 2_000_000_000_000)])
+    identity = transcript.identify(wire)
+    assert identity is not None and identity.path == str(wire.resolve())
+    assert identity.size == wire.stat().st_size and identity.anchor_len > 0
+    restored = transcript.FileIdentity.unserialize(identity.serialize(), identity.path)
+    assert restored is not None and restored.anchor_digest == identity.anchor_digest
+    assert transcript.FileIdentity.unserialize("{}", identity.path) is None
 
-    def test_trailing_partial_after_consumed_records_keeps_safe_cursor(self):
-        with tempfile.TemporaryDirectory() as raw:
-            home = Path(raw)
-            _root, wire = write_session(
-                home, "ses_tail", [rec("metadata", created_at=1_500_000_000_000)]
-            )
-            first = transcript.read_material(str(wire), 0, session_id="ses_tail")
-            cursor = first["end"]
-            complete = rec(
-                "context.append_message",
-                message=dict(
-                    role="user",
-                    content=[dict(type="text", text="new complete work")],
-                    origin=dict(kind="user"),
-                ),
-            )
-            with wire.open("a", encoding="utf-8", newline="\n") as stream:
-                stream.write(json.dumps(complete) + "\n")
-                stream.write('{"type":"context.append_message","message":{"role":"assistant"')
-            page = transcript.read_material(str(wire), cursor, session_id="ses_tail")
-            self.assertEqual(page["status"], "ok")
-            self.assertTrue(page["partial"])
-            self.assertTrue(page["more"])
-            self.assertIn("new complete work", page["text"])
-            self.assertEqual(page["end"], cursor + len(json.dumps(complete)) + 1)
 
-    def test_first_page_with_more_bytes_never_judges_unknown_format(self):
-        with tempfile.TemporaryDirectory() as raw:
-            home = Path(raw)
-            garbage = [rec("llm.request", model="k", turnStep="1.%d" % i) for i in range(40)]
-            _root, wire = write_session(
-                home, "ses_big", garbage, state=dict(createdAt=1_000_000_000_000)
-            )
-            first = transcript.read_material(
-                str(wire), 0, session_id="ses_big", max_scan_bytes=1024
-            )
-            self.assertEqual(first["status"], "ok", first.get("coverage_note"))
-            self.assertTrue(first["more"])
-            self.assertEqual(first["records"], 0)
-            cursor = first["end"]
-            while True:
-                page = transcript.read_material(
-                    str(wire), cursor, session_id="ses_big", max_scan_bytes=1024
-                )
-                self.assertNotEqual(page["status"], "unknown-format")
-                if not page["more"]:
-                    break
-                self.assertGreater(page["end"], cursor)
-                cursor = page["end"]
+def test_public_material_filters_origins_and_thinking(tmp_path: Path) -> None:
+    transcript = _transcript()
+    records = [
+        _record("user", "public user question", 2_000_000_000_000),
+        _record("user", "injected system text", 2_000_000_000_001, origin="system"),
+        _record("user", "legacy no origin", 2_000_000_000_002, origin=None),
+        _record("assistant", "public assistant answer", 2_000_000_000_003),
+        {"type": "context.append_loop_event", "time": 2_000_000_000_004,
+         "event": {"type": "content.part", "part": {"type": "text", "text": "loop assistant text"}}},
+        {"type": "context.append_loop_event", "time": 2_000_000_000_005,
+         "event": {"type": "content.part", "part": {"type": "think", "think": "hidden"}}},
+        {"type": "turn.prompt", "time": 2_000_000_000_006},
+    ]
+    wire = _write_session(tmp_path, records)
+    result = transcript.read_material(wire, 0, session_id="ses_test")
+    assert result["status"] == "ok"
+    assert "public user question" in result["text"]
+    assert "public assistant answer" in result["text"]
+    assert "loop assistant text" in result["text"]
+    assert "injected system text" not in result["text"]
+    assert "legacy no origin" not in result["text"]
+    assert "hidden" not in result["text"]
+    assert result["records"] == 3
+    payload = wire.read_bytes()
+    assert result["end"] == len(payload)
+    assert result["digest"] == hashlib.sha256(payload).hexdigest()
+    assert result["timestamps_reliable"] is True
 
-    def test_oversize_first_record_does_not_terminate_first_page(self):
-        with tempfile.TemporaryDirectory() as raw:
-            home = Path(raw)
-            giant = rec("llm.request", model="k", data="x" * 4096)
-            valid = rec(
-                "context.append_message",
-                message=dict(
-                    role="user",
-                    content=[dict(type="text", text="after the giant record")],
-                    origin=dict(kind="user"),
-                ),
-            )
-            _root, wire = write_session(
-                home, "ses_giant", [giant, valid], state=dict(createdAt=1_000_000_000_000)
-            )
-            first = transcript.read_material(
-                str(wire), 0, session_id="ses_giant", max_scan_bytes=1024
-            )
-            self.assertEqual(first["status"], "ok", first.get("coverage_note"))
-            self.assertTrue(first["more"])
-            seen = first["end"]
-            while seen < first["snapshot_size"]:
-                page = transcript.read_material(
-                    str(wire), seen, session_id="ses_giant", max_scan_bytes=1024
-                )
-                if page["end"] == seen and not page["more"]:
-                    break
-                seen = page["end"]
-                if "after the giant record" in page["text"]:
-                    break
-            final = transcript.read_material(str(wire), seen, session_id="ses_giant")
-            self.assertNotEqual(final["status"], "unknown-format")
 
-    def test_turn_label_uses_each_records_own_turn_id(self):
-        with tempfile.TemporaryDirectory() as raw:
-            home = Path(raw)
-            records = [
-                rec(
-                    "context.append_loop_event",
-                    event=dict(
-                        type="tool.call", name="Bash", turnId=3, toolCallId="c1", args={}
-                    ),
-                ),
-                rec(
-                    "context.append_loop_event",
-                    event=dict(
-                        type="content.part", part=dict(type="text", text="next turn text"),
-                        turnId=4,
-                    ),
-                ),
-                rec(
-                    "context.append_message",
-                    message=dict(
-                        role="assistant",
-                        content=[dict(type="text", text="unlabeled message")],
-                    ),
-                ),
-                rec(
-                    "context.append_loop_event",
-                    event=dict(type="tool.call", name="Bash", toolCallId="c2", args={}),
-                ),
-            ]
-            _root, wire = write_session(home, "ses_turns", records)
-            result = transcript.read_material(str(wire), 0, session_id="ses_turns")
-            self.assertEqual(result['text'], '### assistant\nnext turn text\n\n### assistant\nunlabeled message')
-            self.assertNotIn('Bash', result['text'])
-            self.assertNotIn('turn=', result['text'])
+def test_fork_boundary_excludes_inherited_material(tmp_path: Path) -> None:
+    transcript = _transcript()
+    records = [
+        _record("user", "inherited before fork", 2_000_000_000_000),
+        _record("user", "after fork", 2_000_000_000_200),
+    ]
+    wire = _write_session(tmp_path, records, {"forkedFrom": "ses_source", "createdAt": 2_000_000_000_150})
+    result = transcript.read_material(wire, 0, session_id="ses_test")
+    assert "after fork" in result["text"]
+    assert "inherited before fork" not in result["text"]
+
+
+def test_byte_accounting_and_unchanged_tail(tmp_path: Path) -> None:
+    transcript = _transcript()
+    wire = _write_session(tmp_path, [_record("user", "one", 2_000_000_000_000), _record("assistant", "two", 2_000_000_000_001)])
+    first = transcript.read_material(wire, 0, session_id="ses_test")
+    expected = hashlib.sha256(wire.read_bytes()[: first["end"]]).hexdigest()
+    assert first["digest"] == expected
+    assert first["more"] is False
+    tail = transcript.read_material(wire, first["end"], session_id="ses_test")
+    assert tail["status"] == "unchanged" and tail["end"] == first["end"]
+    assert tail["digest"] == hashlib.sha256(b"").hexdigest()
+    first_line_end = len(wire.read_bytes().splitlines(keepends=True)[0])
+    snap = transcript.read_material(wire, 0, session_id="ses_test", scan_until=first_line_end)
+    assert snap["end"] == first_line_end and snap["more"] is False

@@ -15,17 +15,15 @@ jobs:
     secrets:
       MINDIE_RELEASE_DEPLOY_KEY: ${{ secrets.MINDIE_RELEASE_DEPLOY_KEY }}
     with:
-      release-notes-path: docs/releases/mindie-agent-kimi-0.1.30.md
+      release-notes-path: docs/releases/mindie-agent-kimi-0.1.31.md
       version-files: |
         kimi.plugin.json
       setup-command: |
         uv venv --python 3.13 && uv pip install -r runtime-requirements.txt -r runtime/active-overrides.txt -r test-requirements.txt --overrides runtime/active-overrides.txt
       test-command: |
-        git fetch --no-tags --depth=1 origin 7aecfd22857c313b52d6fe5923292f297884fec0 faf199fb7c76a63e9ff5f94cb1362ebdf203f5a3 3813383c6b100294cb5ea4e9bd9d97a6ecfc1cae refs/tags/v0.1.26:refs/tags/v0.1.26
-        .venv/bin/python tests/preflight.py
         PYTHONPATH=tests:scripts .venv/bin/python -m pytest -q tests
         .venv/bin/python -m unittest discover -s tests/native
       node: true
       build-command: |
-        .venv/bin/python scripts/release_metadata.py build --source . --revision "$GITHUB_SHA" > "$RELEASE_ASSETS_DIR/mindie-plugin-release.json"
+        .venv/bin/python scripts/setup.py release-metadata --source . --tests tests --revision "$GITHUB_SHA" > "$RELEASE_ASSETS_DIR/mindie-plugin-release.json"
         git archive --format=tar.gz --prefix="mindie-agent-kimi-$RELEASE_VERSION/" --output="$RELEASE_ASSETS_DIR/mindie-agent-kimi-$RELEASE_VERSION.tar.gz" "$GITHUB_SHA"

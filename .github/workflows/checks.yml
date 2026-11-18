@@ -21,16 +21,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      # Use the reviewed peer commit; publish dependency branches before CI.
-      # The test archives this exact revision and never substitutes main.
-      - name: Checkout fixed Claude peer
-        uses: actions/checkout@v4
-        with:
-          repository: mindie-agent/mindie-agent-cc
-          ref: 3e36a285e2effe47bc442079a4ed7f42ced9caaf
-          path: peer-cc
-          fetch-depth: 1
-          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -50,25 +40,16 @@ jobs:
           SMOKE_DIR="$(mktemp -d)"
           trap 'rm -rf "$SMOKE_DIR"' EXIT
           cp -R assets scripts kimi.plugin.json harness-compatibility.json "$SMOKE_DIR/"
-          (cd "$SMOKE_DIR" && python -c "import hashlib, json, pathlib; p=pathlib.Path('assets/mindie-harness-seed.pyz'); lk=json.loads(pathlib.Path('assets/seed-lock.json').read_text()); assert hashlib.sha256(p.read_bytes()).hexdigest()==lk['sha256']; import sys; sys.path.insert(0, 'scripts'); import paths, bounded, diagnostic_support, launch_budget, mindie_launch; assert mindie_launch.remote_budget('remote_Bash', {'timeout': 300}) == 360.0")
-      - name: Pin preflight
-        env:
-          MINDIE_PEER_CC_REPO: ${{ github.workspace }}/peer-cc
-        run: python tests/preflight.py
+          (cd "$SMOKE_DIR" && python -c "import sys; sys.path.insert(0, 'scripts'); import entry; entry.verify_bundled_seed()")
+      - name: Release metadata contract
+        run: python scripts/setup.py release-metadata --source . --tests tests --revision "${{ github.sha }}"
       - name: Install Node for native launch
-        if: runner.os != 'macOS'
         uses: actions/setup-node@v4
         with:
           node-version: "22"
       - name: Native launch
-        if: runner.os != 'macOS'
-        env:
-          PYTHONUTF8: '0'
         run: python -m unittest discover -s tests/native -v
       - name: Component tests
-        env:
-          PYTHONUTF8: '0'
-          MINDIE_PEER_CC_REPO: ${{ github.workspace }}/peer-cc
         run: python -m pytest -q -o "pythonpath=tests scripts" tests
 
   release-ready:

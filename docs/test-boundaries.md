@@ -2,28 +2,29 @@
 
 <b>中文</b> | <a href="test-boundaries.en.md">English</a> · <a href="README.md">返回文档索引</a>
 
-`mindie-agent-kimi` 在各支持平台上按确定性顺序运行分层测试套件，确保在最早期阶段拦截依赖缺失或原生启动异常，避免掩盖跨平台边界问题。
+`mindie-agent-kimi` `0.1.31` 在受支持平台上按确定性顺序运行薄插件测试套件，确保最早拦截行尾、契约、原生启动或发布元数据异常，避免掩盖跨平台边界问题。
 
 ---
 
 ## 1. CI 执行顺序
 
-在同一测试作业中，检查按以下顺序依次执行（前序门禁失败将立即终止，避免产生海量级联报错）：
-1. **锁版本与对等仓库预检（`tests/preflight.py`）**：校验已安装的运行时依赖 Commit SHA 及显式提供的对等仓库检出提交完全匹配。
-2. **已安装运行时探针**：在干净的子解释器中运行生产探针，并通过移除消费方法的负向对照验证探针能够可靠拦截缺失接口。
-3. **真实 Node.js MCP 启动与进程归属校验（`tests/native`）**：使用 Node.js 在 `shell: false` 模式下执行生成的 MCP 清单并完成真实 `initialize` 与 `tools/list` 交互；在 Windows 上同时验证正常退出与超时下的后代进程回收。
-4. **前端传输与背压测试**：在全平台（含 Windows）验证前台请求取消、`EOF`、未读取大响应关闭以及完整接收大响应行为。
-5. **完整组件测试套件**：覆盖授权存储、范围校验、任务身份、发布兼容性、更新回滚与故障诊断。
+同一测试作业内按以下顺序依次执行（前序门禁失败立即终止，避免级联报错）：
+
+1. **行尾与语法门禁**：`python .github/scripts/check_lf_eol.py` 拒绝 CRLF；`python -m compileall -q scripts tests` 拒绝语法错误。
+2. **薄插件契约（`tests/test_thin_plugin_contract.py`）**：`scripts/` 仅保留 5 个文件、合计 ≤ 1,000 行、版本 `0.1.31`、`REMOTE_DEV_HARNESS_PROFILE == "kimi"`、`entry.verify_bundled_seed()` 通过、`KimiHostAdapter` 满足 `mindie_harness.api.HostAdapter`。
+3. **发布元数据（`scripts/setup.py release-metadata --source . --tests tests --revision <sha>`）**：`harness_name="kimi-code"` 的兼容声明、AST `code_paths`、`test_ids` 与 `mindie-plugin-release/1` 输出。
+4. **真实 Node.js MCP 启动（`tests/native`）**：`child_process.spawn`（`windowsHide: true`、`shell: false`）按 `kimi.plugin.json` 精确参数拉起三个 MCP 服务，验证 `initialize`（`0.1.31`）、`tools/list`、JSON-RPC `-32700` 解析错误与 `ping` 恢复。
+5. **完整契约套件（`pytest -o "pythonpath=tests scripts" tests`）**：覆盖冷启动 Hook 快速路径、目录范围、MCP 工具面隔离、`setup.py` 子命令、安装器资源校验与 `wire.jsonl` 解析。
 
 ---
 
-## 2. 独立故障维度矩阵
+## 2. 独立故障维度
 
 | 测试边界 | 实际断言观测对象 | 允许使用夹具替代的部分 |
 |---|---|---|
-| **依赖接口兼容性** | 未修改的已安装包与真实调用的 API 签名 | 仅在负向对照中构造缺失 API |
-| **原生清单启动** | Node.js 以精确参数真实拉起目标可执行文件 | 参数回显子脚本（另一用例直接加载真实 MCP 模块） |
-| **后代进程归属** | 主进程退出后，真实后代子进程确已终止 | 启动、Job Object 绑定与存活检查全程零 Mock |
-| **输出管道背压** | 完整接收大响应，或在对端停止读取时有界退出 | 远端工具的模拟业务载荷 |
-| **并发配置读写** | 在真实操作系统内核文件锁竞争下保持字段完整 | 仅用包装层观测竞争时机，不改变锁结果 |
-| **更新回滚** | 指针/插件包状态恢复及残缺代数目录清理 | 组件测试中模拟下载构建与原生注册响应 |
+| **薄插件规模与版本** | 真实 `scripts/` 文件集合、`wc -l` 行数与 `kimi.plugin.json` 版本 | 无 |
+| **种子完整性** | 真实 `assets/mindie-harness-seed.pyz` 的 SHA-256 与字节数 | 无 |
+| **冷启动 Hook 范围** | 真实 `mindie_launch.py` 子进程的退出码、`{}` stdout 与零 SQLite | 授权目录使用临时目录 |
+| **原生清单启动** | Node.js 以精确参数真实拉起 `python3 ./scripts/mindie_launch.py` | 使用当前 Python 解释器（`MINDIE_TEST_PYTHON_CMD` / PATH shim） |
+| **MCP 工具面隔离** | `tools/list` 精确集合与跨面 `tools/call` 的 `unknown_operation` | 无 |
+| **发布元数据** | `mindie-plugin-release/1` 输出与 AST 目标存在性 | `--revision` 使用固定 40-hex 测试值 |

@@ -1,503 +1,217 @@
 #!/usr/bin/env python3
-"""Initial setup and runtime bootstrap for `mindie-agent-kimi`.
-
-[Role]
-Builds or probes the pinned Python runtime (`runtime-requirements.txt`),
-stages the retained `bootstrap` generation, writes `kimi.json`,
-`kimi.engine.json`, and `mindie-community.json`, builds the initial native host
-package, and registers the automatic update schedule.
-
-[Invariants]
-- Default community sharing is OFF unless `--community-*` flags are provided.
-- Never mutates `~/.kimi-code` directly; native plugin registration is handled
-  separately by `install_kimi_plugin.py`.
-- Verifies SQLite >= 3.43 FTS5 `contentless_delete=1` and core module contracts
-  via `probe_runtime`.
-
-[Timeouts & Locks]
-- Runtime probe timeout: `15s`; `create_venv`: `180s`;
-  `uv pip install`: `600s`.
-
-[Side-Effect Policy]
-- Creates `<root>/kimi/bootstrap-venv`, stages `<state_dir>/update/generations/bootstrap`,
-  writes `kimi.json` / `kimi.engine.json` / `mindie-community.json` / `current.json`,
-  and optionally installs the platform update schedule.
+"""[Role] Thin setup CLI: `init`/`install` write `kimi.json` and `kimi.engine.json`;
+`sharing`, `doctor`, and `update` delegate to `mindie_harness` (`API_VERSION = 1`).
+[Invariants] `kimi.engine.json` carries `root`, `domain`, `admission_path`, and an absolute
+`transcript_adapter` -> `kimi_transcript.py`; `release-metadata` validates
+`harness-compatibility.json` (`harness_name="kimi-code"`), the `0.1.31` manifest version,
+every AST `code_paths` symbol, and every `test_ids` target when `--tests` is set; native
+registration belongs to `install_kimi_plugin.py`, never `~/.kimi-code` mutation here.
+[Timeouts & Locks] Init performs two atomic JSON writes and zero network I/O; `doctor`,
+`sharing`, and `update` inherit harness-owned budgets.
+[Side-Effect Policy] Writes the two profile documents (plus consent/community policy through
+`mindie_harness.sharing`) and prints one JSON object per command.
 """
-
 from __future__ import annotations
 
 import argparse
-import contextlib
-import errno
-import io
+import ast
+import importlib.util
 import json
 import os
-import re
-import secrets
-import shutil
+from pathlib import Path
 import subprocess
 import sys
-import time
-from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from mindie_harness.paths import ProfileRef
 
 HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
+PLUGIN_ROOT = HERE.parent
+_NO_WIN = 0x08000000 if os.name == "nt" else 0
+VERSION = "0.1.31"
+DOMAIN = "vllm-ascend"
+HARNESS = "kimi-code"
+REPOSITORY = "mindie-agent/mindie-agent-kimi"
+COMMANDS = frozenset({"init", "install", "sharing", "doctor", "update", "release-metadata"})
 
-from bounded import run
-from paths import PLUGIN_ROOT, config_path as default_config_path, which_host_binary
-
-from runtime_probe import (  # noqa: F401
-    PROBE_MODULES,
-    PROBE_SCRIPT,
-    _FTS_PROBE,
-    _PROBE_TAIL,
-    _PROBE_TEMPLATE,
-    probe_script,
-)
-
-BOOTSTRAP_ITEMS = (
-    "scripts",
-    "skills",
-    "kimi.plugin.json",
-    "runtime-requirements.txt",
-    "runtime",
-)
-BOOTSTRAP_COMPLETE = ".bootstrap-complete"
-
-
-def probe_runtime(python):
+def _runtime_python() -> str | None:
     try:
-        output = run([python, "-c", PROBE_SCRIPT], "", timeout=15)
-    except TimeoutError:
-        raise
-    except Exception as exc:
-        raise SystemExit(
-            f"knowledge runtime probe failed in {python}: {type(exc).__name__}: {str(exc)[:200]}"
-        )
-    if not output.strip().endswith("OK"):
-        raise SystemExit(
-            f"{python} is missing pinned dependencies: {output.strip()}. "
-            "Install runtime-requirements.txt first."
-        )
-
-
-def write_private(path, value, *, replace=False):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    flags = os.O_WRONLY | os.O_CREAT | (os.O_TRUNC if replace else os.O_EXCL)
-    descriptor = os.open(path, flags, 0o600)
-    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-        json.dump(value, stream, ensure_ascii=False, indent=2)
-        stream.write("\n")
-
-
-def community_settings(args, parser):
-    selected = any(
-        getattr(args, key)
-        for key in (
-            "community_repository", "community_project_root",
-            "community_account", "community_fork", "community_visibility",
-        )
-    )
-    if not selected:
-        if args.community_branch is not None:
-            parser.error("--community-branch requires --community-repository")
+        return sys.executable if importlib.util.find_spec("mindie_harness") is not None else None
+    except (ImportError, ValueError):
         return None
-    if not args.community_repository:
-        parser.error("community sharing requires --community-repository owner/repo")
-    if not args.community_project_root:
-        parser.error("community sharing requires at least one --community-project-root")
-    if args.community_visibility != "public":
-        parser.error("community sharing requires --community-visibility public")
-    roots = []
-    for root in args.community_project_root:
-        canonical = str(Path(root).expanduser().resolve())
-        if not Path(canonical).is_dir():
-            parser.error("community project root does not exist: " + canonical)
-        if canonical not in roots:
-            roots.append(canonical)
-    data = dict(
-        schema="mindie-community-config/1",
-        enabled=True,
-        generation=secrets.token_hex(16),
-        enabled_at=time.time(),
-        repository=args.community_repository,
-        branch=args.community_branch or "main",
-        project_roots=roots,
-        idle_seconds=300,
-        visibility="public",
-    )
-    if args.community_account:
-        data["account"] = args.community_account
-    if args.community_fork:
-        data["fork"] = args.community_fork
-    return data
 
+def _init(profile: ProfileRef, argv: list[str]) -> int:
+    from mindie_harness.atomic import atomic_write_json, read_json_safe
+    from mindie_harness.locks import FileLock
 
-def _bootstrap_complete(root: Path) -> bool:
-    return (root / BOOTSTRAP_COMPLETE).is_file() and all((root / name).exists() for name in BOOTSTRAP_ITEMS)
-
-
-def stage_retained_bootstrap(dest: Path, source: Path) -> Path:
-    dest = dest.expanduser().absolute()
-    source = source.expanduser().absolute()
-    if dest == source:
-        raise SystemExit("refusing to use the source checkout as live generation")
-    if dest.exists():
-        if _bootstrap_complete(dest):
-            return dest
-        raise SystemExit(f"incomplete or unknown retained bootstrap, refusing to overwrite: {dest}")
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    staging = dest.parent / f".{dest.name}.staging-{secrets.token_hex(8)}"
+    parser = argparse.ArgumentParser(prog="setup.py init")
+    parser.add_argument("--root", type=Path, default=None)
+    parser.add_argument("--domain", default=None)
+    opts = parser.parse_args(argv)
+    lock = FileLock(profile.config_path.with_name(f".{profile.config_path.name}.update.lock"), exclusive=True, timeout=5.0)
+    lock.acquire()
     try:
-        staging.mkdir()
-        ignore = shutil.ignore_patterns("__pycache__", "*.pyc")
-        for name in BOOTSTRAP_ITEMS:
-            src = source / name
-            if not src.exists():
-                raise SystemExit("retained bootstrap is missing required plugin files")
-            if src.is_dir():
-                shutil.copytree(src, staging / name, ignore=ignore)
-            else:
-                shutil.copy2(src, staging / name)
-        for child in staging.rglob("*"):
-            if child.is_file() and child.suffix in {".py", ".json", ".md", ".txt", ".toml"}:
-                raw = child.read_bytes()
-                if b"\r\n" in raw:
-                    child.write_bytes(raw.replace(b"\r\n", b"\n"))
-        if any(not (staging / name).exists() for name in BOOTSTRAP_ITEMS):
-            raise SystemExit("retained bootstrap is missing required plugin files")
-        (staging / BOOTSTRAP_COMPLETE).write_text("ok\n", newline="\n")
-        os.replace(staging, dest)
-        staging = None
+        engine_path = profile.config_path.with_suffix(".engine.json")
+        prev_engine = read_json_safe(engine_path)
+        prev_engine = prev_engine if isinstance(prev_engine, dict) else {}
+        prev_adapter = read_json_safe(profile.config_path)
+        prev_adapter = prev_adapter if isinstance(prev_adapter, dict) else {}
+        root = opts.root.expanduser().absolute() if opts.root else Path(prev_engine.get("root") or (profile.data_dir / "kimi"))
+        domain = opts.domain or prev_engine.get("domain") or DOMAIN
+        engine = {
+            **prev_engine, "root": str(root), "domain": domain,
+            "admission_path": str(prev_engine.get("admission_path") if not opts.root and prev_engine.get("admission_path") else root / "admission.sqlite3"),
+            "capture_mode": "public-transcript", "transcript_adapter": str(HERE / "kimi_transcript.py"),
+            "redactor_executable": os.environ.get("MINDIE_REDACTOR_EXECUTABLE") or prev_engine.get("redactor_executable") or str(root / "bin" / "gitleaks"),
+        }
+        adapter = {
+            **prev_adapter, "engine_config": str(engine_path),
+            "community_config": str(profile.config_path.parent / "mindie-community.json"),
+            "consent_config": str(profile.consent_path), "state_dir": str(profile.state_dir),
+            "profile_config": str(profile.config_path), "source_root": str(PLUGIN_ROOT),
+        }
+        if python := _runtime_python():
+            adapter["python"] = python
+        if home := os.environ.get("KIMI_CODE_HOME"):
+            adapter["kimi_home"] = str(Path(home).expanduser())
+        atomic_write_json(engine_path, engine)
+        atomic_write_json(profile.config_path, adapter)
     finally:
-        if staging is not None:
-            shutil.rmtree(staging, ignore_errors=True)
-    return dest
+        lock.release()
+    print(json.dumps({
+        "status": "initialized", "config_path": str(profile.config_path),
+        "engine_config": str(engine_path), "native_package": str(PLUGIN_ROOT),
+        "domain": domain, "python": adapter.get("python"),
+    }, sort_keys=True))
+    return 0
 
+def _sharing(profile: ProfileRef, argv: list[str]) -> int:
+    from mindie_harness.sharing import configure_sharing, sharing_status
 
-def write_community(path, community, consent_config=None, python=None):
-    from community_config import configure
+    parser = argparse.ArgumentParser(prog="setup.py sharing")
+    group = parser.add_mutually_exclusive_group()
+    for flag in ("--status", "--enable", "--local-only", "--disable"):
+        group.add_argument(flag, action="store_true")
+    parser.add_argument("--project-root", action="append", default=[])
+    parser.add_argument("--repository")
+    parser.add_argument("--fork")
+    parser.add_argument("--account")
+    opts = parser.parse_args(argv)
+    if opts.status or not (opts.enable or opts.local_only or opts.disable):
+        print(json.dumps(sharing_status(profile, cwd=Path.cwd()), sort_keys=True))
+        return 0
+    choice = "contribute" if opts.enable else "local-only" if opts.local_only else "disabled"
+    print(json.dumps(configure_sharing(
+        profile, choice=choice, project_roots=opts.project_root,
+        repository=opts.repository, fork=opts.fork, account=opts.account,
+    ), sort_keys=True))
+    return 0
 
-    resolved_consent = consent_config or str(Path(path).with_name("mindie-consent.json").resolve())
-    request = dict(community, consent_config=resolved_consent) if community is not None else None
-    result = configure(path, request, python)
-    if community is None and "consent_config" not in result:
-        result = configure(path, dict(consent_config=resolved_consent), python)
-    return "enabled" if result["enabled"] else "off"
+def _doctor(profile: ProfileRef, argv: list[str]) -> int:
+    from mindie_harness.api import run_host
 
+    parser = argparse.ArgumentParser(prog="setup.py doctor")
+    parser.add_argument("--probe-remote", action="store_true")
+    parser.add_argument("--cwd")
+    parser.add_argument("--timeout", type=float)
+    opts = parser.parse_args(argv)
+    command = ["--host", "kimi", "--plugin-root", str(PLUGIN_ROOT), "--config", str(profile.config_path), "doctor"]
+    command += ["--probe-remote"] if opts.probe_remote else []
+    command += ["--cwd", opts.cwd] if opts.cwd else []
+    command += ["--timeout", str(opts.timeout)] if opts.timeout is not None else []
+    return run_host(command)
 
-def installer_environment():
-    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never", UV_NO_PROGRESS="1")
-    if "UV_SYSTEM_CERTS" not in env and "UV_NATIVE_TLS" not in env:
-        env["UV_SYSTEM_CERTS"] = "true"
-        env["UV_NATIVE_TLS"] = "true"
-    elif "UV_SYSTEM_CERTS" not in env:
-        env.setdefault("UV_NATIVE_TLS", "true")
-    git_pairs = (
-        ("core.longpaths", "true"),
-        ("core.autocrlf", "false"),
-        ("credential.https://github.com.provider", "github"),
+def _update(profile: ProfileRef, argv: list[str]) -> int:
+    from mindie_harness.runtime.wheelhouse import update_runtime
+
+    parser = argparse.ArgumentParser(prog="setup.py update")
+    parser.add_argument("--force", action="store_true")
+    parser.add_argument("--offline", action="store_true")
+    parser.add_argument("--channel-base-url")
+    parser.add_argument("--background", action="store_true")
+    opts = parser.parse_args(argv)
+    print(json.dumps(update_runtime(
+        profile, force=opts.force, offline=opts.offline,
+        channel_base_url=opts.channel_base_url, background=opts.background,
+    ), sort_keys=True))
+    return 0
+
+def _declares(path: Path, parts: list[str]) -> bool:
+    body = ast.parse(path.read_text(encoding="utf-8")).body
+    for part in parts:
+        node = next((item for item in body if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and item.name == part), None)
+        if node is None:
+            return False
+        body = node.body
+    return True
+
+def _target(raw: str) -> tuple[str, list[str]]:
+    if "::" in raw:
+        parts = raw.split("::")
+        return parts[0], [part for part in parts[1:] if part]
+    path, _, symbol = raw.partition(":")
+    return path, [symbol] if symbol else []
+
+def _release_metadata(argv: list[str]) -> int:
+    from mindie_knowledge.releases import validate_compatibility, validate_release_metadata
+
+    parser = argparse.ArgumentParser(prog="setup.py release-metadata")
+    parser.add_argument("--source", type=Path, required=True)
+    parser.add_argument("--revision", required=True)
+    parser.add_argument("--tests", type=Path, default=None)
+    opts = parser.parse_args(argv)
+    source = opts.source.expanduser().resolve()
+    declaration = validate_compatibility(
+        json.loads((source / "harness-compatibility.json").read_text(encoding="utf-8-sig")),
+        harness_name=HARNESS,
     )
-    try:
-        count = max(0, int(env.get("GIT_CONFIG_COUNT") or "0"))
-    except ValueError:
-        count = 0
-    existing_keys = {env.get(f"GIT_CONFIG_KEY_{idx}") for idx in range(count)}
-    for k, v in git_pairs:
-        if k not in existing_keys:
-            env[f"GIT_CONFIG_KEY_{count}"] = k
-            env[f"GIT_CONFIG_VALUE_{count}"] = v
-            existing_keys.add(k)
-            count += 1
-    env["GIT_CONFIG_COUNT"] = str(count)
-    return env
+    manifest = json.loads((source / "kimi.plugin.json").read_text(encoding="utf-8-sig"))
+    problems = [f"kimi.plugin.json version={manifest.get('version')!r}"] if manifest.get("version") != VERSION else []
+    for entry in declaration["interface_registry"].values():
+        targets = list(entry["code_paths"]) + (list(entry["test_ids"]) if opts.tests is not None else [])
+        for raw in targets:
+            relative, parts = _target(raw)
+            path = source / relative
+            if not path.is_file() or (path.suffix == ".py" and parts and not _declares(path, parts)):
+                problems.append(raw)
+    if problems:
+        raise SystemExit("unresolved release metadata targets: " + "; ".join(sorted(set(problems))))
+    print(json.dumps(validate_release_metadata({
+        "schema": "mindie-plugin-release/1", "version": manifest["version"],
+        "source": {"repository": REPOSITORY, "sha": opts.revision}, "compatibility": declaration,
+    }, repository=REPOSITORY, harness_name=HARNESS), sort_keys=True))
+    return 0
 
-
-def create_venv(venv: Path, *, timeout) -> None:
-    uv = which_host_binary("uv", which_fn=shutil.which)
-    if uv is None:
-        raise RuntimeError("uv is required to prepare the MindIE runtime")
-    run([uv, "venv", "--python", sys.executable, str(venv)], "",
-        timeout=timeout, env=installer_environment(), transport=True)
-
-
-def build_bootstrap_runtime(domain_root: Path) -> str:
-    venv = domain_root / "bootstrap-venv"
-    python = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-    uv = which_host_binary("uv", which_fn=shutil.which)
-    if uv is None:
-        raise RuntimeError("uv is required to prepare the MindIE runtime")
-    if not python.is_file():
-        create_venv(venv, timeout=180)
-    overrides = PLUGIN_ROOT / "runtime/active-overrides.txt"
-    run(
-        [uv, "pip", "install", "--python", str(python),
-         "-r", str(PLUGIN_ROOT / "runtime-requirements.txt"),
-         "-r", str(overrides),
-         "--overrides", str(overrides)],
-        "", timeout=600, max_output=512 * 1024, env=installer_environment(),
-        transport=True,
-    )
-    return str(python)
-
-
-def activate_reporting(python, config, *, contribution=False, choice=None):
-    from bounded import run
-
-    argv = [str(python), str(PLUGIN_ROOT / "scripts" / "diagnostic_support.py"),
-            "--config", str(config)]
-    selected = choice or ("contribute" if contribution else None)
-    if selected:
-        argv += ["--choice", selected]
-    return json.loads(run(argv, "", timeout=90))
-
-
-def _resolve_sharing_python(config: Path, knowledge_python: str | None) -> str | None:
-    import importlib.util
-
-    if knowledge_python:
-        return str(Path(knowledge_python).expanduser().absolute())
-    for candidate_cfg in (config, default_config_path()):
-        if candidate_cfg.is_file():
-            try:
-                configured = json.loads(candidate_cfg.read_text(encoding="utf-8-sig")).get("python")
-                if isinstance(configured, str) and Path(configured).is_file():
-                    return configured
-            except TimeoutError:
-                raise
-            except (OSError, ValueError):
-                pass
-    if importlib.util.find_spec("mindie_knowledge") is not None:
-        return sys.executable
-    return None
-
-
-_NON_PRODUCT_CATEGORIES = frozenset({
-    "temporary_network", "rate_limited", "deadline", "resolver", "busy",
-    "deferred", "prerequisite", "permission", "authentication", "certificate",
-    "hook_trust", "cancelled",
-})
-_LOCAL_ERRNOS = frozenset({errno.ENOSPC, errno.EROFS, errno.EMFILE, errno.ENFILE})
-
-
-def _failure_payload(exc):
-    """Preserve the observed stage/category/reason across the child boundary."""
-    category = getattr(exc, "category", None)
-    if (category in _NON_PRODUCT_CATEGORIES or isinstance(exc, (PermissionError, TimeoutError))
-            or (isinstance(exc, OSError) and exc.errno in _LOCAL_ERRNOS)):
-        category = "prerequisite"
-    elif not isinstance(category, str) or not category:
-        category = type(exc).__name__
-    stage = getattr(exc, "stage", None)
-    return json.dumps({
-        "stage": stage if isinstance(stage, str) and stage else "setup",
-        "category": category,
-        "reason_code": getattr(exc, "reason_code", None),
-    }, separators=(",", ":"))
-
-
-def main(argv: list[str] | None = None):
-    raw_argv = list(sys.argv[1:] if argv is None else argv)
-    if raw_argv and raw_argv[0] == "sharing":
-        from community_config import run_sharing_cli
-
-        return run_sharing_cli(
-            raw_argv[1:],
-            default_config=default_config_path(),
-            resolve_python=_resolve_sharing_python,
-            activate_reporting_fn=activate_reporting,
-        )
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--knowledge-python", default=None, help="operator override; default builds a pinned venv")
-    parser.add_argument("--config", type=Path, default=default_config_path())
-    parser.add_argument(
-        "--root", type=Path,
-        default=Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "mindie-agent",
-    )
-    parser.add_argument("--domain", default="vllm-ascend")
-    parser.add_argument("--no-public-feed", action="store_true")
-    parser.add_argument("--community-repository", metavar="OWNER/REPO")
-    parser.add_argument("--community-project-root", action="append")
-    parser.add_argument("--community-branch")
-    parser.add_argument("--community-account")
-    parser.add_argument("--community-fork")
-    parser.add_argument("--community-visibility", choices=["public"])
-    parser.add_argument("--kimi-home", type=Path, help="explicit Kimi home for native plugin install/update")
-    parser.add_argument("--update-remote", default=None, help="git remote tracked for automatic updates")
-    parser.add_argument("--no-schedule", action="store_true", help="do not register the automatic update check")
-    args = parser.parse_args(raw_argv)
-    if sys.version_info < ((3, 12) if os.name == "nt" else (3, 11)):
-        parser.error("Python 3.12+ on Windows or 3.11+ on POSIX is required; prefer Python 3.13")
-    community = community_settings(args, parser)
-    config = args.config.expanduser().absolute()
-    domain_root = args.root.expanduser().absolute() / "kimi"
-    if args.knowledge_python:
-        python = str(Path(args.knowledge_python).expanduser().absolute())
-    else:
-        python = build_bootstrap_runtime(domain_root)
-    try:
-        probe_runtime(python)
-        if not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", args.domain):
-            parser.error("invalid domain name")
-        engine_config = config.with_name(config.stem + ".engine.json")
-        community_config = config.with_name("mindie-community.json")
-        if config.exists() or engine_config.exists():
-            if community is None:
-                parser.error("configuration already exists; pass --community-* to configure sharing")
-            sharing = write_community(
-                community_config, community,
-                consent_config=str(config.with_name("mindie-consent.json")), python=python,
-            )
-            reporting = activate_reporting(python, config, contribution=True)
-            print(json.dumps(dict(config=str(config), sharing=sharing, reporting=reporting, updated="community"), indent=2))
-            return
-        admission = domain_root / "admission.sqlite3"
-        state_dir = domain_root / "adapter-state"
-        bootstrap_root = stage_retained_bootstrap(state_dir / "update" / "generations" / "bootstrap", PLUGIN_ROOT)
-        value = dict(
-            root=str(domain_root),
-            domain=args.domain,
-            admission_path=str(admission),
-            transcript_adapter=str(bootstrap_root / "scripts" / "transcript.py"),
-            **__import__("capture_config").prepare(python, bootstrap_root / "scripts"),
-            community_config=str(community_config),
-        )
-        if not args.no_public_feed:
-            from capture_config import PUBLIC_FEEDS
-
-            feed = next((dict(row) for row in PUBLIC_FEEDS if row["domain"] == args.domain), None)
-            if feed is not None:
-                value["feeds"] = [feed]
-        write_private(engine_config, value)
-        kimi_home = (
-            args.kimi_home.expanduser().absolute()
-            if args.kimi_home
-            else Path(os.environ.get("KIMI_CODE_HOME") or Path.home() / ".kimi-code").expanduser().absolute()
-        )
-        adapter_value = dict(
-            python=python,
-            engine_config=str(engine_config),
-            community_config=str(community_config),
-            state_dir=str(state_dir),
-            profile_config=str(config),
-            kimi_home=str(kimi_home),
-        )
-        if args.update_remote:
-            adapter_value["update_remote"] = args.update_remote
-        from paths import resolve_git_bin, resolve_kimi_bin
-
-        try:
-            kimi_bin = resolve_kimi_bin(adapter_value)
-        except TimeoutError:
-            raise
-        except (OSError, ValueError):
-            kimi_bin = None
-        if kimi_bin is not None:
-            adapter_value["kimi_bin"] = kimi_bin
-        try:
-            git_bin = resolve_git_bin()
-        except TimeoutError:
-            raise
-        except (OSError, ValueError):
-            git_bin = None
-        if git_bin is not None:
-            adapter_value["git_bin"] = git_bin
-        from capture_config import prepare_domains
-        adapter_value['domain_configs'] = prepare_domains(
-            python, adapter_value, value, config_directory=str(config.with_name(config.stem + '.domains')),
-            authority_directory=str(config.parent / 'knowledge-domains'),
-            consent_config=str(config.with_name('mindie-consent.json')), public_feeds=not args.no_public_feed)
-        write_private(config, adapter_value)
-        sharing = write_community(
-            community_config, community,
-            consent_config=str(config.with_name("mindie-consent.json")), python=python,
-        )
-        reporting = activate_reporting(python, config, contribution=community is not None)
-        import genstate
-        import updater
-
-        bootstrap_package = updater.build_host_package(
-            bootstrap_root, adapter_value, "bootstrap",
-            package_dir=genstate.update_dir(adapter_value) / "bootstrap-package",
-            config_file=config,
-        )
-        genstate.write_current(
-            {
-                "generation": str(bootstrap_root),
-                "python": python,
-                "adapter_config": str(config),
-                "sha": None,
-            },
-            adapter_value,
-        )
-        scheduled = "skipped"
-        if not args.no_schedule:
-            try:
-                with contextlib.redirect_stdout(io.StringIO()):
-                    code = updater.install_schedule(config)
-                scheduled = "registered" if code == 0 else "manual"
-            except TimeoutError:
-                raise
-            except Exception as exc:
-                scheduled = f"manual ({type(exc).__name__}: {str(exc)[:120]})"
-        result = dict(
-            config=str(config),
-            engine_config=str(engine_config),
-            community_config=str(community_config),
-            admission_path=str(admission),
-            native_package=str(bootstrap_package),
-            domain=args.domain,
-            sharing=sharing,
-            reporting=reporting,
-            contribution_notice=(
-                "One contribution choice controls public knowledge sharing and sanitized fault reports. "
-                "Existing choices are preserved; legacy choices require explicit confirmation before reporting."
-            ),
-            update_schedule=scheduled,
-            kimi_bin=kimi_bin,
-            git_bin=git_bin,
-            plugin_install=(
-                "Native install: POST /api/v1/plugins {source: <host-package>} "
-                "in the selected Kimi home (scripts/install_kimi_plugin.py). "
-                "Automatic updates: scripts/updater.py check (scheduled), "
-                "status via scripts/updater.py status, recovery via "
-                "scripts/updater.py recover. See docs/update.md."
-            ),
-        )
-        warnings = []
-        if kimi_bin is None:
-            warnings.append(
-                "no kimi binary resolved (MINDIE_KIMI_BIN unset, no "
-                "<kimi_home>/bin/kimi, not on PATH); the summary worker will "
-                "report configuration-unavailable until one exists"
-            )
-        if git_bin is None:
-            warnings.append(
-                "no git executable resolved (MINDIE_KIMI_GIT_BIN unset, not on "
-                "PATH); scheduled update checks will report configuration-"
-                "unavailable until one exists"
-            )
-        if warnings:
-            result["warnings"] = warnings
-        print(json.dumps(result, indent=2))
-    except TimeoutError:
-        raise
-    except Exception as exc:
-        from bounded import run
-
-        try:
-            receipt = run([python, str(PLUGIN_ROOT / "scripts" / "diagnostic_support.py"),
-                           "--config", str(config),
-                           "--record-setup-failure", _failure_payload(exc)],
-                          "", timeout=5)
-            print("MindIE setup diagnostic: " + receipt.strip(), file=sys.stderr)
-        except TimeoutError:
-            raise
-        except Exception as logging_error:
-            print("MindIE diagnostic storage unavailable: " + type(logging_error).__name__, file=sys.stderr)
-        raise
-
+def main(argv: list[str] | None = None) -> int:
+    raw_args = list(sys.argv[1:] if argv is None else argv)
+    args = list(raw_args)
+    config: str | None = None
+    while "--config" in args:
+        index = args.index("--config")
+        if index + 1 >= len(args):
+            raise SystemExit("--config requires a path")
+        config, args = args[index + 1], args[:index] + args[index + 2:]
+    if _runtime_python() is None:
+        import mindie_launch
+        cfg_path = Path(config).expanduser().absolute() if config else mindie_launch._config_path()
+        py = mindie_launch._active_python(cfg_path)
+        if py is not None and py.resolve() != Path(sys.executable).resolve():
+            return subprocess.run([str(py), "-I", "-X", "utf8", str(Path(__file__).resolve()), *raw_args], creationflags=_NO_WIN).returncode
+    command = args[0] if args and args[0] in COMMANDS else "init"
+    rest = args[1:] if args and args[0] in COMMANDS else args
+    if command == "release-metadata":
+        return _release_metadata(rest)
+    from mindie_harness.paths import ProfileRef
+    profile = ProfileRef.resolve("kimi", plugin_root=PLUGIN_ROOT, config_path=config)
+    if command in {"init", "install"}:
+        return _init(profile, rest)
+    return {"sharing": _sharing, "doctor": _doctor, "update": _update}[command](profile, rest)
 
 if __name__ == "__main__":
-    main()
+    try:
+        raise SystemExit(main())
+    except BrokenPipeError:
+        raise SystemExit(0)
