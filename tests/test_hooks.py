@@ -275,7 +275,26 @@ class HookTests(unittest.TestCase):
             self.assertEqual(lease["activated_at"], 0.0)
             self.assertEqual(captured[0][1]["mindie_activation"], lease["token"])
 
-            # 2. Explicitly deactivated session skips quietly
+            # 2. Unknown workspace (no cwd, no workspace_root, no wire cwd) skips even if an old lease exists
+            captured_unknown = []
+            os.environ.pop("KIMI_CODE_HOME", None)
+            self._run_stop_in_process(
+                config,
+                {"hook_event_name": "Stop", "session_id": "ses_auto_stop"},
+                captured_unknown,
+            )
+            self.assertEqual(captured_unknown, [])
+
+            # 3. workspace_root is accepted on Stop when cwd is omitted
+            captured_ws = []
+            self._run_stop_in_process(
+                config,
+                {"hook_event_name": "Stop", "session_id": "ses_ws_stop", "workspace_root": str(tmp)},
+                captured_ws,
+            )
+            self.assertEqual(len(captured_ws), 1)
+
+            # 4. Explicitly deactivated session skips quietly
             admission_mod.deactivate("ses_auto_stop")
             captured_deact = []
             self._run_stop_in_process(
@@ -285,6 +304,29 @@ class HookTests(unittest.TestCase):
             )
             self.assertEqual(captured_deact, [])
             self.assertEqual(self._diagnostic_events(diag), [])
+
+            # 5. Real mindie_knowledge Stop path (prepare_schema + capture_hook) succeeds without NameError
+            from mindie_knowledge import state_layout
+            from support import stop_real_services
+
+            home = tmp / "kimi-home-real"
+            write_session(home, "ses_real_mk", [{"type": "metadata", "created_at": 1}], cwd=tmp)
+            eng_cfg = Path(json.loads(config.read_text())["engine_config"])
+            eng_doc = json.loads(eng_cfg.read_text())
+            try:
+                real_res = run_bridge(
+                    "stop",
+                    {"hook_event_name": "Stop", "session_id": "ses_real_mk", "cwd": str(tmp)},
+                    config,
+                    kimi_home=home,
+                )
+                self.assertEqual(real_res.returncode, 0, real_res.stderr)
+                self.assertEqual(self._diagnostic_events(diag), [])
+                self.assertTrue(
+                    (state_layout.state_root(eng_doc["root"], eng_doc["domain"]) / state_layout.DATABASE).is_file()
+                )
+            finally:
+                stop_real_services(eng_cfg)
 
         # 3. Sharing disabled & out-of-scope: < 100ms (min of 5 samples) and zero SQLite created
         with tempfile.TemporaryDirectory() as raw_off:
@@ -330,6 +372,44 @@ class HookTests(unittest.TestCase):
                 self.assertEqual(res.returncode, 0)
             self.assertLess(min(samples_oos), 100.0, samples_oos)
             self.assertFalse(adm_path_fn().exists())
+
+            # Pre-lock launcher check: out-of-scope Stop exits < 50ms even when operation.lock is exclusively locked
+            import subprocess
+            from support import SCRIPTS, env_for
+
+            state = Path(json.loads(oos_cfg.read_text())["state_dir"])
+            lock_path = state / "update" / "operation.lock"
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+            try:
+                if os.name != "nt":
+                    import fcntl
+
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                subprocess.run(
+                    [sys.executable, str(SCRIPTS / "mindie_launch.py"), "--config", str(oos_cfg), "hook", "stop"],
+                    input=json.dumps({"hook_event_name": "Stop", "session_id": "ses_lock_warm", "cwd": str(outside_dir)}),
+                    text=True,
+                    capture_output=True,
+                    env=env_for(oos_cfg),
+                    timeout=5,
+                )
+                lock_samples = []
+                for i in range(5):
+                    t0 = time_mod.perf_counter()
+                    lres = subprocess.run(
+                        [sys.executable, str(SCRIPTS / "mindie_launch.py"), "--config", str(oos_cfg), "hook", "stop"],
+                        input=json.dumps({"hook_event_name": "Stop", "session_id": f"ses_lock_{i}", "cwd": str(outside_dir)}),
+                        text=True,
+                        capture_output=True,
+                        env=env_for(oos_cfg),
+                        timeout=5,
+                    )
+                    lock_samples.append((time_mod.perf_counter() - t0) * 1000.0)
+                    self.assertEqual(lres.returncode, 0)
+                self.assertLess(min(lock_samples), 100.0, lock_samples)
+            finally:
+                os.close(lock_fd)
 
     def test_stop_unreadable_admission_is_recorded_not_inactive(self):
         with tempfile.TemporaryDirectory() as raw:

@@ -697,7 +697,7 @@ def attach(result, diagnostic):
     result = dict(result, diagnostic=projected)
     incident = projected.get("incident_id")
     text = (
-        f"MindIE incident {incident}; read-only local status: /mindie-agent reporting-status. Uploads follow the saved contribution choice."
+        f"MindIE incident {incident}; read-only local status: mindie_entry(op=\"reporting-status\"). Uploads follow the saved contribution choice."
         if incident else _STORAGE
     )
     content = result.get("content")

@@ -106,5 +106,10 @@ def activate(session, *, project_root, root_session=None, not_before=None, engin
     )
 
 
-def deactivate(session, engine=None):
-    return gate(engine).deactivate(session)
+def deactivate(session, engine=None, *, project_root: str | Path | None = None):
+    adm = gate(engine)
+    adm.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if adm.inspect(session).get("status") == "missing":
+        root = _resolve_default_root(session, project_root)
+        adm.associate(session, project_root=root, not_before=0.0)
+    return adm.deactivate(session)

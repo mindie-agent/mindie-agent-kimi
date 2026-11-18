@@ -38,12 +38,17 @@ from identity import (
     is_mindie_mcp_tool,
     locate_main_wire,
     parse_hook,
-    publish_auto_bind,
     publish_nonce_bind,
     session_cwd,
     session_from_hook,
 )
-from paths import admission_path, community_config_path, config_path, profile_config_path
+from paths import (
+    admission_path,
+    community_config_path,
+    config_path,
+    load_engine_config_at,
+    profile_config_path,
+)
 
 SAFE_CAUSES = {
     "missing-identity",
@@ -89,13 +94,6 @@ def handle_pretool():
                 publish_nonce_bind(
                     session,
                     tool_input.get("request_nonce"),
-                    name,
-                    event.get("tool_call_id"),
-                    tool_input,
-                )
-            elif isinstance(tool_input, dict) and event.get("tool_call_id"):
-                publish_auto_bind(
-                    session,
                     name,
                     event.get("tool_call_id"),
                     tool_input,
@@ -150,9 +148,22 @@ def _fast_sharing_definitely_off(comm_file: Path) -> bool:
     return False
 
 
-def _ensure_stop_lease(session: str, cwd: str | None, settings):
+def _event_workspace(event: dict, session: str) -> str | None:
+    for key in ("cwd", "workspace_root"):
+        candidate = event.get(key)
+        if isinstance(candidate, str) and os.path.isabs(candidate):
+            return candidate
+    try:
+        resolved = session_cwd(session)
+    except ValueError:
+        return None
+    return resolved if isinstance(resolved, str) and os.path.isabs(resolved) else None
+
+
+def _ensure_stop_lease(session: str, cwd: str, settings):
     from admission import ensure_default_lease, gate, knowledge_lease
 
+    resolved_cwd = str(Path(cwd).resolve())
     adm_file = admission_path()
     if adm_file.is_file():
         admission = gate()
@@ -172,12 +183,12 @@ def _ensure_stop_lease(session: str, cwd: str | None, settings):
             if existing is not None:
                 if not isinstance(existing.get("token"), str) or not existing["token"]:
                     return None, "admission-schema"
-                if cwd is None or existing.get("project_root") == str(Path(cwd).resolve()):
+                if existing.get("project_root") == resolved_cwd:
                     return existing, None
-    if not isinstance(cwd, str) or not os.path.isabs(cwd) or not settings.in_scope(cwd):
+    if not settings.in_scope(resolved_cwd):
         return None, None
     try:
-        lease = ensure_default_lease(session, project_root=cwd, not_before=0.0)
+        lease = ensure_default_lease(session, project_root=resolved_cwd, not_before=0.0)
     except TimeoutError:
         raise
     except Exception:
@@ -212,13 +223,8 @@ def handle_stop():
         if not settings.allows_capture():
             _print({})
             return 0
-        cwd = event.get("cwd") if isinstance(event.get("cwd"), str) and os.path.isabs(event["cwd"]) else None
-        if cwd is None:
-            try:
-                cwd = session_cwd(session)
-            except ValueError:
-                cwd = None
-        if cwd is not None and not settings.in_scope(cwd):
+        cwd = _event_workspace(event, session)
+        if cwd is None or not settings.in_scope(cwd):
             _print({})
             return 0
         lease, unavailable = _ensure_stop_lease(session, cwd, settings)
@@ -229,7 +235,7 @@ def handle_stop():
         if lease is None:
             _print({})
             return 0
-        effective_cwd = cwd or lease.get("project_root")
+        effective_cwd = str(Path(cwd).resolve())
         if not sharing_mod.capture_allowed(lease, effective_cwd, config=comm_file):
             _print({})
             return 0
@@ -249,15 +255,16 @@ def handle_stop():
             normalized["transcript_path"] = transcript
         if isinstance(effective_cwd, str) and effective_cwd:
             normalized["cwd"] = effective_cwd[:4096]
-        import mindie_knowledge.loop.cli as cli_mod
+        from mindie_knowledge.loop.cli import capture_hook
 
+        cli_mod = sys.modules.get("mindie_knowledge.loop.cli")
         try:
             from knowledge_service import prepare_service_env
 
             prepare_service_env()
             eng = engine_path()
             if hasattr(cli_mod, "config_at"):
-                eng_doc = _read_json(Path(eng)) or {}
+                eng_doc = load_engine_config_at(eng)
                 if isinstance(eng_doc.get("root"), str) and isinstance(eng_doc.get("domain"), str):
                     from mindie_knowledge import state_layout
 
@@ -265,7 +272,7 @@ def handle_stop():
                         from mindie_knowledge.loop.handoff import prepare_schema
 
                         prepare_schema(str(eng))
-            result = cli_mod.capture_hook(str(eng), normalized)
+            result = capture_hook(str(eng), normalized)
         except TimeoutError:
             raise
         except Exception:

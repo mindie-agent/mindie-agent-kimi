@@ -120,3 +120,44 @@ def test_factual_status_is_available_without_creating_admission_sqlite(tmp_path,
     assert result["this_session"]["enabled"] is True
     assert not {"hint", "next", "note", "choices", "required"}.intersection(result)
     assert not admission.gate().path.exists()
+
+
+def test_whitelist_fresh_deactivate_and_busy_bind_fallback(tmp_path, monkeypatch):
+    import sqlite3
+
+    config = make_config(tmp_path)
+    monkeypatch.setenv("MINDIE_KIMI_CONFIG", str(config))
+
+    # 1. Unlisted tool names are rejected before touching knowledge_service
+    with patch("knowledge_service.ensure_service") as ensure, \
+            patch("knowledge_service.existing_service") as existing:
+        rejected = mcp_server.handle("knowledge", {
+            "jsonrpc": "2.0",
+            "id": 99,
+            "method": "tools/call",
+            "params": {"name": "knowledge_stop", "arguments": {}},
+        })["result"]
+        assert rejected["isError"] is True
+        assert "unknown knowledge tool" in rejected["content"][0]["text"]
+        ensure.assert_not_called()
+        existing.assert_not_called()
+
+    # 2. Fresh-session deactivate persists a durable disabled row without prior lease
+    assert not admission.gate().path.exists()
+    assert admission.deactivate("fresh-session", project_root=tmp_path) is True
+    assert admission.is_deactivated("fresh-session") is True
+    assert admission.deactivate("fresh-session", project_root=tmp_path) is False
+    with pytest.raises(ValueError, match="deactivated"):
+        mcp_server.knowledge_call("knowledge_query", {"query": "Ascend"}, "fresh-session")
+
+    # 3. Busy optional bind store falls back cleanly to _CONNECTION_SESSION_ID instead of crashing
+    with patch.object(mcp_server, "claim_nonce", side_effect=sqlite3.OperationalError("database is locked")), \
+            patch("knowledge_service.existing_service", return_value={"url": "http://127.0.0.1:1", "token": "t"}), \
+            patch("mindie_knowledge.loop.cli.rpc", return_value={"results": []}):
+        fallback_resp = mcp_server.handle("knowledge", {
+            "jsonrpc": "2.0",
+            "id": 100,
+            "method": "tools/call",
+            "params": {"name": "knowledge_query", "arguments": {"query": "Ascend", "request_nonce": "nonce-busy-1"}},
+        })["result"]
+    assert fallback_resp["isError"] is False

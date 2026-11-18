@@ -43,42 +43,24 @@ CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 REMOTE_GRACE_SECONDS = 60.0
 REMOTE_MIN_BUDGET_SECONDS = 180.0
 KIMI_REMOTE_INNER_SECONDS = {
-    "remote_bash": 300.0,
-    "remote_read": 300.0,
-    "remote_glob": 300.0,
-    "remote_grep": 300.0,
-    "remote_readmediafile": 300.0,
+    "remote_bash": 300.0, "remote_read": 300.0, "remote_glob": 300.0,
+    "remote_grep": 300.0, "remote_readmediafile": 300.0,
 }
 
 HOOK_TOTAL = float(os.environ.get("MINDIE_HOOK_TOTAL_SECONDS") or 10.0)
 HOOK_LOCK_BUDGET = float(os.environ.get("MINDIE_HOOK_LOCK_BUDGET_SECONDS") or 2.0)
 BOOTSTRAP_TOTAL = float(os.environ.get("MINDIE_BOOTSTRAP_TOTAL_SECONDS") or 540.0)
-CALL_LOCK_BUDGET = 5.0
-CALL_CHILD_BUDGET = 60.0
+CALL_LOCK_BUDGET, CALL_CHILD_BUDGET = 5.0, 60.0
 KNOWLEDGE_MAX_OUTPUT = 1024 * 1024
 REMOTE_MAX_OUTPUT = bounded.REMOTE_MAX_OUTPUT
 KIMI_REMOTE_PROFILE = "kimi"
-MAX_RPC_ID = 256
-WORK_LIMIT = 16
-CONTROL_LIMIT = 8
-EOF_JOIN = 3.0
-OUTPUT_BUDGET = 1.0
+MAX_RPC_ID, WORK_LIMIT, CONTROL_LIMIT = 256, 16, 8
+EOF_JOIN, OUTPUT_BUDGET = 3.0, 1.0
 CONTROL_TOOLS = {
-    "remote_job_status",
-    "remote_job_stop",
-    "remote_job_cancel",
-    "remote_job_tail",
-    "remote_TaskOutput",
-    "remote_TaskStop",
-    "remote_TaskList",
-    "remote_Read",
-    "remote_Glob",
-    "remote_Grep",
-    "remote_read",
-    "remote_glob",
-    "remote_grep",
-    "mindie_status",
-    "diagnostics_status",
+    "remote_job_status", "remote_job_stop", "remote_job_cancel", "remote_job_tail",
+    "remote_TaskOutput", "remote_TaskStop", "remote_TaskList",
+    "remote_Read", "remote_Glob", "remote_Grep", "remote_read", "remote_glob", "remote_grep",
+    "mindie_status", "diagnostics_status",
 }
 JOB_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{2,95}$")
 
@@ -91,31 +73,20 @@ def kimi_remote_inner_seconds(name, arguments):
     key = name.rsplit("__", 1)[-1].lower() if isinstance(name, str) else ""
     if isinstance(arguments, dict) and arguments.get("run_in_background") is True:
         return 0.0
-    native = KIMI_REMOTE_INNER_SECONDS.get(key, 0.0)
-    explicit = 0.0
+    native, explicit = KIMI_REMOTE_INNER_SECONDS.get(key, 0.0), 0.0
     if isinstance(arguments, dict):
         for field in ("timeout", "yield_time_ms", "timeout_ms"):
             value = arguments.get(field)
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
                 continue
-            if not math.isfinite(value) or value <= 0:
-                continue
-            seconds = (
-                float(value)
-                if field == "timeout" and key in {"remote_bash", "bash"}
-                else float(value) / 1000.0
-            )
+            seconds = float(value) if field == "timeout" and key in {"remote_bash", "bash"} else float(value) / 1000.0
             explicit = max(explicit, seconds)
     return max(native, explicit)
 
 
 def remote_budget(
-    name,
-    arguments=None,
-    *,
-    native_wait_ms=None,
-    grace=REMOTE_GRACE_SECONDS,
-    minimum=REMOTE_MIN_BUDGET_SECONDS,
+    name, arguments=None, *, native_wait_ms=None,
+    grace=REMOTE_GRACE_SECONDS, minimum=REMOTE_MIN_BUDGET_SECONDS,
 ):
     """Outer child budget: native wait + SSH/framing/drain/cleanup grace."""
     if isinstance(grace, bool) or not isinstance(grace, (int, float)) or not math.isfinite(grace) or grace <= 0:
@@ -125,19 +96,10 @@ def remote_budget(
     if native_wait_ms is None:
         wait = kimi_remote_inner_seconds(name, arguments)
     else:
-        if (
-            isinstance(native_wait_ms, bool)
-            or not isinstance(native_wait_ms, (int, float))
-            or not math.isfinite(native_wait_ms)
-            or native_wait_ms < 0
-        ):
+        if isinstance(native_wait_ms, bool) or not isinstance(native_wait_ms, (int, float)) or not math.isfinite(native_wait_ms) or native_wait_ms < 0:
             raise ValueError("native wait must be a nonnegative finite number of milliseconds")
         wait = float(native_wait_ms) / 1000.0
-    derived = (
-        _HarnessDeadline.compute_outer([wait], float(grace))
-        if _HarnessDeadline is not None
-        else (wait + float(grace))
-    )
+    derived = _HarnessDeadline.compute_outer([wait], float(grace)) if _HarnessDeadline is not None else (wait + float(grace))
     return max(float(minimum), derived)
 
 
@@ -390,6 +352,76 @@ def _read_hook_stdin(deadline):
         return bytes(buf).removeprefix(b"\xef\xbb\xbf")
 
 
+def _path_within_roots(candidate: str, roots: list) -> bool:
+    try:
+        target = Path(candidate).resolve()
+    except TimeoutError:
+        raise
+    except OSError:
+        return False
+    for item in roots:
+        if not isinstance(item, str) or not os.path.isabs(item):
+            continue
+        try:
+            base = Path(item).resolve()
+            if target == base or target.is_relative_to(base):
+                return True
+        except TimeoutError:
+            raise
+        except OSError:
+            continue
+    return False
+
+
+def _stop_event_eligible(config: dict, raw: bytes) -> bool:
+    community = config.get("community_config")
+    if not isinstance(community, str) or not os.path.isabs(community):
+        return False
+    comm_path = Path(community)
+    if not comm_path.is_file():
+        return False
+    try:
+        comm = json.loads(comm_path.read_text(encoding="utf-8-sig"))
+    except TimeoutError:
+        raise
+    except (OSError, ValueError):
+        return True
+    if not isinstance(comm, dict) or comm.get("enabled") is not True:
+        return False
+    roots = comm.get("project_roots")
+    if not isinstance(roots, list) or not roots:
+        return False
+    consent_ref = comm.get("consent_config")
+    if isinstance(consent_ref, str) and os.path.isabs(consent_ref):
+        cpath = Path(consent_ref)
+        if not cpath.is_file():
+            return False
+        try:
+            cdata = json.loads(cpath.read_text(encoding="utf-8-sig"))
+        except TimeoutError:
+            raise
+        except (OSError, ValueError):
+            return True
+        if isinstance(cdata, dict) and cdata.get("choice") != "contribute":
+            return False
+    if raw:
+        try:
+            event = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            return True
+        if isinstance(event, dict):
+            if event.get("hook_event_name") not in {None, "Stop"} or event.get("stop_hook_active") not in {None, False}:
+                return False
+            cand = event.get("cwd") if isinstance(event.get("cwd"), str) and os.path.isabs(event["cwd"]) else None
+            if cand is None:
+                ws = event.get("workspace_root")
+                if isinstance(ws, str) and os.path.isabs(ws):
+                    cand = ws
+            if cand is not None and not _path_within_roots(cand, roots):
+                return False
+    return True
+
+
 def _hook(op: str) -> int:
     started = time.monotonic()
     deadline = started + HOOK_TOTAL
@@ -402,6 +434,8 @@ def _hook(op: str) -> int:
         _record_hook("entry", "configuration", op)
         return _fail_open()
     raw = _read_hook_stdin(deadline)
+    if op == "stop" and not _stop_event_eligible(config, raw):
+        return _fail_open()
     lock_deadline = min(deadline, time.monotonic() + HOOK_LOCK_BUDGET)
     if lock_deadline <= time.monotonic():
         _record_hook("entry", "deadline", op)
@@ -433,22 +467,14 @@ def _hook(op: str) -> int:
 
         def _hook_failure(stage, category, exc=None):
             diagnostic_support.failure(
-                "hook",
-                stage,
-                category,
-                exception=exc,
-                reportable=(op != "stop"),
+                "hook", stage, category, exception=exc, reportable=(op != "stop"),
                 elapsed_ms=max(0, int((time.monotonic() - started) * 1000)),
             )
 
         try:
             out = bounded.run(
-                [current["python"], str(script), op],
-                raw,
-                timeout=remaining,
-                env=_child_env(current),
-                cwd=str(Path(current["generation"])),
-                check=True,
+                [current["python"], str(script), op], raw, timeout=remaining,
+                env=_child_env(current), cwd=str(Path(current["generation"])), check=True,
             )
         except bounded.CommandTimedOut as exc:
             _hook_failure("helper_deadline", "child_deadline", exc)
@@ -707,13 +733,8 @@ def _mcp(surface: str, launcher_file: Path | None = None) -> int:
         ]
         if os.name == "nt":
             return subprocess.run(
-                argv,
-                stdin=_reexec_stdio(sys.stdin),
-                stdout=_reexec_stdio(sys.stdout),
-                stderr=_reexec_stdio(sys.stderr),
-                env=environment,
-                check=False,
-                creationflags=CREATE_NO_WINDOW,
+                argv, stdin=_reexec_stdio(sys.stdin), stdout=_reexec_stdio(sys.stdout),
+                stderr=_reexec_stdio(sys.stderr), env=environment, check=False, creationflags=CREATE_NO_WINDOW,
             ).returncode
         os.execve(current["python"], argv, environment)
     transport = entry_script.with_name("native_mcp.py")
@@ -742,13 +763,9 @@ def _updater(rest) -> int:
         if os.name == "nt":
             return subprocess.run(
                 [current["python"], str(script), *rest],
-                stdin=_reexec_stdio(sys.stdin),
-                stdout=_reexec_stdio(sys.stdout),
-                stderr=_reexec_stdio(sys.stderr),
-                env=_child_env(current),
-                timeout=1210,
-                check=False,
-                creationflags=CREATE_NO_WINDOW,
+                stdin=_reexec_stdio(sys.stdin), stdout=_reexec_stdio(sys.stdout),
+                stderr=_reexec_stdio(sys.stderr), env=_child_env(current),
+                timeout=1210, check=False, creationflags=CREATE_NO_WINDOW,
             ).returncode
         os.execve(current["python"], [current["python"], str(script), *rest], _child_env(current))
     except TimeoutError:

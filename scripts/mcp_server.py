@@ -55,7 +55,6 @@ if str(HERE) not in sys.path:
 from identity import (
     MissingBind,
     bind_db_path,
-    claim_auto_bind,
     claim_nonce,
     finish_nonce,
     local_tool_name,
@@ -94,9 +93,12 @@ from mcp_catalog import (
     NONCE_PROP,
     REMOTE_ERROR_CATEGORIES,
     clamp_remote_args,
-    has_any_active_knowledge_lease as _has_any_active_knowledge_lease,
     remote_result,
     remote_stage_failure,
+)
+
+_PUBLISHED_KNOWLEDGE_TOOL_NAMES = frozenset(
+    {item["name"] for item in KNOWLEDGE_TOOLS if item["name"] != "mindie_entry"} | {"knowledge_sync"}
 )
 
 
@@ -162,13 +164,6 @@ def reject_native_identity_args(args, surface):
         or "mindie_activation" in args
     ):
         raise ValueError("tool arguments must not include native session identity")
-
-
-def strip_nonce(args, surface=None):
-    args = dict(args)
-    nonce = require_nonce(args.pop("request_nonce", None))
-    reject_native_identity_args(args, surface)
-    return nonce, args
 
 
 def _select_engine_path(*, domain=None, ref=None):
@@ -270,6 +265,8 @@ def knowledge_call(name, args, session):
     from knowledge_service import ensure_service, existing_service
     from mindie_knowledge.loop.cli import rpc
 
+    if not isinstance(name, str) or name not in _PUBLISHED_KNOWLEDGE_TOOL_NAMES:
+        raise ValueError(f"unknown knowledge tool: {name}")
     if is_deactivated(session):
         raise ValueError("MindIE knowledge is deactivated for this session")
     body = rsi_explore.forwarded(args) if name in {"knowledge_query", "knowledge_explain"} else dict(args)
@@ -438,6 +435,7 @@ def handle(surface, message):
     args = params.get("arguments") or {}
     nonce = None
     claimed = False
+    has_native_session = False
     succeeded = False
     result = {}
     try:
@@ -449,27 +447,38 @@ def handle(surface, message):
         raw_nonce = args.get("request_nonce")
         if raw_nonce is not None:
             nonce = require_nonce(raw_nonce)
-            nonce_scope = (str(bind_db_path()), nonce)
+            try:
+                nonce_scope = (str(bind_db_path()), nonce)
+            except TimeoutError:
+                raise
+            except (OSError, ValueError):
+                nonce_scope = ("", nonce)
             with _NONCE_MEM_LOCK:
                 if nonce_scope in _CLAIMED_NONCES:
                     raise ValueError("request_nonce has already been used; replay rejected")
             try:
                 session = claim_nonce(nonce, name, args)
                 claimed = True
+                has_native_session = True
                 with _NONCE_MEM_LOCK:
                     _CLAIMED_NONCES[nonce_scope] = None
                     if len(_CLAIMED_NONCES) > _MAX_CLAIMED_NONCES:
                         _CLAIMED_NONCES.popitem(last=False)
-            except MissingBind:
+            except TimeoutError:
+                raise
+            except (MissingBind, OSError, sqlite3.Error):
                 session = meta_session or _CONNECTION_SESSION_ID
+                has_native_session = meta_session is not None
         elif meta_session is not None:
             session = meta_session
-        elif (auto_bound := claim_auto_bind(name, body)) is not None:
-            session, nonce = auto_bound
-            claimed = True
+            has_native_session = True
         else:
             session = _CONNECTION_SESSION_ID
-        if surface == "knowledge" and name == "mindie_entry":
+        if surface == "knowledge":
+            local_name = local_tool_name(name) if isinstance(name, str) else name
+        else:
+            local_name = name
+        if surface == "knowledge" and local_name == "mindie_entry":
             from entry import dispatch
             from identity import session_cwd
 
@@ -490,12 +499,12 @@ def handle(surface, message):
                 isError=body.get("op") == "deactivate" and payload.get("status") == "partial",
             )
         elif surface == "knowledge":
-            payload = knowledge_call(name, body, session)
+            payload = knowledge_call(local_name, body, session)
             is_error = False
-            if name == "knowledge_distill":
+            if local_name == "knowledge_distill":
                 from mindie_knowledge.graded.distill import result_view
                 payload, is_error = result_view(payload)
-            elif name == "knowledge_sync":
+            elif local_name == "knowledge_sync":
                 is_error = payload["status"] != "ok"
             result = dict(content=[dict(type="text", text=canonical(payload))], structuredContent=payload, isError=is_error)
         elif surface == "components":
@@ -508,7 +517,7 @@ def handle(surface, message):
             else:
                 from component_tools import execute
 
-                result = execute(name, body, session, session_bound=claimed)
+                result = execute(name, body, session, session_bound=has_native_session)
         else:
             try:
                 payload = remote_call(name, body, session)
@@ -524,7 +533,7 @@ def handle(surface, message):
     except TimeoutError as exc:
         result = failure(exc)
         return dict(jsonrpc="2.0", id=ident, result=result)
-    except (ValueError, OSError, RuntimeError, KeyError, TypeError, ImportError, AttributeError) as exc:
+    except (ValueError, OSError, RuntimeError, KeyError, TypeError, ImportError, AttributeError, sqlite3.Error) as exc:
         result = failure(exc)
         return dict(jsonrpc="2.0", id=ident, result=result)
     finally:
@@ -583,20 +592,11 @@ def _serve(surface):
     stdin = sys.stdin.buffer
     read_pool = ThreadPoolExecutor(max_workers=16, thread_name_prefix="kimi-mcp-ro")
     work_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="kimi-mcp-rw")
-    last_lease_state = _has_any_active_knowledge_lease() if surface == "knowledge" else None
 
     def _run_and_reply(msg):
-        nonlocal last_lease_state
         response = handle(surface, msg)
         if response is not None:
             send(response)
-        if surface == "knowledge" and msg.get("method") == "tools/call":
-            params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
-            if local_tool_name(str(params.get("name") or "")) == "mindie_entry":
-                now_state = _has_any_active_knowledge_lease()
-                if now_state != last_lease_state:
-                    last_lease_state = now_state
-                    send({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"})
 
     try:
         while True:

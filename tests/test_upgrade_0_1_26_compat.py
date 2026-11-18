@@ -332,19 +332,26 @@ def test_runtime_skill_is_silent_semantic_and_excludes_slash_or_install_onboardi
         for token in banned:
             assert token not in text, f"{doc.name} unexpectedly contains token {token!r}"
 
-    for user_doc in [
-        ROOT / "README.md",
-        ROOT / "README.en.md",
-        ROOT / "docs" / "README.md",
-        ROOT / "docs" / "README.en.md",
-        *sorted((ROOT / "docs" / "install").glob("*.md")),
-    ]:
-        text = user_doc.read_text(encoding="utf-8")
-        # Repository/config path segments like `mindie-agent/mindie-agent` or `${...}/mindie-agent/kimi.json` are valid;
-        # user-facing slash command `/mindie-agent` (not part of a URL or filesystem path) is forbidden.
-        import re as re_mod
+    active_docs = [
+        *sorted(ROOT.glob("README*.md")),
+        *sorted(ROOT.glob("AGENTS.md")),
+        *sorted(ROOT.glob("CONTRIBUTING*.md")),
+        ROOT / "kimi.plugin.json",
+        *sorted((ROOT / "skills").rglob("*.md")),
+        *[
+            p
+            for p in sorted((ROOT / "docs").rglob("*.md"))
+            if not any(part in p.parts for part in ("releases", "archive"))
+        ],
+    ]
+    import re as re_mod
 
-        assert re_mod.search(r"(?<![A-Za-z0-9_./:-}])/mindie-agent(?![/A-Za-z0-9_-])", text) is None, (
+    slash_re = re_mod.compile(
+        r"(?<![A-Za-z0-9_./:-])(?<!\})[/\$]mindie-agent(?::mindie-agent)?(?![A-Za-z0-9_./-])"
+    )
+    for user_doc in active_docs:
+        text = user_doc.read_text(encoding="utf-8")
+        assert slash_re.search(text) is None, (
             f"{user_doc} unexpectedly contains user-facing /mindie-agent command"
         )
 
