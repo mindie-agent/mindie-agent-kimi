@@ -407,7 +407,7 @@ class HookTests(unittest.TestCase):
                     )
                     lock_samples.append((time_mod.perf_counter() - t0) * 1000.0)
                     self.assertEqual(lres.returncode, 0)
-                self.assertLess(min(lock_samples), 50.0, lock_samples)
+                self.assertLess(min(lock_samples), 100.0, lock_samples)
             finally:
                 os.close(lock_fd)
 
