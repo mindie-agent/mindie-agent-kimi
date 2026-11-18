@@ -161,7 +161,7 @@ def _serve(surface: str, tool: str) -> tuple[dict[int, dict], list[str]]:
     ]
     stream = io.BytesIO(b"".join(json.dumps(item).encode() + b"\n" for item in requests))
     out = io.BytesIO()
-    assert MCPStdioServer(router, server_name=f"mindie-{surface}", server_version="0.1.31").serve(stdin=stream, stdout=out) == 0
+    assert MCPStdioServer(router, server_name=f"mindie-{surface}", server_version="0.1.32").serve(stdin=stream, stdout=out) == 0
     replies = {payload["id"]: payload for payload in map(json.loads, out.getvalue().splitlines()) if payload}
     names = [item["name"] for item in replies[2]["result"]["tools"]]
     return replies, names
@@ -171,7 +171,7 @@ def test_knowledge_surface_is_exclusive() -> None:
     replies, names = _serve("knowledge", "mindie_status")
     assert names == KNOWLEDGE
     assert not [name for name in names if name.startswith("remote_") or name in COMPONENTS]
-    assert replies[1]["result"]["serverInfo"]["version"] == "0.1.31"
+    assert replies[1]["result"]["serverInfo"]["version"] == "0.1.32"
     excluded = replies[3]["result"]
     assert excluded["isError"] is True
     assert excluded["structuredContent"]["reason"] == "unknown_operation"
@@ -231,7 +231,7 @@ def test_setup_doctor_reports_readiness(plugin_env: dict[str, str]) -> None:
     assert "runtime" in body and "packages" in body["runtime"]
 
 
-def _valid_report(version: str = "0.1.31") -> dict:
+def _valid_report(version: str = "0.1.32") -> dict:
     servers = [{"name": name, "enabled": True} for name in ("knowledge", "remote", "components")]
     record = {"mcpServerCount": 3, "enabledMcpServerCount": 3, "hookCount": 2}
     return {

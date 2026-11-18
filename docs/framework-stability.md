@@ -32,6 +32,6 @@ python3 -m unittest discover -s tests/native -v
 python3 scripts/setup.py release-metadata --source . --tests tests --revision "$(git rev-parse HEAD)"
 ```
 
-- **薄插件门禁**：`tests/test_thin_plugin_contract.py` 校验 `scripts/` 仅保留 5 个运行时文件、总行数 ≤ 1,000、插件版本为 `0.1.31`、种子校验通过，并通过 `scripts/setup.py release-metadata` 校验发布元数据。
+- **薄插件门禁**：`tests/test_thin_plugin_contract.py` 校验 `scripts/` 仅保留 5 个运行时文件、总行数 ≤ 1,000、插件版本为 `0.1.32`、种子校验通过，并通过 `scripts/setup.py release-metadata` 校验发布元数据。
 - **发布微基准（`benchmarks/release.json`）**：定义 `public-transcript-parsing`（指标 `public_transcript_parse`，单位 `us/op`），通过 `benchmarks/release.py` 可复现地测量本地 `wire.jsonl` 公开对话提取与非公开推理过滤延迟，并随正式 Release 发布 `benchmark-results.json`、`benchmark-results.md`。
 - **验收边界分离**：自动化测试与 CPU 微基准覆盖锁定依赖、进程/文件锁与协议解析性能；原生宿主交互与常备昇腾 A2/A3 NPU 硬件执行作为独立验收项管理。

@@ -2,7 +2,7 @@
 
 <b>中文</b> | <a href="update.en.md">English</a> · <a href="README.md">返回文档索引</a>
 
-`mindie-agent-kimi` `0.1.31` **不再内置更新器**：插件运行时只保留 5 个薄文件，更新完全委托给共享基座 [`mindie-harness`](https://github.com/mindie-agent/harness) 的 `mindie_harness.runtime.wheelhouse.update_runtime` 与 `mindie_harness.runtime.scheduler`。更新通道从官方 Release 选择与实际 `kimi --version` 兼容的正式版本，排除 draft / prerelease，且不会降级。
+`mindie-agent-kimi` `0.1.32` **不再内置更新器**：插件运行时只保留 5 个薄文件，更新完全委托给共享基座 [`mindie-harness`](https://github.com/mindie-agent/harness) 的 `mindie_harness.runtime.wheelhouse.update_runtime` 与 `mindie_harness.runtime.scheduler`。更新通道从官方 Release 选择与实际 `kimi --version` 兼容的正式版本，排除 draft / prerelease，且不会降级。
 
 ---
 
@@ -34,4 +34,4 @@ python3 scripts/setup.py doctor                 # 只读核对当前运行时、
 
 - **失败退避与防死循环**：临时网络或证书信任故障保留当前安装并记录 `next_retry_at`，由后续正常检查重试；TLS 校验始终开启。内容、版本、tag 或兼容性不匹配在激活前明确失败，回执只保留去凭据、有界的原因与静态类别。
 - **宿主重载说明**：更新成功后，下一次 `tools/list` / `tools/call` 与 Hook 子进程会使用新运行时；Kimi 宿主启动时加载的 Skill/MCP 清单与工具缓存只会在自然重启或新会话时刷新，因此不会声称旧会话内存中的定义已切换。运行中的任务不会被强制杀死或重载。
-- **旧版本迁移**：`0.1.31` 之前的 `update/current.json` 与历史代数目录保留只读；新基座以 `kimi.json` 的 `python` / `component_release` 为唯一权威，不再读取 `current.json`。如旧配置指向已删除的 `scripts/transcript.py`，`entry.py` 会在首次 `Stop` 时把 `kimi.engine.json` 的 `transcript_adapter` 自动修正为 `scripts/kimi_transcript.py`。
+- **旧版本迁移**：`0.1.32` 之前的 `update/current.json` 与历史代数目录保留只读；新基座以 `kimi.json` 的 `python` / `component_release` 为唯一权威，不再读取 `current.json`。如旧配置指向已删除的 `scripts/transcript.py`，`entry.py` 会在首次 `Stop` 时把 `kimi.engine.json` 的 `transcript_adapter` 自动修正为 `scripts/kimi_transcript.py`。

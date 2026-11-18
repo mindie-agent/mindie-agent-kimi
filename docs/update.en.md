@@ -2,7 +2,7 @@
 
 <a href="update.md">中文</a> | <b>English</b> · <a href="README.en.md">Documentation Index</a>
 
-`mindie-agent-kimi` `0.1.31` **no longer bundles an updater**: the plugin runtime keeps only five thin files, and updates are fully delegated to [`mindie-harness`](https://github.com/mindie-agent/harness) through `mindie_harness.runtime.wheelhouse.update_runtime` and `mindie_harness.runtime.scheduler`. The channel selects the highest formal Release compatible with the actual `kimi --version`, excludes drafts and prereleases, and never downgrades.
+`mindie-agent-kimi` `0.1.32` **no longer bundles an updater**: the plugin runtime keeps only five thin files, and updates are fully delegated to [`mindie-harness`](https://github.com/mindie-agent/harness) through `mindie_harness.runtime.wheelhouse.update_runtime` and `mindie_harness.runtime.scheduler`. The channel selects the highest formal Release compatible with the actual `kimi --version`, excludes drafts and prereleases, and never downgrades.
 
 ---
 
@@ -34,4 +34,4 @@ The `mindie_status` MCP tool reports the active runtime and component versions a
 
 - **Backoff Without Tight Retry Loops**: temporary network or certificate-trust failures retain the current installation and record `next_retry_at` for a later normal check; TLS verification stays enabled. Content, version, tag, or compatibility mismatches fail before activation, and receipts keep only credential-scrubbed bounded reasons and static categories.
 - **Host Reload Boundary**: after a successful update, the next `tools/list` / `tools/call` and Hook child use the new runtime; Kimi's startup-loaded Skill/MCP catalog and tool cache refresh only on a natural restart or new session, so the plugin never claims an old session's in-memory definitions changed. Running tasks are never force-killed or reloaded.
-- **Legacy Migration**: pre-`0.1.31` `update/current.json` and generation trees remain read-only; the new substrate treats `kimi.json` `python` / `component_release` as authoritative and no longer reads `current.json`. If an old config points to the deleted `scripts/transcript.py`, `entry.py` rewrites `kimi.engine.json` `transcript_adapter` to `scripts/kimi_transcript.py` on the first `Stop`.
+- **Legacy Migration**: pre-`0.1.32` `update/current.json` and generation trees remain read-only; the new substrate treats `kimi.json` `python` / `component_release` as authoritative and no longer reads `current.json`. If an old config points to the deleted `scripts/transcript.py`, `entry.py` rewrites `kimi.engine.json` `transcript_adapter` to `scripts/kimi_transcript.py` on the first `Stop`.

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""[Role] Pure-stdlib cold-start launcher: resolves the Kimi profile and forwards `mcp`/`hook`.
+"""[Role] Pure-stdlib cold-start launcher: resolves the Kimi profile and forwards `mcp`/`hook`/`updater`.
 [Invariants] Zero third-party imports and zero SQLite on hook paths; `pretool` never reads stdin;
 `stop` exits `{}` unless consent (`contribute`/`local-only`) and an absolute `project_roots` entry
-authorize `cwd` via `os.path.commonpath`; `PYTHONPATH` is stripped only for a different venv.
+authorize `cwd` via `os.path.commonpath`; standalone `update/launch/<sha>/mindie_launch.py` and
+`update/current.json` handoffs resolve cleanly to the owning generation.
 [Timeouts & Locks] Bounded `1 MiB + 1` stdin; zero hook locks; seed provisioning owns its lock.
 [Side-Effect Policy] Writes `state/kimi/pending-update-check.json`, provisions the verified seed
 runtime when needed, then execs/spawns `entry.py`; stdout stays JSON-only.
@@ -19,7 +20,14 @@ import time
 
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 _NO_WIN = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-HERE = Path(__file__).resolve().parent
+_RAW_HERE = Path(__file__).resolve().parent
+HERE = (
+    _RAW_HERE.parents[1] / "generations" / _RAW_HERE.name / "scripts"
+    if len(_RAW_HERE.parents) >= 2
+    and _RAW_HERE.parent.name == "launch"
+    and (_RAW_HERE.parents[1] / "generations" / _RAW_HERE.name / "scripts" / "entry.py").is_file()
+    else _RAW_HERE
+)
 PLUGIN_ROOT = HERE.parent
 SEED_SCHEMA = "mindie-harness-seed/1"
 MAX_STOP_BYTES = 1048577
@@ -99,16 +107,46 @@ def _in_roots(raw: bytes, roots: list[str]) -> bool:
                 continue
     return False
 
-def _active_python(cfg_path: Path) -> Path | None:
+def _legacy_current_tuple(cfg_path: Path, cfg: dict | None = None) -> tuple[Path, Path, Path] | None:
+    cfg = _read_json(cfg_path) or {} if cfg is None else cfg
+    if cfg.get("source_root") == str(PLUGIN_ROOT) and _RAW_HERE.parent.name != "launch":
+        return None
+    candidates: list[Path] = []
+    if _RAW_HERE.parent.name == "launch" and len(_RAW_HERE.parents) >= 2:
+        candidates.append(_RAW_HERE.parents[1] / "current.json")
+    if isinstance(sd := cfg.get("state_dir"), str) and os.path.isabs(sd):
+        candidates.append(Path(sd) / "update" / "current.json")
+    if isinstance(ep := cfg.get("engine_config"), str) and os.path.isabs(ep):
+        if isinstance(root := (_read_json(Path(ep)) or {}).get("root"), str) and os.path.isabs(root):
+            candidates.append(Path(root) / "kimi-adapter" / "update" / "current.json")
+    candidates.extend([_state_dir() / "update" / "current.json", cfg_path.parent / "state" / "update" / "current.json"])
+    for cur_path in candidates:
+        cur = _read_json(cur_path) or {}
+        py_raw, gen_raw, ad_raw = cur.get("python"), cur.get("generation"), cur.get("adapter_config")
+        if isinstance(py_raw, str) and isinstance(gen_raw, str) and isinstance(ad_raw, str):
+            scripts = Path(gen_raw) / "scripts"
+            if Path(py_raw).is_file() and (scripts / "entry.py").is_file() and Path(ad_raw).is_file():
+                return Path(py_raw), scripts, Path(ad_raw)
+    return None
+
+def _resolve_target(cfg_path: Path) -> tuple[Path | None, Path]:
     cfg = _read_json(cfg_path) or {}
     release = cfg.get("component_release")
     if isinstance(release, str) and release:
         receipt = _read_json(Path(release) / "runtime.json") or {}
         candidate = Path(str(receipt.get("python") or ""))
         if candidate.is_file() and (receipt.get("validation") or {}).get("status") == "validated":
-            return candidate
+            return candidate, HERE
+    if (tup := _legacy_current_tuple(cfg_path, cfg)) is not None:
+        return tup[0], tup[1]
     raw = cfg.get("python")
-    return Path(raw) if isinstance(raw, str) and Path(raw).is_file() else None
+    return (Path(raw) if isinstance(raw, str) and Path(raw).is_file() else None), HERE
+
+def _effective_scripts(cfg_path: Path) -> Path:
+    return _resolve_target(cfg_path)[1]
+
+def _active_python(cfg_path: Path) -> Path | None:
+    return _resolve_target(cfg_path)[0]
 
 def _has_harness() -> bool:
     import importlib.util
@@ -156,11 +194,12 @@ def _same_py(left: str | Path, right: str | Path) -> bool:
     return os.path.normcase(str(a.parent.resolve() / a.name)) == os.path.normcase(str(b.parent.resolve() / b.name))
 
 def _dispatch(python: Path, cfg_path: Path, forwarded: list[str], stdin_buf: bytes | None, *, timeout: float | None = None) -> int:
+    scripts = _effective_scripts(cfg_path)
     if stdin_buf is None and _same_py(python, sys.executable):
-        sys.path.insert(0, str(HERE))
+        sys.path.insert(0, str(scripts))
         import entry
         return int(entry.main(["--config", str(cfg_path), *forwarded]) or 0)
-    argv = [str(python), "-X", "utf8", str(HERE / "entry.py"), "--config", str(cfg_path), *forwarded]
+    argv = [str(python), "-X", "utf8", str(scripts / "entry.py"), "--config", str(cfg_path), *forwarded]
     if not _same_py(python, sys.executable):
         os.environ.pop("PYTHONPATH", None)
     if stdin_buf is None and os.name != "nt":
@@ -212,6 +251,19 @@ def main(argv: list[str] | None = None) -> int:
             except subprocess.TimeoutExpired:
                 pass
         return _empty()
+    if family == "updater" and operation in {"check", "status"}:
+        if operation == "status":
+            sys.stdout.write('{"result": "current"}\n')
+            return 0
+        python = _active_python(cfg_path) or (Path(sys.executable) if _has_harness() else None)
+        if python is None:
+            sys.stdout.write('{"result": "deferred"}\n')
+            return 0
+        scripts = _effective_scripts(cfg_path)
+        return subprocess.run(
+            [str(python), "-I", "-X", "utf8", str(scripts / "setup.py"), "--config", str(cfg_path), "update", "--background"],
+            creationflags=_NO_WIN,
+        ).returncode
     raise SystemExit(f"unsupported operation: {family} {operation}")
 
 if __name__ == "__main__":

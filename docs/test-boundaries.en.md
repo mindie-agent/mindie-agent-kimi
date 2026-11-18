@@ -2,7 +2,7 @@
 
 <a href="test-boundaries.md">中文</a> | <b>English</b> · <a href="README.en.md">Documentation Index</a>
 
-`mindie-agent-kimi` `0.1.31` runs its thin-plugin suite in a strict fail-fast order so line-ending, contract, native-launch, or release-metadata regressions are caught immediately without masking OS-specific behavior.
+`mindie-agent-kimi` `0.1.32` runs its thin-plugin suite in a strict fail-fast order so line-ending, contract, native-launch, or release-metadata regressions are caught immediately without masking OS-specific behavior.
 
 ---
 
@@ -11,9 +11,9 @@
 Checks execute in this order within a single job:
 
 1. **Line-Ending & Syntax Gates**: `python .github/scripts/check_lf_eol.py` rejects CRLF; `python -m compileall -q scripts tests` rejects syntax errors.
-2. **Thin-Plugin Contract (`tests/test_thin_plugin_contract.py`)**: `scripts/` keeps exactly five files totaling ≤ 1,000 lines, version `0.1.31`, `REMOTE_DEV_HARNESS_PROFILE == "kimi"`, `entry.verify_bundled_seed()`, and a `KimiHostAdapter` satisfying `mindie_harness.api.HostAdapter`.
+2. **Thin-Plugin Contract (`tests/test_thin_plugin_contract.py`)**: `scripts/` keeps exactly five files totaling ≤ 1,000 lines, version `0.1.32`, `REMOTE_DEV_HARNESS_PROFILE == "kimi"`, `entry.verify_bundled_seed()`, and a `KimiHostAdapter` satisfying `mindie_harness.api.HostAdapter`.
 3. **Release Metadata (`scripts/setup.py release-metadata --source . --tests tests --revision <sha>`)**: `harness_name="kimi-code"` compatibility, AST `code_paths`, `test_ids`, and the `mindie-plugin-release/1` payload.
-4. **Real Node.js MCP Launch (`tests/native`)**: `child_process.spawn` (`windowsHide: true`, `shell: false`) starts all three MCP servers with the exact `kimi.plugin.json` arguments and verifies `initialize` (`0.1.31`), `tools/list`, a JSON-RPC `-32700` parse error, and `ping` recovery.
+4. **Real Node.js MCP Launch (`tests/native`)**: `child_process.spawn` (`windowsHide: true`, `shell: false`) starts all three MCP servers with the exact `kimi.plugin.json` arguments and verifies `initialize` (`0.1.32`), `tools/list`, a JSON-RPC `-32700` parse error, and `ping` recovery.
 5. **Full Contract Suite (`pytest -o "pythonpath=tests scripts" tests`)**: cold hook fast paths, project-root scope, MCP surface isolation, `setup.py` subcommands, installer resource verification, and `wire.jsonl` parsing.
 
 ---

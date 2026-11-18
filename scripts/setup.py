@@ -3,7 +3,7 @@
 `sharing`, `doctor`, and `update` delegate to `mindie_harness` (`API_VERSION = 1`).
 [Invariants] `kimi.engine.json` carries `root`, `domain`, `admission_path`, and an absolute
 `transcript_adapter` -> `kimi_transcript.py`; `release-metadata` validates
-`harness-compatibility.json` (`harness_name="kimi-code"`), the `0.1.31` manifest version,
+`harness-compatibility.json` (`harness_name="kimi-code"`), the `0.1.32` manifest version,
 every AST `code_paths` symbol, and every `test_ids` target when `--tests` is set; native
 registration belongs to `install_kimi_plugin.py`, never `~/.kimi-code` mutation here.
 [Timeouts & Locks] Init performs two atomic JSON writes and zero network I/O; `doctor`,
@@ -31,7 +31,7 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 PLUGIN_ROOT = HERE.parent
 _NO_WIN = 0x08000000 if os.name == "nt" else 0
-VERSION = "0.1.31"
+VERSION = "0.1.32"
 DOMAIN = "vllm-ascend"
 HARNESS = "kimi-code"
 REPOSITORY = "mindie-agent/mindie-agent-kimi"
