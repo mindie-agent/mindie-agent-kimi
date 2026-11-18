@@ -75,7 +75,17 @@ def ensure_default_lease(
         raise ValueError("MindIE knowledge is deactivated for this session")
     existing = knowledge_lease(session, engine=engine)
     if existing is not None:
-        return existing
+        if project_root is None:
+            return existing
+        aligned_root = str(Path(project_root).resolve())
+        if existing.get("project_root") == aligned_root:
+            return existing
+        return gate(engine).activate(
+            session,
+            project_root=aligned_root,
+            root_session=existing.get("root_session") or root_session or session,
+            not_before=not_before,
+        )
     root = _resolve_default_root(session, project_root)
     adm = gate(engine)
     adm.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)

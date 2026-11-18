@@ -282,21 +282,19 @@ def test_ad03_concurrent_resident_mcp_and_ad11_unified_subcommand(tmp_path, monk
         cwd=str(ROOT),
     )
     try:
-        for req_id in range(1, 9):
-            proc.stdin.write(
-                json.dumps(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": req_id,
-                        "method": "tools/call",
-                        "params": {"name": "mindie_status", "arguments": {}},
-                    }
-                )
-                + "\n"
+        payload = "".join(
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "method": "tools/call",
+                    "params": {"name": "mindie_status", "arguments": {}},
+                }
             )
-        proc.stdin.flush()
-        proc.stdin.close()
-        out, err = proc.communicate(timeout=15)
+            + "\n"
+            for req_id in range(1, 9)
+        )
+        out, err = proc.communicate(input=payload, timeout=15)
         assert proc.returncode == 0, err
         replies = [json.loads(ln) for ln in out.splitlines() if ln.strip()]
         assert {r["id"] for r in replies} == set(range(1, 9))

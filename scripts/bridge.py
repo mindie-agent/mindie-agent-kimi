@@ -172,7 +172,8 @@ def _ensure_stop_lease(session: str, cwd: str | None, settings):
             if existing is not None:
                 if not isinstance(existing.get("token"), str) or not existing["token"]:
                     return None, "admission-schema"
-                return existing, None
+                if cwd is None or existing.get("project_root") == str(Path(cwd).resolve()):
+                    return existing, None
     if not isinstance(cwd, str) or not os.path.isabs(cwd) or not settings.in_scope(cwd):
         return None, None
     try:
@@ -248,13 +249,21 @@ def handle_stop():
             normalized["transcript_path"] = transcript
         if isinstance(effective_cwd, str) and effective_cwd:
             normalized["cwd"] = effective_cwd[:4096]
-        from mindie_knowledge.loop.cli import capture_hook
+        import mindie_knowledge.loop.cli as cli_mod
 
         try:
             from knowledge_service import prepare_service_env
 
             prepare_service_env()
-            result = capture_hook(str(engine_path()), normalized)
+            eng = engine_path()
+            if hasattr(cli_mod, "config_at"):
+                eng_doc = _read_json(Path(eng)) or {}
+                if isinstance(eng_doc.get("root"), str) and isinstance(eng_doc.get("domain"), str):
+                    if not (Path(eng_doc["root"]) / eng_doc["domain"] / "state-v4.sqlite3").is_file():
+                        from mindie_knowledge.loop.handoff import prepare_schema
+
+                        prepare_schema(str(eng))
+            result = cli_mod.capture_hook(str(eng), normalized)
         except TimeoutError:
             raise
         except Exception:

@@ -241,6 +241,7 @@ class HookTests(unittest.TestCase):
             self.assertEqual(fresh.get("failures", 0), 0)
 
     def test_stop_auto_ensures_lease_when_sharing_enabled_and_skips_when_deactivated_or_off(self):
+        import shutil
         import time as time_mod
 
         with tempfile.TemporaryDirectory() as raw:
@@ -252,16 +253,25 @@ class HookTests(unittest.TestCase):
             import admission as admission_mod
             from paths import admission_path
 
-            # 1. Fresh in-scope session auto-provisions default lease (not_before=0.0) and captures
-            captured = []
-            self._run_stop_in_process(
-                config,
-                {"hook_event_name": "Stop", "session_id": "ses_auto_stop", "cwd": str(tmp)},
-                captured,
-            )
+            # 1. Fresh in-scope session auto-provisions default lease (not_before=0.0) and captures,
+            #    and aligns project_root if an earlier MCP call created the lease with a different cwd
+            other_cwd = tmp.parent / f"{tmp.name}-other"
+            other_cwd.mkdir(exist_ok=True)
+            try:
+                early = admission_mod.ensure_default_lease("ses_auto_stop", project_root=other_cwd)
+                self.assertEqual(early["project_root"], str(other_cwd.resolve()))
+                captured = []
+                self._run_stop_in_process(
+                    config,
+                    {"hook_event_name": "Stop", "session_id": "ses_auto_stop", "cwd": str(tmp)},
+                    captured,
+                )
+            finally:
+                shutil.rmtree(other_cwd, ignore_errors=True)
             self.assertEqual(len(captured), 1)
             lease = admission_mod.knowledge_lease("ses_auto_stop")
             self.assertIsNotNone(lease)
+            self.assertEqual(lease["project_root"], str(tmp.resolve()))
             self.assertEqual(lease["activated_at"], 0.0)
             self.assertEqual(captured[0][1]["mindie_activation"], lease["token"])
 
