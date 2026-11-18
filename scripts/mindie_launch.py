@@ -151,13 +151,25 @@ def _enqueue(state_dir: Path) -> None:
     finally:
         tmp.unlink(missing_ok=True)
 
+def _same_py(left: str | Path, right: str | Path) -> bool:
+    a, b = Path(left), Path(right)
+    return os.path.normcase(str(a.parent.resolve() / a.name)) == os.path.normcase(str(b.parent.resolve() / b.name))
+
 def _dispatch(python: Path, cfg_path: Path, forwarded: list[str], stdin_buf: bytes | None, *, timeout: float | None = None) -> int:
+    if stdin_buf is None and _same_py(python, sys.executable):
+        sys.path.insert(0, str(HERE))
+        import entry
+        return int(entry.main(["--config", str(cfg_path), *forwarded]) or 0)
     argv = [str(python), "-X", "utf8", str(HERE / "entry.py"), "--config", str(cfg_path), *forwarded]
-    if Path(python).resolve() != Path(sys.executable).resolve():
+    if not _same_py(python, sys.executable):
         os.environ.pop("PYTHONPATH", None)
     if stdin_buf is None and os.name != "nt":
         os.execv(str(python), argv)
-    return subprocess.run(argv, input=stdin_buf, capture_output=timeout is not None, timeout=timeout, creationflags=_NO_WIN).returncode
+    if stdin_buf is not None or timeout is not None:
+        return subprocess.run(argv, input=stdin_buf, capture_output=timeout is not None, timeout=timeout, creationflags=_NO_WIN).returncode
+    try: sys.stdin.fileno(); sys.stdout.fileno(); sys.stderr.fileno(); io_kw = {"stdin": sys.stdin, "stdout": sys.stdout, "stderr": sys.stderr}
+    except Exception: io_kw = {}
+    return subprocess.run(argv, **io_kw, creationflags=_NO_WIN).returncode
 
 def _empty() -> int:
     sys.stdout.write("{}\n")

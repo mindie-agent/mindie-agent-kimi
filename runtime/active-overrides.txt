@@ -1,7 +1,7 @@
 # Active exact component selection; older transitive pins are overridden.
 # The component updater preserves newer installed formal releases.
 # runtime-requirements.txt remains the immutable controller bootstrap trio.
-mindie-harness @ git+https://github.com/mindie-agent/harness@ee77300887debb0b769794eb3ee0c2b45eab87ed
+mindie-harness @ git+https://github.com/mindie-agent/harness@14313b8ba58c888b20c9c216ec41d14f5e62f4f7
 mindie-coordinator @ git+https://github.com/mindie-agent/coordinator@a3c7336faa0bc14ebdb8f2fd75606c82e96422e9
 mindie-debugger @ git+https://github.com/mindie-agent/debugger@e15c2ed38d8f928db67c5bb1a94269f62207227c
 mindie-diagnostics @ git+https://github.com/mindie-agent/diagnostics@7464cbb4381e9dc996871d192eb3f05f61dfdb28

@@ -43,6 +43,7 @@ readline.createInterface({ input: child.stdout }).on("line", (line) => {
   lines.push(line);
   if (lines.length === 4) {
     clearTimeout(timer);
+    try { child.stdin.end(); } catch (_) {}
     child.kill();
     try {
       const replies = lines.map((item) => JSON.parse(item));
