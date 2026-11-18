@@ -1,103 +1,59 @@
-"""Test-suite host isolation.
-
-[Role]
-Captures the real user home at import time and redirects every test case's
-host-visible home, XDG, Kimi, and diagnostics environment into pytest's
-`tmp_path` so no test can write a LaunchAgent, service, or diagnostic under the
-developer's real profile.
-
-[Invariants]
-- `_REAL_HOME` is the only host home retained; `tests/support.py` uses it to
-  resolve the pre-installed Gitleaks cache.
-- Every test starts with isolated `HOME`, `USERPROFILE`, `XDG_CONFIG_HOME`,
-  `XDG_DATA_HOME`, `KIMI_CODE_HOME`, and MindIE diagnostics paths.
-- Failure recorders opened by in-process hook tests are closed on teardown.
-
-[Timeouts & Locks]
-- Pure environment setup/teardown; acquires no locks and starts no subprocess.
-
-[Side-Effect Policy]
-- Creates only directories under the pytest `tmp_path`; never writes the real
-  home or user LaunchAgents.
-"""
-
+"""Autouse isolation for every MindIE Agent Kimi contract test."""
 from __future__ import annotations
 
-import atexit
-import itertools
 import os
 from pathlib import Path
-import shutil
-import site
 import tempfile
 
 import pytest
 
-_REAL_HOME = Path.home()
-_PYTHON_USER_BASE = os.environ.get("PYTHONUSERBASE") or site.getuserbase()
-_PREWARMED_UV_CACHE = os.environ.get("UV_CACHE_DIR")
-_SESSION_TMP = Path(tempfile.mkdtemp(prefix="mk-")).resolve()
-atexit.register(lambda: shutil.rmtree(_SESSION_TMP, ignore_errors=True))
-_TMP_SEQ = itertools.count(1)
-os.environ["MINDIE_TEST_REAL_HOME"] = str(_REAL_HOME)
-
-_ISOLATED_PATHS = {
-    "HOME": "home",
-    "USERPROFILE": "home",
-    "APPDATA": "appdata",
-    "LOCALAPPDATA": "localappdata",
-    "XDG_CONFIG_HOME": "config",
-    "XDG_DATA_HOME": "data",
-    "XDG_CACHE_HOME": "cache",
-    "MINDIE_CONFIG_HOME": "mindie-config",
-    "MINDIE_DATA_HOME": "mindie-data",
-    "REMOTE_DEV_AUTH_DIR": "remote-auth",
-    "KIMI_CODE_HOME": "kimi-home",
-    "MINDIE_DIAGNOSTICS_ROOT": "diag-root",
-    "MINDIE_DIAGNOSTICS_CONFIG": "diagnostics.json",
-}
+ENV_VARS = (
+    "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME", "XDG_STATE_HOME", "MINDIE_CONFIG_HOME", "MINDIE_DATA_HOME",
+    "MINDIE_KIMI_CONFIG", "MINDIE_AGENT_CONFIG", "MINDIE_DIAGNOSTICS_ROOT",
+    "MINDIE_DIAGNOSTICS_CONFIG", "KIMI_CODE_HOME", "REMOTE_DEV_AUTH_DIR",
+    "UV_CACHE_DIR", "TMPDIR",
+)
 
 
 @pytest.fixture(autouse=True)
-def _isolate_host_environment(tmp_path, monkeypatch):
-    for name, relative in _ISOLATED_PATHS.items():
-        value = tmp_path / relative
-        if name != "MINDIE_DIAGNOSTICS_CONFIG":
-            value.mkdir(parents=True, exist_ok=True)
-        monkeypatch.setenv(name, str(value))
-    # Keep per-test temp roots short on Windows so Git pack/loose objects and the
-    # 220-byte feed path budget never overflow under pytest's long case names.
-    short_tmp = _SESSION_TMP / f"t{next(_TMP_SEQ)}"
-    short_tmp.mkdir(parents=True, exist_ok=True)
-    for name in ("TMPDIR", "TEMP", "TMP"):
-        monkeypatch.setenv(name, str(short_tmp))
-    uv_cache = Path(_PREWARMED_UV_CACHE) if _PREWARMED_UV_CACHE else (_SESSION_TMP / "uv")
-    uv_cache.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setenv("UV_CACHE_DIR", str(uv_cache))
-    monkeypatch.setenv("PYTHONUSERBASE", _PYTHON_USER_BASE)
-    # A test that writes its own profile config must not leak that pointer into
-    # the next test's `profile_config_path()` resolution.
-    monkeypatch.delenv("MINDIE_KIMI_CONFIG", raising=False)
-    previous_tempdir = tempfile.tempdir
-    tempfile.tempdir = None
-    try:
-        yield
-    finally:
-        tempfile.tempdir = previous_tempdir
-        _close_failure_recorders()
+def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Point every host/config/data/diagnostics/temp location at one temp root."""
+    root = tmp_path / "home"
+    root.mkdir()
+    temp = tmp_path / "tmp"
+    temp.mkdir()
+    values = {
+        "HOME": root, "USERPROFILE": root,
+        "APPDATA": root / "AppData/Roaming", "LOCALAPPDATA": root / "AppData/Local",
+        "XDG_CONFIG_HOME": root / ".config", "XDG_DATA_HOME": root / ".local/share",
+        "XDG_STATE_HOME": root / ".local/state",
+        "MINDIE_CONFIG_HOME": root / ".config/mindie-agent",
+        "MINDIE_DATA_HOME": root / ".local/share/mindie-agent",
+        "MINDIE_KIMI_CONFIG": root / ".config/mindie-agent/kimi.json",
+        "MINDIE_AGENT_CONFIG": root / ".config/mindie-agent/kimi.json",
+        "MINDIE_DIAGNOSTICS_ROOT": root / ".local/share/mindie-agent/diagnostics",
+        "MINDIE_DIAGNOSTICS_CONFIG": root / ".config/mindie-agent/diagnostics.json",
+        "KIMI_CODE_HOME": root / ".kimi-code",
+        "REMOTE_DEV_AUTH_DIR": root / ".remote-dev",
+        "UV_CACHE_DIR": temp / "uv-cache", "TMPDIR": temp,
+    }
+    for name in ENV_VARS:
+        monkeypatch.setenv(name, str(values.get(name, temp)))
+    monkeypatch.setattr(tempfile, "tempdir", str(temp))
+    for name in ("MINDIE_KIMI_BIN", "MINDIE_REDACTOR_EXECUTABLE"):
+        monkeypatch.delenv(name, raising=False)
+    return root
 
 
-def _close_failure_recorders():
-    try:
-        import mindie_diagnostics.logging as diagnostic_logging
-    except ImportError:
-        return
-    recorders = list(diagnostic_logging._FAILURE_RECORDERS.values())
-    diagnostic_logging._FAILURE_RECORDERS.clear()
-    for recorder in recorders:
-        try:
-            recorder.close()
-        except TimeoutError:
-            raise
-        except Exception:
-            pass
+@pytest.fixture()
+def repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture()
+def plugin_env(isolated_home: Path) -> dict[str, str]:
+    """Environment for CLI subprocesses under the isolated home (keeps PYTHONPATH)."""
+    env = dict(os.environ)
+    env["PYTHONUTF8"] = "1"
+    return env

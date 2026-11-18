@@ -11,7 +11,7 @@ import tempfile
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-import transcript
+import kimi_transcript as transcript
 
 
 def main():

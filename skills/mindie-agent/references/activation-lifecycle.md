@@ -1,16 +1,22 @@
 # Session Lifecycle & Background Capture (Kimi)
 
 - **Default-Enabled MCP Surfaces (`P2.7`)**:
-  - `remote` (`remote-dev`), `components` (`mindie_status`, `diagnostics_status`, `diagnostics_bundle`, `coordinator`, `debugger`, `profiler`, `sim`), and `knowledge` (`knowledge_query`, `knowledge_explain`, `knowledge_feedback`, `knowledge_distill`, `knowledge_sync`) are exposed on `tools/list` at startup and execute over standard MCP `tools/call` without pre-call session activation or a required `request_nonce`.
+  - `remote` (`remote-dev`), `components` (`mindie_status`, `mindie_doctor`, `diagnostics_status`, `diagnostics_bundle`, `coordinator`, `debugger`, `profiler`, `sim`), and `knowledge` (`knowledge_query`, `knowledge_explain`, `knowledge_feedback`, `knowledge_distill`, `knowledge_sync`) are exposed on `tools/list` at startup and execute over standard MCP `tools/call` without pre-call session activation or a required `request_nonce`.
+  - `mindie_doctor` is the readiness check: it reports runtime/harness health, the effective contribution tier, local diagnostics policy, and optional remote-dev configuration. Run it before deep troubleshooting rather than blocking on a failing helper.
   - Native identity resolves automatically from optional `PreToolUse` bindings or MCP connection scope (resumed sessions preserve their `session_id`; forked sessions receive a distinct `session_id` and drop inherited history before `state.createdAt`). Never supply a session ID in tool arguments.
-  - Read-only `mindie_status` and `diagnostics_status` return factual configuration, diagnostic, and reporting status without creating `admission.sqlite3` or starting background services.
+  - Read-only `mindie_status`, `mindie_doctor`, and `diagnostics_status` return factual configuration, diagnostic, and reporting status without creating `admission.sqlite3` or starting background services.
 - **On-Demand Session Lease & Multi-Domain Routing**:
   - Public `knowledge_query`, `knowledge_explain`, and `knowledge_sync` calls execute across the default domain and any registered `domain_configs` route without writing session leases.
   - Mutating calls (`knowledge_feedback` and `knowledge_distill`) auto-provision a default session lease (`not_before=0.0`) on the selected target domain's own `Admission` store on demand; default-domain tokens are never forwarded across domains.
   - Register additional domain routes with `python -m mindie_knowledge.loop.domain_routes register --adapter-config <path> --domain <domain> --engine-config <path>`.
 - **Unified Contribution & Fault-Reporting Switch**:
-  - `mindie-consent.json` (`mindie-consent/1`) stores the persistent choice (`contribute` or `disabled`) governing both public knowledge sharing and sanitized product fault reporting, while `mindie-community.json` (`mindie-community-config/1`) stores authorized `project_roots` and repository bindings.
+  - `mindie-consent.json` (`mindie-consent/1`) stores the persistent choice (`contribute`, `local-only`, `read-only`, or `disabled`) governing both public knowledge sharing and sanitized product fault reporting, while `mindie-community.json` (`mindie-community-config/1`) stores authorized `project_roots` and repository bindings.
+  - Write the choice through `scripts/setup.py sharing`:
+    - `python scripts/setup.py sharing --enable --project-root <abs-dir>` selects `contribute` (public knowledge PRs plus sanitized fault reporting).
+    - `python scripts/setup.py sharing --local-only --project-root <abs-dir>` keeps local transcript capture inside the authorized roots with **no** public PR or fault reporting.
+    - `python scripts/setup.py sharing --disable` stops new capture and reporting immediately.
+    - `python scripts/setup.py sharing --status` is read-only and never creates a file.
   - Keep three states distinct when reporting status: (1) local consent config written, (2) background organizer/reporter worker running, and (3) external GitHub Issue or knowledge PR created (inspectable via `diagnostics_status` or `setup.py sharing --status`).
 - **Silent Opt-In `Stop` Capture vs. Long-Horizon Task Completion**:
-  - On turn end (`Stop`), `bridge.py` checks `mindie-consent.json` and `mindie-community.json` `project_roots` before opening SQLite: when community sharing is disabled or the workspace is out of scope, `Stop` exits immediately with zero SQLite I/O; when enabled and in scope, it auto-provisions the session lease (`not_before=0.0`) and hands off the turn's public transcript slice in the background.
-  - A `Stop` event never implies a multi-step engineering task or remote benchmark is finished; check `remote_job_status` / `remote_TaskOutput` and `coordinator` execution handles before concluding a long-horizon task.
+  - On turn end (`Stop`), `scripts/mindie_launch.py` checks `mindie-consent.json` and `mindie-community.json` `project_roots` before importing any runtime: when sharing is disabled or the workspace is out of scope, `Stop` exits immediately with zero SQLite I/O; when enabled and in scope it re-checks `sharing_status`, then `scripts/entry.py` auto-provisions the session lease (`not_before=0.0`) and hands off the turn's public transcript slice in the background.
+  - A `Stop` event never implies a multi-step engineering task or remote benchmark is finished; check `remote_TaskOutput` / `remote_TaskList` and `coordinator` execution handles before concluding a long-horizon task.

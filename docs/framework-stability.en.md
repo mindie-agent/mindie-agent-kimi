@@ -2,7 +2,7 @@
 
 <a href="framework-stability.md">中文</a> | <b>English</b> · <a href="README.en.md">Documentation Index</a>
 
-This document describes persistent preference management, cross-platform atomic configuration replacement, and reproducible preflight, test, and benchmark execution for `mindie-agent-kimi`.
+This document describes persistent preference management, cross-platform atomic configuration replacement, and reproducible contract, test, and benchmark execution for `mindie-agent-kimi`.
 
 ---
 
@@ -21,19 +21,17 @@ This document describes persistent preference management, cross-platform atomic 
 
 ---
 
-## 3. Reproducible Preflight, Testing & Benchmarks
+## 3. Reproducible Contract, Testing & Benchmarks
 
-From the repository root, using a Python interpreter linked against SQLite `>= 3.43.0` (with FTS5 and `contentless_delete` enabled) and `runtime-requirements.txt` installed, run:
+From the repository root, with a Python interpreter linked against SQLite `>= 3.43.0` (FTS5 and `contentless_delete`) and `runtime-requirements.txt` installed, run (Node.js is required for the native MCP launch tests):
 
 ```sh
-export MINDIE_PEER_CC_REPO=/path/to/mindie-agent-cc
-# Node.js is required for the real MCP launch contract tests
-python3 tests/preflight.py
-python3 -m unittest discover -s tests -p test_runtime_contract.py
+python3 .github/scripts/check_lf_eol.py
+python3 -m pytest -q -o "pythonpath=tests scripts" tests
 python3 -m unittest discover -s tests/native -v
-python3 -m unittest discover -s tests
+python3 scripts/setup.py release-metadata --source . --tests tests --revision "$(git rev-parse HEAD)"
 ```
 
-- **Preflight Gate (`tests/preflight.py`)**: Verifies that the peer repository commit and installed runtime dependency pins match before starting the test suite; missing dependencies fail explicitly rather than skipping.
+- **Thin-Plugin Gates**: `tests/test_thin_plugin_contract.py` verifies that `scripts/` keeps exactly five runtime files, totals ≤ 1,000 lines, reports plugin version `0.1.31`, verifies the bundled seed, and validates release metadata through `scripts/setup.py release-metadata`.
 - **Release Benchmark (`benchmarks/release.json`)**: Defines the `public-transcript-parsing` microbenchmark (`public_transcript_parse`, `us/op`), executed via `benchmarks/release.py` to measure `wire.jsonl` public transcript extraction and non-public reasoning filtering latency, published alongside formal releases in `benchmark-results.json`, `benchmark-results.md`.
 - **Explicit Acceptance Boundaries**: Automated CI and CPU microbenchmarks verify locked dependencies, OS file locks, stdio transport contracts, and local parser latency; live host sessions and standing Ascend A2/A3 NPU execution remain separate acceptance gates.

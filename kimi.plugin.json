@@ -1,6 +1,6 @@
 {
   "name": "mindie-agent",
-  "version": "0.1.30",
+  "version": "0.1.31",
   "description": "MindIE Agent for Kimi Code: default-enabled Ascend L1–L4 knowledge, deterministic engineering tools, remote-dev, and opt-in community contribution.",
   "keywords": [
     "mindie",
@@ -14,8 +14,8 @@
     "knowledge": {
       "command": "python3",
       "args": [
-        "./scripts/with_runtime.py",
-        "mcp_server.py",
+        "./scripts/mindie_launch.py",
+        "mcp",
         "knowledge"
       ],
       "cwd": "./",
@@ -24,8 +24,8 @@
     "remote": {
       "command": "python3",
       "args": [
-        "./scripts/with_runtime.py",
-        "mcp_server.py",
+        "./scripts/mindie_launch.py",
+        "mcp",
         "remote"
       ],
       "cwd": "./",
@@ -37,8 +37,8 @@
     "components": {
       "command": "python3",
       "args": [
-        "./scripts/with_runtime.py",
-        "mcp_server.py",
+        "./scripts/mindie_launch.py",
+        "mcp",
         "components"
       ],
       "cwd": "./",
@@ -49,16 +49,16 @@
     {
       "event": "PreToolUse",
       "matcher": "mcp__plugin-mindie-agent_",
-      "command": "python3 ./scripts/with_runtime.py bridge.py pretool",
+      "command": "python3 ./scripts/mindie_launch.py hook pretool",
       "timeout": 20
     },
     {
       "event": "Stop",
-      "command": "python3 ./scripts/with_runtime.py bridge.py stop",
+      "command": "python3 ./scripts/mindie_launch.py hook stop",
       "timeout": 20
     }
   ],
-  "systemPrompt": "Remote-dev, deterministic engineering tools (coordinator, profiler, sim, debugger, local diagnostics, mindie_status), and L1–L4 knowledge_* tools (knowledge_query, knowledge_explain, knowledge_feedback, knowledge_distill, knowledge_sync) are available over MCP out of the box without session activation or request_nonce. Never pass or invent native session identity.",
+  "systemPrompt": "MindIE tools are accelerators, never roadblocks. `mindie_doctor` and `mindie_status` report readiness; `remote` (remote-dev), `components` (coordinator, profiler, sim, npu_top, debugger, diagnostics), and L1–L4 `knowledge_*` tools work over MCP by default without session activation, onboarding, or `request_nonce`. If any tool fails, report the concrete error once, reconcile uncertain remote writes before repeating them, and continue the task immediately via native shell/ssh or task-local scripts. Never invent or pass native session identity.",
   "interface": {
     "displayName": "MindIE Agent",
     "shortDescription": "Default-enabled Ascend L1–L4 knowledge, engineering tools, and remote-dev for Kimi Code",

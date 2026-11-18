@@ -26,8 +26,7 @@
     "plugin.web-api-install": {
       "code_paths": [
         "scripts/install_kimi_plugin.py:main",
-        "scripts/updater.py:native_install",
-        "scripts/updater.py:_readback"
+        "scripts/install_kimi_plugin.py:verify_install_report"
       ],
       "evidence_refs": [
         "docs/update.md"
@@ -41,13 +40,13 @@
         }
       ],
       "test_ids": [
-        "tests/test_setup_install.py"
+        "tests/test_launch_and_mcp_surfaces.py"
       ]
     },
     "hooks.pretool-payload": {
       "code_paths": [
-        "scripts/bridge.py:handle_pretool",
-        "scripts/identity.py:publish_nonce_bind"
+        "scripts/mindie_launch.py:main",
+        "scripts/entry.py:main"
       ],
       "evidence_refs": [
         "docs/framework-stability.md"
@@ -61,13 +60,13 @@
         }
       ],
       "test_ids": [
-        "tests/test_identity.py",
-        "tests/test_runtime_contract.py"
+        "tests/test_launch_and_mcp_surfaces.py"
       ]
     },
     "hooks.stop-payload": {
       "code_paths": [
-        "scripts/bridge.py:handle_stop"
+        "scripts/mindie_launch.py:_sharing_roots",
+        "scripts/entry.py:_stop"
       ],
       "evidence_refs": [
         "docs/framework-stability.md",
@@ -82,13 +81,13 @@
         }
       ],
       "test_ids": [
-        "tests/test_independent_contract.py::ConsentGateTests::test_contribute_stop_persists_and_worker_reads_once"
+        "tests/test_launch_and_mcp_surfaces.py"
       ]
     },
     "mcp.stdio-jsonl": {
       "code_paths": [
-        "scripts/mcp_server.py",
-        "scripts/mindie_launch.py:_mcp"
+        "scripts/entry.py:_serve",
+        "scripts/mindie_launch.py:_dispatch"
       ],
       "evidence_refs": [
         "docs/framework-stability.md"
@@ -102,14 +101,14 @@
         }
       ],
       "test_ids": [
-        "tests/test_runtime_contract.py",
+        "tests/test_launch_and_mcp_surfaces.py",
         "tests/native/test_mcp_launch.py"
       ]
     },
     "wire.skill-activation": {
       "code_paths": [
-        "scripts/identity.py:_normalize_activation",
-        "scripts/identity.py:_current_skill_activation"
+        "skills/mindie-agent/SKILL.md",
+        "scripts/entry.py:KimiHostAdapter"
       ],
       "evidence_refs": [
         "docs/framework-stability.md"
@@ -123,12 +122,12 @@
         }
       ],
       "test_ids": [
-        "tests/test_identity.py"
+        "tests/test_thin_plugin_contract.py"
       ]
     },
     "wire.plugin-command": {
       "code_paths": [
-        "scripts/identity.py:require_current_plugin_command"
+        "scripts/entry.py:main"
       ],
       "evidence_refs": [
         "docs/framework-stability.md"
@@ -142,14 +141,12 @@
         }
       ],
       "test_ids": [
-        "tests/test_identity.py",
-        "tests/test_entry.py"
+        "tests/test_launch_and_mcp_surfaces.py"
       ]
     },
     "plugin.commands": {
       "code_paths": [
-        "scripts/identity.py:require_current_plugin_command",
-        "scripts/entry.py"
+        "scripts/setup.py:main"
       ],
       "evidence_refs": [
         "README.md"
@@ -163,14 +160,13 @@
         }
       ],
       "test_ids": [
-        "tests/test_entry.py",
-        "tests/test_setup_install.py"
+        "tests/test_launch_and_mcp_surfaces.py"
       ]
     },
     "skill.unified-entry": {
       "code_paths": [
         "skills/mindie-agent/SKILL.md",
-        "scripts/entry.py:op_init"
+        "scripts/setup.py:main"
       ],
       "evidence_refs": [
         "README.md"
@@ -184,14 +180,13 @@
         }
       ],
       "test_ids": [
-        "tests/test_entry.py",
-        "tests/test_identity.py"
+        "tests/test_thin_plugin_contract.py"
       ]
     },
     "session.wire-jsonl": {
       "code_paths": [
-        "scripts/transcript.py",
-        "scripts/identity.py:_tail_records"
+        "scripts/kimi_transcript.py:read_material",
+        "scripts/kimi_transcript.py:FileIdentity"
       ],
       "evidence_refs": [
         "docs/service-continuity.md"
@@ -205,16 +200,16 @@
         }
       ],
       "test_ids": [
-        "tests/test_independent_contract.py::ConsentGateTests::test_fork_capture_drops_inherited_material"
+        "tests/test_transcript.py"
       ]
     },
     "home.config-layout": {
       "code_paths": [
-        "scripts/organizer.py:_profile",
-        "scripts/organizer.py:prepare_isolated_home"
+        "scripts/mindie_launch.py:_config_path",
+        "scripts/setup.py:_init"
       ],
       "evidence_refs": [
-        "docs/organizer-diagnostics.md"
+        "docs/install/workspace-setup.md"
       ],
       "supported": [
         {
@@ -225,13 +220,12 @@
         }
       ],
       "test_ids": [
-        "tests/test_admission_organizer.py"
+        "tests/test_launch_and_mcp_surfaces.py"
       ]
     },
     "summary.native-prompt-mode": {
       "code_paths": [
-        "scripts/organizer.py:_invoke_native",
-        "scripts/organizer.py:identity"
+        "scripts/kimi_transcript.py:read_material"
       ],
       "evidence_refs": [
         "docs/organizer-diagnostics.md"
@@ -245,7 +239,7 @@
         }
       ],
       "test_ids": [
-        "tests/test_admission_organizer.py"
+        "tests/test_transcript.py"
       ]
     }
   }

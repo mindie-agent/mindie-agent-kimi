@@ -8,12 +8,12 @@
 
 | 中文文档 | English | 内容概要 |
 |---|---|---|
-| [自动更新机制](update.md) | [Automatic Update](update.en.md) | 后台不可变代数（Generation）构建、原子指针切换、回滚回执、命令行用法与宿主重载边界 |
-| [框架稳定性与验证](framework-stability.md) | [Framework Stability](framework-stability.en.md) | 日常使用契约、测试预检与执行命令、Windows 原子配置读写与验收边界 |
+| [自动更新机制](update.md) | [Automatic Update](update.en.md) | 共享基座 `update_runtime` 的通道发现、独立运行时构建、原子激活、回滚与宿主重载边界 |
+| [框架稳定性与验证](framework-stability.md) | [Framework Stability](framework-stability.en.md) | 日常使用契约、薄插件契约测试与发布元数据验证命令、Windows 原子配置读写与验收边界 |
 | [故障诊断与本地进程取消](failure-diagnostics.md) | [Failure Diagnostics](failure-diagnostics.en.md) | 纯只读状态诊断、取消与 `EOF` 子进程清理边界、远端作业引用保留 |
 | [整理器故障分类与进程组管理](organizer-diagnostics.md) | [Organizer Diagnostics](organizer-diagnostics.en.md) | 隔离整理器静态退出码分类、进程组生命周期管理与独立验证记录 |
 | [插件更新期间的服务连续性](service-continuity.md) | [Service Continuity](service-continuity.en.md) | 更新事务中的知识服务停止、有界恢复、回滚交接与验证边界 |
-| [测试边界与故障检测](test-boundaries.md) | [Test Boundaries](test-boundaries.en.md) | 跨平台 CI 检查顺序、独立故障维度与 stdio 传输边界测试 |
+| [测试边界与故障检测](test-boundaries.md) | [Test Boundaries](test-boundaries.en.md) | 跨平台 CI 检查顺序、薄插件契约门禁、独立故障维度与 stdio 传输边界测试 |
 | [Windows 原生启动契约](windows-launch-contract.md) | [Windows Launch Contract](windows-launch-contract.en.md) | Windows 无 Shell MCP 启动、Job Object 后代进程归属与原生边界验证 |
 | [安装与授权指南 (`install/`)](install/user-notice.md) | [Install & Consent Guides (`install/`)](install/user-notice.md) | 用户须知（[`user-notice.md`](install/user-notice.md)）、GitHub 认证（[`github-authentication.md`](install/github-authentication.md)）与工作区配置（[`workspace-setup.md`](install/workspace-setup.md)） |
-| [发布记录 (`0.1.30`)](releases/mindie-agent-kimi-0.1.30.md) | [Release Notes (`0.1.30`)](releases/mindie-agent-kimi-0.1.30.en.md) | 正式版本发布说明与变更记录（[`releases/`](releases/)） |
+| [发布记录 (`0.1.31`)](releases/mindie-agent-kimi-0.1.31.md) | [Release Notes (`0.1.31`)](releases/mindie-agent-kimi-0.1.31.en.md) | 正式版本发布说明与变更记录（[`releases/`](releases/)） |
