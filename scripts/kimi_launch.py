@@ -31,13 +31,32 @@ import sys
 import threading
 import time
 
-try:
-    from mindie_harness.process import Deadline as _HarnessDeadline
-except ImportError:
-    _HarnessDeadline = None
+_LAUNCH_SHIM_DIR: str | None = None
 
-import bounded
-import diagnostic_support
+
+def _bounded():
+    if (mod := globals().get("bounded")) is None:
+        import bounded as mod
+        globals()["bounded"] = mod
+    return mod
+
+
+def _diag():
+    if (mod := globals().get("diagnostic_support")) is None:
+        import diagnostic_support as mod
+        if _LAUNCH_SHIM_DIR is not None:
+            mod._LAUNCH_SHIM_DIR = _LAUNCH_SHIM_DIR
+        globals()["diagnostic_support"] = mod
+    return mod
+
+
+def __getattr__(name: str):
+    if name == "bounded":
+        return _bounded()
+    if name == "diagnostic_support":
+        return _diag()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 REMOTE_GRACE_SECONDS = 60.0
@@ -52,7 +71,7 @@ HOOK_LOCK_BUDGET = float(os.environ.get("MINDIE_HOOK_LOCK_BUDGET_SECONDS") or 2.
 BOOTSTRAP_TOTAL = float(os.environ.get("MINDIE_BOOTSTRAP_TOTAL_SECONDS") or 540.0)
 CALL_LOCK_BUDGET, CALL_CHILD_BUDGET = 5.0, 60.0
 KNOWLEDGE_MAX_OUTPUT = 1024 * 1024
-REMOTE_MAX_OUTPUT = bounded.REMOTE_MAX_OUTPUT
+REMOTE_MAX_OUTPUT = 32 * 1024 * 1024
 KIMI_REMOTE_PROFILE = "kimi"
 MAX_RPC_ID, WORK_LIMIT, CONTROL_LIMIT = 256, 16, 8
 EOF_JOIN, OUTPUT_BUDGET = 3.0, 1.0
@@ -99,6 +118,10 @@ def remote_budget(
         if isinstance(native_wait_ms, bool) or not isinstance(native_wait_ms, (int, float)) or not math.isfinite(native_wait_ms) or native_wait_ms < 0:
             raise ValueError("native wait must be a nonnegative finite number of milliseconds")
         wait = float(native_wait_ms) / 1000.0
+    try:
+        from mindie_harness.process import Deadline as _HarnessDeadline
+    except ImportError:
+        _HarnessDeadline = None
     derived = _HarnessDeadline.compute_outer([wait], float(grace)) if _HarnessDeadline is not None else (wait + float(grace))
     return max(float(minimum), derived)
 
@@ -192,7 +215,7 @@ class DispatchFailure(RuntimeError):
 
 def _dispatch_failure(current, stage, category, exc, started):
     elapsed_ms = max(0, int((time.monotonic() - started) * 1000))
-    diagnostic = diagnostic_support.failure(
+    diagnostic = _diag().failure(
         "mcp_dispatch", stage, category, exception=exc, elapsed_ms=elapsed_ms
     )
     return DispatchFailure(diagnostic, stage)
@@ -235,7 +258,7 @@ def _shared_lock(state: Path, deadline: float, cancel=None):
     try:
         while True:
             if cancel is not None and cancel.is_set():
-                raise bounded.CommandCancelled("command cancelled")
+                raise _bounded().CommandCancelled("command cancelled")
             try:
                 _try_lock_shared(descriptor)
                 acquired = True
@@ -265,24 +288,13 @@ def _current(state: Path) -> dict:
     except (OSError, ValueError):
         data = None
     if isinstance(data, dict):
-        generation = data.get("generation")
-        python = data.get("python")
-        adapter_config = data.get("adapter_config")
-        sha = data.get("sha")
+        generation, python, adapter_config, sha = data.get("generation"), data.get("python"), data.get("adapter_config"), data.get("sha")
         if (
-            isinstance(generation, str)
-            and Path(generation).is_dir()
-            and isinstance(python, str)
-            and Path(python).exists()
-            and isinstance(adapter_config, str)
-            and Path(adapter_config).is_file()
+            isinstance(generation, str) and Path(generation).is_dir()
+            and isinstance(python, str) and Path(python).exists()
+            and isinstance(adapter_config, str) and Path(adapter_config).is_file()
         ):
-            return {
-                "generation": generation,
-                "python": python,
-                "adapter_config": adapter_config,
-                "sha": sha if isinstance(sha, str) else None,
-            }
+            return {"generation": generation, "python": python, "adapter_config": adapter_config, "sha": sha if isinstance(sha, str) else None}
     raise RuntimeError("no committed generation is available")
 
 
@@ -291,7 +303,7 @@ def _child_env(current: dict, surface: str | None = None) -> dict:
     env["PYTHONIOENCODING"] = "utf-8"
     env["MINDIE_MCP_CONNECTION_ID"] = _CONNECTION_ID
     env["MINDIE_KIMI_CONFIG"] = current["adapter_config"]
-    env["MINDIE_DIAGNOSTICS_CONFIG"] = str(diagnostic_support.reporting_config_path())
+    env["MINDIE_DIAGNOSTICS_CONFIG"] = str(_diag().reporting_config_path())
     if surface == "remote":
         env["REMOTE_DEV_HARNESS_PROFILE"] = KIMI_REMOTE_PROFILE
     return env
@@ -304,7 +316,7 @@ def _fail_open() -> int:
 
 def _record_hook(stage, category, op="stop"):
     try:
-        diagnostic_support.failure("hook", stage, category, reportable=(op != "stop"))
+        _diag().failure("hook", stage, category, reportable=(op != "stop"))
     except TimeoutError:
         raise
     except Exception:
@@ -458,25 +470,26 @@ def _hook(op: str) -> int:
             return _fail_open()
         script = Path(current["generation"]) / "scripts" / "bridge.py"
         if not script.is_file():
-            diagnostic_support.failure("hook", "helper_missing", "missing_committed_file", reportable=(op != "stop"))
+            _diag().failure("hook", "helper_missing", "missing_committed_file", reportable=(op != "stop"))
             return _fail_open()
         remaining = deadline - time.monotonic()
         if remaining <= 0.05:
             return _fail_open()
         started = time.monotonic()
+        b_mod = _bounded()
 
         def _hook_failure(stage, category, exc=None):
-            diagnostic_support.failure(
+            _diag().failure(
                 "hook", stage, category, exception=exc, reportable=(op != "stop"),
                 elapsed_ms=max(0, int((time.monotonic() - started) * 1000)),
             )
 
         try:
-            out = bounded.run(
+            out = b_mod.run(
                 [current["python"], str(script), op], raw, timeout=remaining,
                 env=_child_env(current), cwd=str(Path(current["generation"])), check=True,
             )
-        except bounded.CommandTimedOut as exc:
+        except b_mod.CommandTimedOut as exc:
             _hook_failure("helper_deadline", "child_deadline", exc)
             return _fail_open()
         except TimeoutError:
@@ -504,16 +517,14 @@ def _hook(op: str) -> int:
 
 
 def _local_answer(message: dict):
-    method = message.get("method")
-    ident = message.get("id")
+    method, ident = message.get("method"), message.get("id")
     if method == "initialize":
         return dict(
-            jsonrpc="2.0",
-            id=ident,
+            jsonrpc="2.0", id=ident,
             result=dict(
                 protocolVersion="2025-11-25",
                 capabilities={"tools": {"listChanged": True}},
-                serverInfo={"name": "mindie-kimi-front", "version": diagnostic_support.plugin_version()},
+                serverInfo={"name": "mindie-kimi-front", "version": _diag().plugin_version()},
             ),
         )
     if method == "ping":
@@ -578,21 +589,9 @@ def _call_budget(surface, raw):
         return remote_budget(name, arguments)
     if name == "knowledge_sync":
         return 150.0
-    if name == "mindie_entry" and arguments.get("op") in {
-        "init",
-        "choose",
-        "sharing-enable",
-        "sharing-disable",
-    }:
+    if name == "mindie_entry" and arguments.get("op") in {"init", "choose", "sharing-enable", "sharing-disable"}:
         return 180.0
-    if _local_tool_name(message) in {
-        "profiler",
-        "sim",
-        "coordinator",
-        "debugger",
-        "diagnostics_status",
-        "diagnostics_bundle",
-    }:
+    if _local_tool_name(message) in {"profiler", "sim", "coordinator", "debugger", "diagnostics_status", "diagnostics_bundle"}:
         milliseconds = arguments.get("timeout_ms", 120000)
         if type(milliseconds) is int and 1 <= milliseconds <= 600000:
             return milliseconds / 1000 + 30.0
@@ -617,7 +616,7 @@ def _inprocess_mcp_module(current: dict):
     from paths import same_interpreter
     import kimi_bounded
 
-    if bounded.run is not kimi_bounded.run:
+    if _bounded().run is not kimi_bounded.run:
         return None
     if not same_interpreter(current["python"], sys.executable):
         return None
@@ -640,13 +639,14 @@ def _inprocess_mcp_module(current: dict):
 
 
 def _dispatch(surface: str, raw: bytes, ident, cancel=None):
+    b_mod = _bounded()
     if cancel is not None and cancel.is_set():
-        raise bounded.CommandCancelled("command cancelled")
+        raise b_mod.CommandCancelled("command cancelled")
     state = _state_dir()
     descriptor = _shared_lock(state, time.monotonic() + CALL_LOCK_BUDGET, cancel=cancel)
     try:
         if cancel is not None and cancel.is_set():
-            raise bounded.CommandCancelled("command cancelled")
+            raise b_mod.CommandCancelled("command cancelled")
         current = _current(state)
         started = time.monotonic()
         script = Path(current["generation"]) / "scripts" / "mcp_server.py"
@@ -656,7 +656,7 @@ def _dispatch(surface: str, raw: bytes, ident, cancel=None):
         if resident is not None:
             os.environ["MINDIE_KIMI_CONFIG"] = current["adapter_config"]
             os.environ["MINDIE_MCP_CONNECTION_ID"] = _CONNECTION_ID
-            os.environ["MINDIE_DIAGNOSTICS_CONFIG"] = str(diagnostic_support.reporting_config_path())
+            os.environ["MINDIE_DIAGNOSTICS_CONFIG"] = str(_diag().reporting_config_path())
             if surface == "remote":
                 os.environ["REMOTE_DEV_HARNESS_PROFILE"] = KIMI_REMOTE_PROFILE
             try:
@@ -671,7 +671,7 @@ def _dispatch(surface: str, raw: bytes, ident, cancel=None):
             return response
         payload = raw if raw.endswith(b"\n") else raw + b"\n"
         try:
-            out = bounded.run(
+            out = b_mod.run(
                 [current["python"], str(script), surface, "--once"],
                 payload,
                 timeout=_call_budget(surface, raw),
@@ -680,16 +680,16 @@ def _dispatch(surface: str, raw: bytes, ident, cancel=None):
                 cancel=cancel,
                 max_output=_response_budget(surface, raw),
             )
-        except bounded.CommandCancelled:
+        except b_mod.CommandCancelled:
             raise
-        except bounded.CommandTimedOut as exc:
+        except b_mod.CommandTimedOut as exc:
             raise _dispatch_failure(current, "helper_deadline", "child_deadline", exc, started) from None
         except TimeoutError:
             raise
         except Exception as exc:
             raise _dispatch_failure(current, "helper_failed", "child_failure", exc, started) from None
         if cancel is not None and cancel.is_set():
-            raise bounded.CommandCancelled("command cancelled")
+            raise b_mod.CommandCancelled("command cancelled")
         lines = [line for line in out.splitlines() if line.strip()]
         if len(lines) != 1:
             raise _dispatch_failure(current, "helper_protocol", "protocol_mismatch", None, started)
@@ -756,7 +756,7 @@ def _updater(rest) -> int:
         return 2
     script = Path(current["generation"]) / "scripts" / "updater.py"
     if not script.is_file():
-        diagnostic_support.failure("updater", "helper_missing", "missing_committed_file")
+        _diag().failure("updater", "helper_missing", "missing_committed_file")
         print("committed generation lacks updater.py", file=sys.stderr)
         return 2
     try:
@@ -771,7 +771,7 @@ def _updater(rest) -> int:
     except TimeoutError:
         raise
     except OSError:
-        diagnostic_support.failure("updater", "helper_failed", "child_failure")
+        _diag().failure("updater", "helper_failed", "child_failure")
         print("committed generation updater could not start", file=sys.stderr)
         return 2
     return 2

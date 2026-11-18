@@ -25,30 +25,18 @@ to `mindie_knowledge.loop.cli.capture_hook` when community sharing is enabled.
 from __future__ import annotations
 
 import json
+import math
 import os
+from pathlib import Path
+import re
 import sys
 import uuid
-from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-from identity import (
-    is_mindie_mcp_tool,
-    locate_main_wire,
-    parse_hook,
-    publish_nonce_bind,
-    session_cwd,
-    session_from_hook,
-)
-from paths import (
-    admission_path,
-    community_config_path,
-    config_path,
-    load_engine_config_at,
-    profile_config_path,
-)
+_SESSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}\Z")
 
 SAFE_CAUSES = {
     "missing-identity",
@@ -68,8 +56,20 @@ def _print(value):
     print(json.dumps(value, ensure_ascii=False), flush=True)
 
 
-def _read_event():
-    return parse_hook(sys.stdin.buffer.read())
+def _read_event() -> dict:
+    raw = sys.stdin.buffer.read()
+    text = raw.decode("utf-8-sig") if isinstance(raw, (bytes, bytearray)) else str(raw).lstrip("\ufeff")
+    event = json.loads(text)
+    if not isinstance(event, dict):
+        raise ValueError("hook payload must be one JSON object")
+    return event
+
+
+def _require_session(event: dict) -> str:
+    value = event.get("session_id")
+    if not isinstance(value, str) or not _SESSION_RE.fullmatch(value):
+        raise ValueError("native session identity is missing or invalid")
+    return value
 
 
 def _record_failure(stage, category):
@@ -85,6 +85,8 @@ def _record_failure(stage, category):
 
 def handle_pretool():
     try:
+        from identity import is_mindie_mcp_tool, publish_nonce_bind, session_from_hook
+
         event = _read_event()
         name = event.get("tool_name")
         if is_mindie_mcp_tool(name):
@@ -106,46 +108,115 @@ def handle_pretool():
     return 0
 
 
-def _fast_community_path() -> Path | None:
+def _stdlib_config_path() -> Path:
+    if override := os.environ.get("MINDIE_KIMI_CONFIG"):
+        return Path(override).expanduser().absolute()
+    if xdg := os.environ.get("XDG_CONFIG_HOME"):
+        return (Path(xdg).expanduser() / "mindie-agent" / "kimi.json").absolute()
+    if explicit_home := os.environ.get("MINDIE_CONFIG_HOME"):
+        return (Path(explicit_home).expanduser() / "kimi.json").absolute()
+    return (Path.home() / ".config" / "mindie-agent" / "kimi.json").absolute()
+
+
+def _stdlib_within_roots(candidate: str, roots: list) -> bool:
     try:
-        return community_config_path()
-    except FileNotFoundError:
-        return profile_config_path().parent / "mindie-community.json"
+        target = os.path.realpath(candidate)
+    except TimeoutError:
+        raise
+    except OSError:
+        return False
+    if os.name == "nt":
+        target = os.path.normcase(target)
+    for item in roots:
+        if not isinstance(item, str) or not os.path.isabs(item):
+            continue
+        try:
+            base = os.path.realpath(item)
+            if os.name == "nt":
+                base = os.path.normcase(base)
+            if os.path.commonpath([base, target]) == base:
+                return True
+        except TimeoutError:
+            raise
+        except (OSError, ValueError):
+            continue
+    return False
+
+
+def _fast_stop_skip(event: dict) -> tuple[bool, Path | None]:
+    """Pure-stdlib fast pre-check before importing paths/sharing/identity/mindie_knowledge."""
+    cfg_file = _stdlib_config_path()
+    if not cfg_file.is_file():
+        return True, None
+    try:
+        cfg = json.loads(cfg_file.read_bytes().decode("utf-8-sig"))
     except TimeoutError:
         raise
     except (OSError, ValueError):
-        return None
-
-
-def _fast_sharing_definitely_off(comm_file: Path) -> bool:
-    """Pure-stdlib fast check returning True only for valid explicit disabled configs."""
+        return False, None
+    if not isinstance(cfg, dict):
+        return False, None
+    comm_val = cfg.get("community_config")
+    if not isinstance(comm_val, str) or not os.path.isabs(comm_val):
+        return False, None
+    comm_file = Path(comm_val)
+    if not comm_file.is_file():
+        return True, comm_file
     try:
         raw = json.loads(comm_file.read_bytes().decode("utf-8-sig"))
     except TimeoutError:
         raise
     except (OSError, ValueError):
-        return False
-    if not isinstance(raw, dict) or raw.get("schema") != "mindie-community-config/1":
-        return False
-    if raw.get("enabled") is False:
-        return True
+        return False, comm_file
+    if (
+        not isinstance(raw, dict)
+        or raw.get("schema") != "mindie-community-config/1"
+        or type(raw.get("enabled")) is not bool
+    ):
+        return False, comm_file
+    idle = raw.get("idle_seconds")
+    if idle is not None and (type(idle) is not int or not (30 <= idle <= 86400)):
+        return False, comm_file
+    roots = raw.get("project_roots", [])
+    if not isinstance(roots, list) or not all(isinstance(r, str) and os.path.isabs(r) for r in roots):
+        return False, comm_file
+    if raw["enabled"] is False:
+        return True, comm_file
+    gen = raw.get("generation")
+    enabled_at = raw.get("enabled_at")
+    if not (
+        isinstance(gen, str)
+        and gen
+        and type(enabled_at) in (int, float)
+        and math.isfinite(enabled_at)
+        and enabled_at > 0
+    ):
+        return False, comm_file
     consent_ref = raw.get("consent_config")
-    if isinstance(consent_ref, str) and os.path.isabs(consent_ref):
-        cpath = Path(consent_ref)
-        if cpath.is_file():
-            try:
-                cdata = json.loads(cpath.read_bytes().decode("utf-8-sig"))
-            except TimeoutError:
-                raise
-            except (OSError, ValueError):
-                return False
-            if (
-                isinstance(cdata, dict)
-                and cdata.get("schema") == "mindie-consent/1"
-                and cdata.get("choice") in {"disabled", "read-only", "later"}
-            ):
-                return True
-    return False
+    if not isinstance(consent_ref, str) or not os.path.isabs(consent_ref):
+        return False, comm_file
+    cpath = Path(consent_ref)
+    if not cpath.is_file():
+        return True, comm_file
+    try:
+        cdata = json.loads(cpath.read_bytes().decode("utf-8-sig"))
+    except TimeoutError:
+        raise
+    except (OSError, ValueError):
+        return False, comm_file
+    if not isinstance(cdata, dict) or cdata.get("schema") != "mindie-consent/1":
+        return False, comm_file
+    if cdata.get("choice") in {"disabled", "read-only", "later"}:
+        return True, comm_file
+    if cdata.get("choice") != "contribute":
+        return False, comm_file
+    if not roots:
+        return True, comm_file
+    for key in ("cwd", "workspace_root"):
+        cand = event.get(key)
+        if isinstance(cand, str) and os.path.isabs(cand):
+            return (not _stdlib_within_roots(cand, roots)), comm_file
+    return False, comm_file
 
 
 def _event_workspace(event: dict, session: str) -> str | None:
@@ -153,6 +224,8 @@ def _event_workspace(event: dict, session: str) -> str | None:
         candidate = event.get(key)
         if isinstance(candidate, str) and os.path.isabs(candidate):
             return candidate
+    from identity import session_cwd
+
     try:
         resolved = session_cwd(session)
     except ValueError:
@@ -162,6 +235,7 @@ def _event_workspace(event: dict, session: str) -> str | None:
 
 def _ensure_stop_lease(session: str, cwd: str, settings):
     from admission import ensure_default_lease, gate, knowledge_lease
+    from paths import admission_path
 
     resolved_cwd = str(Path(cwd).resolve())
     adm_file = admission_path()
@@ -204,16 +278,32 @@ def handle_stop():
         if event.get("hook_event_name") not in {None, "Stop"} or event.get("stop_hook_active") not in {None, False}:
             _print({})
             return 0
-        session = session_from_hook(event)
+        session = _require_session(event)
+        skip, comm_file = _fast_stop_skip(event)
+        if skip:
+            _print({})
+            return 0
+        from identity import locate_main_wire
+        from paths import community_config_path, config_path, engine_config_path as engine_path, load_engine_config_at, profile_config_path
+        import sharing as sharing_mod
+
         if not config_path().is_file():
             _print({})
             return 0
-        comm_file = _fast_community_path()
-        if comm_file is None or not comm_file.is_file() or _fast_sharing_definitely_off(comm_file):
-            _print({})
-            return 0
-        import sharing as sharing_mod
-        from paths import engine_config_path as engine_path
+        if comm_file is None:
+            try:
+                comm_file = community_config_path()
+            except FileNotFoundError:
+                comm_file = profile_config_path().parent / "mindie-community.json"
+            except TimeoutError:
+                raise
+            except (OSError, ValueError):
+                _record_failure("sharing", "configuration")
+                _print({})
+                return 0
+            if not comm_file.is_file():
+                _print({})
+                return 0
 
         settings = sharing_mod.load(comm_file)
         if settings.error is not None or not settings.schema_ok:
