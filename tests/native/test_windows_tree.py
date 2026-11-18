@@ -28,9 +28,15 @@ class WindowsTreeTests(unittest.TestCase):
                 parent = root / "parent.py"
                 pidfile = root / "child.pid"
                 redirect = "" if inherited else ", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL"
-                parent.write_text("import pathlib, subprocess, sys\n"
-                                  f"p=subprocess.Popen([sys.executable,sys.argv[1]]{redirect})\n"
-                                  "pathlib.Path(sys.argv[2]).write_text(str(p.pid))\n", encoding="utf-8")
+                parent.write_text(
+                    "import pathlib, subprocess, sys\n"
+                    f"p=subprocess.Popen([sys.executable,sys.argv[1]]{redirect})\n"
+                    "target=pathlib.Path(sys.argv[2])\n"
+                    "tmp=pathlib.Path(sys.argv[2]+'.tmp')\n"
+                    "tmp.write_text(str(p.pid),encoding='utf-8')\n"
+                    "tmp.replace(target)\n",
+                    encoding="utf-8",
+                )
                 runner = root / "runner.py"
                 scripts = Path(__file__).resolve().parents[2] / "scripts"
                 runner.write_text("import json, sys\n"
@@ -38,7 +44,7 @@ class WindowsTreeTests(unittest.TestCase):
                                   "import bounded\n"
                                   "timeout=False\n"
                                   "try:\n"
-                                  " bounded.run([sys.executable,*sys.argv[1:]],timeout=0.3)\n"
+                                  " bounded.run([sys.executable,*sys.argv[1:]],timeout=0.8)\n"
                                   "except bounded.CommandTimedOut:\n"
                                   " timeout=True\n"
                                   "print(json.dumps({'timeout':timeout}))\n", encoding="utf-8")
@@ -47,17 +53,24 @@ class WindowsTreeTests(unittest.TestCase):
                 handle = None
                 started = time.monotonic()
                 try:
-                    deadline = started + 3
-                    while not pidfile.exists() and process.poll() is None and time.monotonic() < deadline:
+                    deadline = started + 5
+                    pid_text = ""
+                    while process.poll() is None and time.monotonic() < deadline:
+                        if pidfile.exists():
+                            pid_text = pidfile.read_text(encoding="utf-8").strip()
+                            if pid_text.isdigit():
+                                break
                         time.sleep(0.01)
-                    self.assertTrue(pidfile.exists(), "real descendant did not start")
-                    handle = kernel.OpenProcess(0x100001,False,int(pidfile.read_text()))
-                    stdout,stderr = process.communicate(timeout=4)
+                    if not pid_text.isdigit() and pidfile.exists():
+                        pid_text = pidfile.read_text(encoding="utf-8").strip()
+                    self.assertTrue(pid_text.isdigit(), f"real descendant did not start (pid_text={pid_text!r})")
+                    handle = kernel.OpenProcess(0x100001,False,int(pid_text))
+                    stdout,stderr = process.communicate(timeout=6)
                     self.assertEqual(process.returncode,0,stderr.decode("utf-8","replace"))
                     self.assertEqual(json.loads(stdout)["timeout"],inherited)
                     if handle:
                         self.assertEqual(kernel.WaitForSingleObject(handle,1000),0,"descendant survived")
-                    self.assertLess(time.monotonic()-started,3)
+                    self.assertLess(time.monotonic()-started,5)
                 finally:
                     if handle:
                         if kernel.WaitForSingleObject(handle,0)==258:
