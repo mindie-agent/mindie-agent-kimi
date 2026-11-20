@@ -3,11 +3,11 @@
 and executes `hook <event>` over `mindie_harness` (`API_VERSION = 1`).
 [Invariants] `knowledge`, `remote`, and `components` expose disjoint tool surfaces;
 `REMOTE_DEV_STATE_DIR` defaults to `state/kimi/remote` (`AD-02`) and `REMOTE_DEV_HARNESS_PROFILE`
-to `kimi`; `Stop` re-checks `sharing_status` before touching SQLite; `verify_bundled_seed`
-streams SHA-256 in `64 KiB` chunks against `assets/seed-lock.json` (`mindie-harness-seed/1`).
-[Timeouts & Locks] `capture_hook` runs with a `6.0s` budget; hooks and seed checks take no locks.
-[Side-Effect Policy] Serves stdio MCP, writes `kimi.engine.json` and default admission leases
-when capture is authorized, and prints one JSON object on every hook exit.
+to `kimi`; 9-domain engine provisioning and `Stop` capture delegate to `knowledge_binding`;
+native `turn_id` + `last_assistant_message` are preserved and fallback IDs are deterministic.
+[Timeouts & Locks] `run_stop_capture` runs with a `6.0s` budget; seed checks take no locks.
+[Side-Effect Policy] Provisions 9-domain engine configs on MCP startup, serves stdio MCP,
+delegates authorized `Stop` capture to `run_stop_capture`, and prints `{}` on hook exit.
 """
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ import json
 import os
 from pathlib import Path
 import sys
-import uuid
 
 HERE = Path(__file__).resolve().parent
 PLUGIN_ROOT = HERE.parent
@@ -25,11 +24,11 @@ API_VERSION = 1
 DOMAIN = "vllm-ascend"
 
 from mindie_harness.api import ProfileRef  # noqa: E402
-from mindie_harness.atomic import atomic_write_json, read_json_safe  # noqa: E402
+from mindie_harness.atomic import read_json_safe  # noqa: E402
 from mindie_harness.mcp.gateway import ManagedMCPAdapter, rebind_native_plugin_if_needed  # noqa: E402
 from mindie_harness.mcp.router import MCPRouter  # noqa: E402
 from mindie_harness.mcp.server import MCPStdioServer  # noqa: E402
-from mindie_harness.sharing import sharing_status  # noqa: E402
+from mindie_harness.runtime.knowledge_binding import ensure_knowledge_binding, run_stop_capture  # noqa: E402
 
 class KimiHostAdapter(ManagedMCPAdapter):
     """Kimi host adapter: canonical component/knowledge/remote tool wiring."""
@@ -66,39 +65,8 @@ def _read_json(path: Path) -> dict:
     data = read_json_safe(path)
     return data if isinstance(data, dict) else {}
 
-PLUGIN_VERSION = str(_read_json(PLUGIN_ROOT / "kimi.plugin.json").get("version") or "0.0.0")
-
-def _text(document: dict, key: str, default: str) -> str:
-    return document[key] if isinstance(document.get(key), str) else default
-
-def _engine(profile: ProfileRef) -> tuple[Path, dict]:
-    path = profile.config_path.with_suffix(".engine.json")
-    document = _read_json(path)
-    if not document:
-        prev_ep = _read_json(profile.config_path).get("engine_config")
-        if isinstance(prev_ep, str) and os.path.isabs(prev_ep):
-            document = _read_json(Path(prev_ep))
-    desired = str(HERE / "kimi_transcript.py")
-    if document.get("transcript_adapter") == desired:
-        return path, document
-    root = _text(document, "root", str(profile.data_dir / "kimi"))
-    value = dict(document, root=root, domain=_text(document, "domain", DOMAIN), capture_mode="public-transcript",
-                 admission_path=_text(document, "admission_path", str(Path(root) / "admission.sqlite3")),
-                 transcript_adapter=desired,
-                 redactor_executable=_text(document, "redactor_executable", str(Path(root) / "bin" / "gitleaks")))
-    atomic_write_json(path, value)
-    return path, value
-
-def _lease(engine: dict, session: str, cwd: str) -> dict | None:
-    from mindie_knowledge.loop.activation import Admission
-
-    path = engine.get("admission_path")
-    if not isinstance(path, str):
-        return None
-    admission = Admission(Path(path))
-    if admission.inspect(session).get("status") == "inactive":
-        return None
-    return admission.activate(session, project_root=str(Path(cwd).resolve()), not_before=0.0)
+VERSION = str(_read_json(PLUGIN_ROOT / "kimi.plugin.json").get("version") or "0.1.33")
+PLUGIN_VERSION = VERSION
 
 def _wire_path(profile: ProfileRef, session: str, cwd: str) -> str | None:
     explicit = os.environ.get("KIMI_CODE_HOME") or _read_json(profile.config_path).get("kimi_home")
@@ -126,39 +94,54 @@ def _wire_path(profile: ProfileRef, session: str, cwd: str) -> str | None:
         matches.append(str(wire.resolve()))
     return matches[0] if len(matches) == 1 else None
 
-def _stop(profile: ProfileRef) -> None:
+def _stop(profile: ProfileRef) -> dict | None:
     try:
         event = json.loads(sys.stdin.buffer.read().decode("utf-8-sig"))
     except (ValueError, UnicodeDecodeError):
-        return
+        return None
     if not isinstance(event, dict) or event.get("hook_event_name") not in {None, "Stop"} or event.get("stop_hook_active") not in {None, False}:
-        return
+        return None
+    raw_kind = event.get("identity_kind")
+    if raw_kind not in {None, "turn", "notification"}:
+        return None
     cwd = event["cwd"] if "cwd" in event else (event.get("workspace") or event.get("project_root"))
     session = event.get("session_id")
     if not isinstance(cwd, str) or not isinstance(session, str) or not session.strip():
-        return
-    status = sharing_status(profile, cwd=cwd)
-    if status.get("tier") not in {"contribute", "local-only"} or not status.get("cwd_in_scope"):
-        return
-    engine_path, engine = _engine(profile)
-    lease = _lease(engine, session, cwd)
-    if lease is None:
-        return
-    from mindie_knowledge.loop.handoff import prepare_schema
-
-    prepare_schema(str(engine_path))
-    wire = _wire_path(profile, session, cwd)
-    event_id = hashlib.sha256(f"{session}:{wire}:{Path(wire).stat().st_size}".encode()).hexdigest()[:32] if wire else uuid.uuid4().hex
-    normalized = {"hook_event_name": "Stop", "identity_kind": "notification", "session_id": session,
-                  "event_id": event_id, "harness": "kimi", "cwd": str(Path(cwd).resolve()),
-                  "mindie_activation": str(lease.get("token") or "")}
+        return None
+    resolved_cwd = str(Path(cwd).resolve())
+    raw_wire = event.get("transcript_path")
+    wire = raw_wire if isinstance(raw_wire, str) and raw_wire.strip() else _wire_path(profile, session, cwd)
+    raw_turn = event.get("turn_id")
+    has_turn = isinstance(raw_turn, str) and bool(raw_turn.strip()) and raw_kind != "notification"
+    normalized: dict[str, object] = {
+        "hook_event_name": "Stop", "identity_kind": "turn" if has_turn else "notification",
+        "session_id": session.strip(), "harness": "kimi", "cwd": resolved_cwd,
+    }
+    if has_turn:
+        normalized["turn_id"] = raw_turn.strip()
+        if isinstance(msg := event.get("last_assistant_message"), str) and msg:
+            normalized["last_assistant_message"] = msg
+    elif isinstance(raw_id := event.get("event_id"), str) and raw_id.strip():
+        normalized["event_id"] = raw_id.strip()
+    else:
+        try:
+            size = Path(wire).stat().st_size if wire else 0
+        except TimeoutError:
+            raise
+        except OSError:
+            size = 0
+        normalized["event_id"] = hashlib.sha256(f"{session.strip()}:{wire or resolved_cwd}:{size}".encode("utf-8")).hexdigest()[:32]
     if wire:
         normalized["transcript_path"] = wire
-    from mindie_knowledge.loop.cli import capture_hook
+    return run_stop_capture(profile, normalized, plugin_root=PLUGIN_ROOT, timeout_sec=6.0)
 
-    capture_hook(str(engine_path), normalized, timeout=6.0)
-
-def _serve(surface: str, profile: ProfileRef, version: str) -> int:
+def _serve(surface: str, profile: ProfileRef, version: str = VERSION) -> int:
+    try:
+        ensure_knowledge_binding(profile, plugin_root=PLUGIN_ROOT, python_executable=sys.executable, include_default_feed=False)
+    except TimeoutError:
+        raise
+    except Exception:
+        pass
     adapter = KimiHostAdapter(config_path=profile.config_path)
     router = MCPRouter(profile, surface=surface, tools=adapter.mcp_tools(surface, profile),
                        handler=lambda ctx, arguments: adapter.dispatch_tool(ctx, arguments, profile),
@@ -173,7 +156,7 @@ def main(argv: list[str] | None = None) -> int:
         if index + 1 >= len(args):
             raise SystemExit("--config requires a path")
         config, args = args[index + 1], args[:index] + args[index + 2:]
-    profile, version = ProfileRef.resolve("kimi", plugin_root=PLUGIN_ROOT, config_path=config), PLUGIN_VERSION
+    profile, version = ProfileRef.resolve("kimi", plugin_root=PLUGIN_ROOT, config_path=config), VERSION
     try:
         rebind_native_plugin_if_needed(profile, native_version=version, runtime_scripts=HERE)
     except TimeoutError:

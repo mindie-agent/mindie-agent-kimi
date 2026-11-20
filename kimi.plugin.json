@@ -1,6 +1,6 @@
 {
   "name": "mindie-agent",
-  "version": "0.1.32",
+  "version": "0.1.33",
   "description": "MindIE Agent for Kimi Code: default-enabled Ascend L1–L4 knowledge, deterministic engineering tools, remote-dev, and opt-in community contribution.",
   "keywords": [
     "mindie",
@@ -12,8 +12,16 @@
   "skills": "./skills/",
   "mcpServers": {
     "knowledge": {
-      "command": "python3",
+      "command": "uv",
       "args": [
+        "run",
+        "--no-project",
+        "--python",
+        "3.13",
+        "python",
+        "-B",
+        "-X",
+        "utf8",
         "./scripts/mindie_launch.py",
         "mcp",
         "knowledge"
@@ -22,8 +30,16 @@
       "toolTimeoutMs": 210000
     },
     "remote": {
-      "command": "python3",
+      "command": "uv",
       "args": [
+        "run",
+        "--no-project",
+        "--python",
+        "3.13",
+        "python",
+        "-B",
+        "-X",
+        "utf8",
         "./scripts/mindie_launch.py",
         "mcp",
         "remote"
@@ -35,8 +51,16 @@
       "toolTimeoutMs": 660000
     },
     "components": {
-      "command": "python3",
+      "command": "uv",
       "args": [
+        "run",
+        "--no-project",
+        "--python",
+        "3.13",
+        "python",
+        "-B",
+        "-X",
+        "utf8",
         "./scripts/mindie_launch.py",
         "mcp",
         "components"
@@ -49,12 +73,12 @@
     {
       "event": "PreToolUse",
       "matcher": "mcp__plugin-mindie-agent_",
-      "command": "python3 ./scripts/mindie_launch.py hook pretool",
+      "command": "uv run --no-project --python 3.13 python -B -X utf8 ./scripts/mindie_launch.py hook pretool",
       "timeout": 20
     },
     {
       "event": "Stop",
-      "command": "python3 ./scripts/mindie_launch.py hook stop",
+      "command": "uv run --no-project --python 3.13 python -B -X utf8 ./scripts/mindie_launch.py hook stop",
       "timeout": 20
     }
   ],

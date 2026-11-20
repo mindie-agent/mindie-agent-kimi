@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/mindie-agent/mindie-agent-kimi/releases"><img src="https://img.shields.io/badge/release-v0.1.32-0F766E.svg" alt="Release v0.1.32"></a>
+  <a href="https://github.com/mindie-agent/mindie-agent-kimi/releases"><img src="https://img.shields.io/badge/release-v0.1.33-0F766E.svg" alt="Release v0.1.33"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-0F766E.svg" alt="License: MIT"></a>
   <a href="runtime-requirements.txt"><img src="https://img.shields.io/badge/python-3.11%2B-2563EB.svg" alt="Python 3.11+"></a>
   <a href="kimi.plugin.json"><img src="https://img.shields.io/badge/host-Kimi_Code-7C3AED.svg" alt="Host: Kimi Code"></a>
@@ -27,11 +27,11 @@
 
 ---
 
-**MindIE Agent for Kimi Code**（`mindie-agent-kimi`）是 [MindIE Agent](https://github.com/mindie-agent/mindie-agent) 面向 Kimi Code 的原生插件适配器，面向**昇腾（Ascend）NPU 上的 AI Infra 设计、开发与测试流程**提供统一的 Agent 支撑。当前 `v0.1.32`（配套主产品 `0.1.13`）已交付 **`vLLM-Ascend` 特性开发与测试**、**`AscendC` 与 `Triton` 算子实现验证**、远端 NPU 执行及公开经验脱敏沉淀能力；更多昇腾基础软件方向按路线图持续扩展。
+**MindIE Agent for Kimi Code**（`mindie-agent-kimi`）是 [MindIE Agent](https://github.com/mindie-agent/mindie-agent) 面向 Kimi Code 的原生插件适配器，面向**昇腾（Ascend）NPU 上的 AI Infra 设计、开发与测试流程**提供统一的 Agent 支撑。当前 [`v0.1.33`](docs/releases/mindie-agent-kimi-0.1.33.md) 对齐全组织标准 9 组件契约（`pyproject.toml`、`uv.lock`、`product-contract.json`，含 `mindie-harness >= 0.1.5` 与 `npu-top 0.3.5`）及 9 个公开昇腾知识域内容寻址绑定，交付 **`vLLM-Ascend` / `xLLM` / `MindIE-SD` 特性开发与测试**、**`AscendC` 与 `Triton` 算子实现验证**、远端 NPU 执行及公开经验脱敏沉淀能力。
 
-项目设计遵循 [MindIE Agent 工程设计原则](https://github.com/mindie-agent/mindie-agent/blob/main/docs/design-principles.md)：共享知识引擎与远端开发能力由独立组件承载，本仓库专注于 Kimi 会话身份绑定、`wire.jsonl` 公开对话提取、MCP 桥接与本地不可变版本更新。
+项目设计遵循 [MindIE Agent 工程设计原则](https://github.com/mindie-agent/mindie-agent/blob/main/docs/design-principles.md)：共享知识引擎与远端开发能力由独立组件承载，本仓库专注于 Kimi 会话身份绑定、`wire.jsonl` 公开对话提取、Windows 安全 `uv` 启动、MCP 桥接与本地不可变版本更新。
 
-> **生态与版本说明**：当前 `v0.1.32`（配套主产品 `0.1.13`）支持 Claude Code（[`mindie-agent-cc`](https://github.com/mindie-agent/mindie-agent-cc)）、OpenAI Codex CLI（[`mindie-agent-codex`](https://github.com/mindie-agent/mindie-agent-codex)）、Kimi Code（本仓库）与 DeepSeek Harness（[`mindie-agent-dsh`](https://github.com/mindie-agent/mindie-agent-dsh)）等宿主，共享同一套知识、远端开发与诊断组件。各宿主的实机验证范围详见[文档导航](#文档导航)。
+> **生态与版本说明**：当前 `v0.1.33` 与 Claude Code（[`mindie-agent-cc`](https://github.com/mindie-agent/mindie-agent-cc)）、OpenAI Codex CLI（[`mindie-agent-codex`](https://github.com/mindie-agent/mindie-agent-codex)）、Kimi Code（本仓库）、DeepSeek Harness（[`mindie-agent-dsh`](https://github.com/mindie-agent/mindie-agent-dsh)）、Google Antigravity（[`mindie-agent-agy`](https://github.com/mindie-agent/mindie-agent-agy)）、Tencent WorkBuddy（[`mindie-agent-wb`](https://github.com/mindie-agent/mindie-agent-wb)）与 OpenCode（[`mindie-agent-oc`](https://github.com/mindie-agent/mindie-agent-oc)）等宿主插件共享同一套 `mindie-harness` 底座与 9 个运行时组件。各宿主的实机验证范围详见[文档导航](#文档导航)。
 
 ---
 
@@ -101,7 +101,7 @@ MindIE Agent 采用**「领域知识、Skill 与远端开发测试工具静默�
    ```sh
    uv run https://github.com/mindie-agent/mindie-agent/releases/latest/download/install.py --host kimi
    ```
-   - 安装器会准备持久化运行时、写入 `~/.config/mindie-agent/kimi.json` 与 `kimi.engine.json`，并通过 Kimi 原生插件 API 注册 `knowledge`、`remote`、`components` 三个 MCP 服务与 `PreToolUse` / `Stop` Hook。
+   - 安装器会准备持久化运行时、写入 `kimi.json` 及全部 9 个公开知识域的内容寻址 `engines/kimi/<20hex>/<domain>.engine.json` 绑定（安全退役旧版 `MindIEKimiUpdate` 计划任务），并通过 Kimi 原生插件 API 注册 `uv` 托管的 `knowledge`、`remote`、`components` 三个 MCP 服务与 `PreToolUse` / `Stop` Hook。
 
 3. **`mindie_doctor` 就绪检查**：
    - 在 Kimi 会话中调用 `mindie_doctor` MCP 工具（或直接说「运行 mindie_doctor 检查 MindIE 环境」），核对 `runtime`、`github_channel`、`experience_and_privacy` 与实际安装一致。
@@ -131,9 +131,9 @@ MindIE Agent 采用**「领域知识、Skill 与远端开发测试工具静默�
 </details>
 
 #### 环境与目录说明
-- **基础依赖**：`uv` 与 Kimi Code CLI；`gh` 为**可选**增强项（未安装时使用 `local-only` 即可）。
+- **基础依赖**：`uv` 与 Kimi Code CLI；`gh` 为**可选**增强项（未安装时使用 `local-only` 即可）。`kimi.plugin.json` 直接使用 `uv run --no-project --python 3.13 python -B -X utf8` 启动并拒绝 Microsoft Store `WindowsApps` 0 字节空桩。
 - **SQLite 要求**：知识引擎使用的 Python 解释器需链接 **SQLite `>= 3.43.0`**（编译启用 FTS5 与 `contentless_delete`）。
-- **持久化路径**：配置位于 `~/.config/mindie-agent/kimi.json` 与 `~/.config/mindie-agent/kimi.engine.json`，持久化运行时位于 `~/.local/share/mindie-agent/kimi`。
+- **持久化路径**：POSIX 默认位于 `~/.config/mindie-agent/kimi.json`、`engines/kimi/<20hex>/<domain>.engine.json` 与 `~/.local/share/mindie-agent/runtimes/kimi`（Windows 默认位于 `%APPDATA%/mindie-agent` 与 `%LOCALAPPDATA%/mindie-agent`）。
 
 ---
 
@@ -178,9 +178,9 @@ MindIE Agent 采用**「领域知识、Skill 与远端开发测试工具静默�
 
 ### 自动更新与安全卸载
 
-- **后台自动更新**：兼容正式版本的检查、独立环境准备、空闲切换、回滚记录与定时任务迁移全部由 `mindie_harness.runtime.wheelhouse.update_runtime` 负责。新增或调整 MCP 服务时会重新注册 Kimi 插件；仅更新组件版本时无需重装插件。详见 [自动更新机制](docs/update.md) 与 [`0.1.32` 发布说明](docs/releases/mindie-agent-kimi-0.1.32.md)。可随时检查或触发更新：
+- **后台自动更新**：兼容正式版本的检查、独立环境准备、空闲切换、回滚记录与计划任务迁移全部由 `mindie_harness.runtime.wheelhouse.update_runtime` 负责；`mindie_launch.py` 优先采用已验证的 `kimi.json` 解释器，防止陈旧的 `update/current.json` 遮蔽新代升级，同时 `setup.py` 自动安全退役遗留 `MindIEKimiUpdate` 任务。详见 [自动更新机制](docs/update.md) 与 [`0.1.33` 发布说明](docs/releases/mindie-agent-kimi-0.1.33.md)。可随时检查或触发更新：
   ```sh
-  python3 scripts/setup.py update
+  uv run --no-project python scripts/setup.py update
   ```
 - **安全卸载**：关闭正在使用插件的会话，通过 `mindie-harness` 的调度 CLI 移除定时任务，随后在 Kimi 原生 Plugins 界面移除 `mindie-agent`。
 
@@ -188,14 +188,14 @@ MindIE Agent 采用**「领域知识、Skill 与远端开发测试工具静默�
 
 ## 架构与组件边界
 
-`mindie-agent-kimi` 采用**五文件薄适配层（Thin Adapter）**架构：`scripts/` 仅保留 `mindie_launch.py`、`entry.py`、`kimi_transcript.py`、`install_kimi_plugin.py` 与 `setup.py`（合计 ≤ 1,000 行），负责对接 Kimi Code 的插件清单、Hook 快速路径、`wire.jsonl` 解析与 MCP 工具面隔离；冷启动、MCP 服务、共享授权、诊断、更新、进程监督与原子写入全部委托给共享基座 [`mindie-harness`](https://github.com/mindie-agent/harness)（`API_VERSION = 1`）。
+`mindie-agent-kimi` 采用**六文件薄适配层（Thin Adapter）**架构：`scripts/` 仅保留 `mindie_launch.py`、`entry.py`、`kimi_transcript.py`、`transcript.py`、`install_kimi_plugin.py` 与 `setup.py`（合计 `1,194 <= 1,200` 行），负责对接 Kimi Code 的插件清单、Hook 快速路径、`wire.jsonl` 解析与 MCP 工具面隔离；冷启动、MCP 服务、9 域知识绑定、共享授权、诊断、更新、进程监督与原子写入全部委托给共享基座 [`mindie-harness`](https://github.com/mindie-agent/harness)（`>= 0.1.5`，`API_VERSION = 1`）。
 
 ```mermaid
 flowchart LR
-  Kimi["Kimi Code 宿主<br/>(Plugin API / Hooks / MCP stdio)"] --> Launcher["mindie-agent-kimi<br/>(5 文件薄适配层)"]
+  Kimi["Kimi Code 宿主<br/>(Plugin API / Hooks / MCP stdio)"] --> Launcher["mindie-agent-kimi<br/>(6 文件薄适配层)"]
   Launcher --> Harness["mindie-agent/harness<br/>(API_VERSION = 1 共享基座)"]
   Launcher --> Knowledge["mindie-agent/knowledge<br/>(SQLite FTS5 检索、本地脱敏与 PR 闭环)"]
-  Knowledge --> Feed["mindie-agent/knowledge-vllm-ascend<br/>(vLLM-Ascend 领域知识源)"]
+  Knowledge --> Feed["mindie-agent/knowledge-vllm-ascend<br/>(9 公开昇腾领域知识源)"]
   Launcher --> RemoteDev["mindie-agent/remote-dev<br/>(SSH 远端昇腾命令、同步与轮询)"]
   Launcher --> Diagnostics["mindie-agent/diagnostics<br/>(有界本地诊断 & 统一贡献开关故障上报)"]
 ```
@@ -203,10 +203,10 @@ flowchart LR
 | 仓库 / 组件 | 核心职责 |
 |---|---|
 | [`mindie-agent/mindie-agent`](https://github.com/mindie-agent/mindie-agent) | 顶层架构、MindIE Agent 工程设计原则、领域边界与配套发布规范。 |
-| `mindie-agent/mindie-agent-kimi`（本仓库） | Kimi 原生插件清单（`kimi.plugin.json`、`skills/`）、五文件薄适配层（`scripts/`）、`wire.jsonl` 公开记录解析与 MCP 工具面隔离；运行时不复制 `mindie_harness` 逻辑。 |
-| [`mindie-agent/harness`](https://github.com/mindie-agent/harness) | 共享基座（`API_VERSION = 1`）：冷启动种子、MCP 网关/路由、共享授权、诊断、更新、进程监督与原子写入。 |
+| `mindie-agent/mindie-agent-kimi`（本仓库） | Kimi 原生插件清单（`kimi.plugin.json`、`skills/`）、标准 9 组件 `pyproject.toml`/`product-contract.json`、六文件薄适配层（`scripts/`）、`wire.jsonl` 公开记录解析与 MCP 工具面隔离。 |
+| [`mindie-agent/harness`](https://github.com/mindie-agent/harness) | 共享基座（`>= 0.1.5`，`API_VERSION = 1`）：冷启动种子、MCP 网关/路由、9 域内容寻址 `ensure_knowledge_binding`、`run_stop_capture`、共享授权、诊断、更新、进程监督与原子写入。 |
 | [`mindie-agent/knowledge`](https://github.com/mindie-agent/knowledge) | 共享知识引擎：本地 SQLite FTS5 检索、确定性脱敏、采集队列与 GitHub PR 发布回执。 |
-| [`mindie-agent/knowledge-vllm-ascend`](https://github.com/mindie-agent/knowledge-vllm-ascend) | 持续演进的 `vllm-ascend` 领域知识包。 |
+| [`mindie-agent/knowledge-vllm-ascend`](https://github.com/mindie-agent/knowledge-vllm-ascend) | 持续演进的 `vllm-ascend` 等 9 个公开领域知识包。 |
 | [`mindie-agent/remote-dev`](https://github.com/mindie-agent/remote-dev) | 面向远端昇腾服务器的 SSH 命令执行、文件同步与长耗时后台作业管理。 |
 | [`mindie-agent/diagnostics`](https://github.com/mindie-agent/diagnostics) | 本地有界结构化诊断日志，以及受 `mindie-consent.json` 统一贡献开关控制的脱敏 GitHub Issue 故障自动上报。 |
 
@@ -214,18 +214,18 @@ flowchart LR
 
 ## 开发者验证与测试
 
-在仓库根目录下安装锁定的运行时依赖后，运行完整的契约、原生启动与发布元数据验证：
+在仓库根目录下安装锁定的运行时依赖后，运行完整的契约、原生启动与发布元数据验证（CI 同步接入 `verify-host-plugin.yml` `host: kimi`）：
 
 ```sh
-python3 .github/scripts/check_lf_eol.py
-python3 -m pytest -q -o "pythonpath=tests scripts" tests
-python3 -m unittest discover -s tests/native -v
-python3 scripts/setup.py release-metadata --source . --tests tests --revision "$(git rev-parse HEAD)"
+uv run --no-project python .github/scripts/check_lf_eol.py
+uv run pytest -q -o "pythonpath=tests scripts" tests
+uv run --no-project python -m unittest discover -s tests/native -v
+uv run --no-project python scripts/setup.py release-metadata --source . --tests tests --revision "$(git rev-parse HEAD)"
 ```
 
 ### 发布基准测试（Release Benchmark）
 
-本仓库在 [`benchmarks/release.json`](benchmarks/release.json)（由 `benchmarks/release.py` 执行）中定义了面向 `0.1.32` 发布的可复现 CPU 微基准测试（用例 `public-transcript-parsing`，指标 `public_transcript_parse`，单位 `us/op`），用于测量本地 `wire.jsonl` 公开可见消息提取与非公开推理字段过滤的单次解析耗时。每个正式版 GitHub Release 均随附 `benchmark-results.json`、`benchmark-results.md`；该微基准仅验证本地解析组件的性能基线，与常备昇腾 A2/A3 NPU 真机集成验收及端到端 Agent 研发任务评估相互独立。
+本仓库在 [`benchmarks/release.json`](benchmarks/release.json)（由 `benchmarks/release.py` 执行）中定义了面向 `0.1.33` 发布的可复现 CPU 微基准测试（用例 `public-transcript-parsing`，指标 `public_transcript_parse`，单位 `us/op`），用于测量本地 `wire.jsonl` 公开可见消息提取与非公开推理字段过滤的单次解析耗时。每个正式版 GitHub Release 均随附 `benchmark-results.json`、`benchmark-results.md`；该微基准仅验证本地解析组件的性能基线，与常备昇腾 A2/A3 NPU 真机集成验收及端到端 Agent 研发任务评估相互独立。
 
 ---
 

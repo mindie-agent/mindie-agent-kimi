@@ -3,8 +3,8 @@
 `kimi web` HTTP API (`POST/GET /api/v1/plugins`) in an explicit `--kimi-home`.
 [Invariants] Never mutates `~/.kimi-code` implicitly or fabricates `plugins/installed.json`;
 rejects records with skipped MCP servers (`knowledge`, `remote`, `components`) or hooks
-(`PreToolUse`, `Stop`); resolves `MINDIE_KIMI_BIN` first, then a native `PATH` scan that
-skips WindowsApps 0-byte stubs and WSL `.exe` / `MZ` shims.
+(`PreToolUse`, `Stop`); native `kimi` and fallback Python scans skip Microsoft Store
+`WindowsApps` stubs (`st_size == 0` / `\\windowsapps\\`) and WSL `.exe` / `MZ` shims.
 [Timeouts & Locks] Readiness poll `20s` (`0.4s` interval), HTTP timeout `15s`, child
 termination grace `3s` (`terminate` then `kill`).
 [Side-Effect Policy] Starts a temporary local `kimi web` child in `--kimi-home`, posts
@@ -30,31 +30,55 @@ PLUGIN_ROOT = HERE.parent
 EXPECTED_MCP = ("knowledge", "remote", "components")
 _SHIMS = {".exe", ".cmd", ".bat", ".com", ".ps1"}
 
+def _valid_candidate(candidate: Path, *, os_name: str = os.name) -> bool:
+    try:
+        if os_name == "nt":
+            if "\\windowsapps\\" in str(candidate).replace("/", "\\").lower() or candidate.parent.name.lower() == "windowsapps":
+                return False
+            return candidate.is_file() and candidate.stat().st_size > 0
+        if candidate.suffix.lower() in _SHIMS or not candidate.is_file() or (os.name != "nt" and not os.access(candidate, os.X_OK)):
+            return False
+        with candidate.open("rb") as stream:
+            return stream.read(2) != b"MZ"
+    except TimeoutError:
+        raise
+    except OSError:
+        return False
+
+def _scan_path(names: tuple[str, ...], *, path_env: str | None = None, os_name: str = os.name) -> str | None:
+    raw = os.environ.get("PATH", "") if path_env is None else path_env
+    for folder in raw.split(os.pathsep):
+        if not (cleaned := folder.strip().strip('"')):
+            continue
+        base = Path(cleaned)
+        for name in names:
+            if _valid_candidate(base / name, os_name=os_name):
+                return str(base / name)
+    return None
+
 def _which_kimi(os_name: str = os.name) -> str | None:
     if explicit := os.environ.get("MINDIE_KIMI_BIN"):
         return explicit
     exts = tuple(dict.fromkeys(["", *(e.lower() for e in os.environ.get("PATHEXT", ".EXE;.CMD;.BAT;.COM").split(";") if e)] if os_name == "nt" else [""]))
-    for folder in os.environ.get("PATH", "").split(os.pathsep):
-        base = Path(folder.strip().strip('"'))
-        for ext in exts:
-            candidate = base / f"kimi{ext}"
-            try:
-                if os_name == "nt":
-                    if not candidate.is_file():
-                        continue
-                    if "windowsapps" in str(candidate).lower() and candidate.stat().st_size == 0:
-                        continue
-                elif candidate.suffix.lower() in _SHIMS or not candidate.is_file() or not os.access(candidate, os.X_OK):
-                    continue
-                else:
-                    with candidate.open("rb") as stream:
-                        if stream.read(2) == b"MZ":
-                            continue
-            except TimeoutError:
-                raise
-            except OSError:
-                continue
-            return str(candidate)
+    return _scan_path(tuple(f"kimi{ext}" for ext in exts), os_name=os_name)
+
+def _find_python(path_env: str | None = None, *, os_name: str = os.name, allow_uv: bool = True) -> str | None:
+    names = ("python.exe", "python3.exe") if os_name == "nt" else ("python3", "python")
+    if found := _scan_path(names, path_env=path_env, os_name=os_name):
+        return found
+    uv_bin = _scan_path(("uv.exe", "uv.cmd", "uv") if os_name == "nt" else ("uv",), path_env=path_env, os_name=os_name) if allow_uv else None
+    if uv_bin is not None:
+        try:
+            probe = subprocess.run(
+                [uv_bin, "python", "find", ">=3.11"], stdin=subprocess.DEVNULL,
+                capture_output=True, text=True, errors="replace", timeout=5.0, check=False, creationflags=_NO_WIN,
+            )
+            if probe.returncode == 0 and (cand := probe.stdout.strip()) and _valid_candidate(Path(cand), os_name=os_name):
+                return cand
+        except TimeoutError:
+            raise
+        except OSError:
+            return None
     return None
 
 def expected_native_resources(package: Path, manifest: dict) -> dict:

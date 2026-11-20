@@ -6,9 +6,10 @@ On Windows, Kimi Code launches plugin MCP stdio servers without a shell (`shell:
 
 ---
 
-## 1. Shell-Free MCP Launch on Windows
+## 1. Shell-Free `uv` MCP Launch & `WindowsApps` Stub Rejection
 
-- **Direct Executable Dispatch (No `.cmd` Wrapper)**: Spawning a `.cmd` batch file under Node.js with `shell: false` fails on Windows with `spawn EINVAL`. To ensure reliable startup without modifying the user's global `PATH`, Windows packages declare the pinned Python executable basename with its directory prepended to the MCP server's child `PATH`, passing the launcher script, config path, and operation as separate argv elements.
+- **Avoiding `.cmd` `EINVAL` and Bare `python3` Store Stubs**: Spawning a `.cmd` batch file under Node.js with `shell: false` fails on Windows with `spawn EINVAL`, while invoking bare `python3` can hit Microsoft Store 0-byte redirector stubs under `%LOCALAPPDATA%\Microsoft\WindowsApps`. `kimi.plugin.json` therefore declares `"command": "uv"` on all three MCP servers (`knowledge`, `remote`, `components`) with explicit argument arrays `["run", "--no-project", "--python", "3.13", "python", "-B", "-X", "utf8", "./scripts/mindie_launch.py", "mcp", "<surface>"]`, and runs `PreToolUse` and `Stop` hooks via `uv run --no-project --python 3.13 python -B -X utf8 ...`.
+- **Fallback Interpreter Validation**: Whenever `scripts/mindie_launch.py` or `scripts/install_kimi_plugin.py` discovers a fallback Python or native binary (`PATH` scan or `uv python find ">=3.11"`), Windows candidates containing `\windowsapps\` or reporting `st_size == 0` are rejected immediately (and WSL/POSIX scans reject `.exe`/`.cmd` shims and `MZ` binaries), without mutating the user's global `PATH` and always passing `CREATE_NO_WINDOW` (`0x08000000`) on Windows subprocesses.
 - **Special Character Safety**: Tested against installation paths containing Unicode characters, spaces, and shell metacharacters.
 
 ---
@@ -22,10 +23,10 @@ On Windows, Kimi Code launches plugin MCP stdio servers without a shell (`shell:
 
 ## 3. Running the Native Launch Verification Suite
 
-With `runtime-requirements.txt` installed and `node` available on `PATH`, run:
+With the pinned runtime dependencies installed and `node` available on `PATH`, run:
 
 ```sh
-python3 -m unittest discover -s tests/native -v
+uv run --no-project python -m unittest discover -s tests/native -v
 ```
 
 - **Host References**: [Kimi Code Plugin Command Rules](https://moonshotai.github.io/kimi-code/en/customization/plugins.html) · [MCP Child Environment](https://moonshotai.github.io/kimi-code/en/customization/mcp)

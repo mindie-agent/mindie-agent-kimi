@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/mindie-agent/mindie-agent-kimi/releases"><img src="https://img.shields.io/badge/release-v0.1.32-0F766E.svg" alt="Release v0.1.32"></a>
+  <a href="https://github.com/mindie-agent/mindie-agent-kimi/releases"><img src="https://img.shields.io/badge/release-v0.1.33-0F766E.svg" alt="Release v0.1.33"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-0F766E.svg" alt="License: MIT"></a>
   <a href="runtime-requirements.txt"><img src="https://img.shields.io/badge/python-3.11%2B-2563EB.svg" alt="Python 3.11+"></a>
   <a href="kimi.plugin.json"><img src="https://img.shields.io/badge/host-Kimi_Code-7C3AED.svg" alt="Host: Kimi Code"></a>
@@ -27,11 +27,11 @@
 
 ---
 
-**MindIE Agent for Kimi Code** (`mindie-agent-kimi`) is the native Kimi Code plugin adapter for [MindIE Agent](https://github.com/mindie-agent/mindie-agent), supporting the **Ascend NPU AI Infra design, development, and testing workflow**. In `v0.1.32` (paired with `mindie-agent 0.1.17`), it delivers **`vLLM-Ascend` feature development & testing**, **`AscendC` / `Triton` operator implementation & verification**, remote NPU execution, and sanitized public experience capture, while additional Ascend AI Infra domains continue expanding on the roadmap.
+**MindIE Agent for Kimi Code** (`mindie-agent-kimi`) is the native Kimi Code plugin adapter for [MindIE Agent](https://github.com/mindie-agent/mindie-agent), supporting the **Ascend NPU AI Infra design, development, and testing workflow**. Release [`v0.1.33`](docs/releases/mindie-agent-kimi-0.1.33.en.md) aligns the canonical 9-package runtime contract (`pyproject.toml`, `uv.lock`, and `product-contract.json`, including `mindie-harness >= 0.1.5` and `npu-top 0.3.5`) and content-addressed 9-domain knowledge bindings, delivering **`vLLM-Ascend` / `xLLM` / `MindIE-SD` feature development & testing**, **`AscendC` / `Triton` operator implementation & verification**, remote NPU execution, and sanitized public experience capture.
 
-Designed around the [MindIE Agent Engineering Design Principles](https://github.com/mindie-agent/mindie-agent/blob/main/docs/design-principles.en.md), this thin adapter handles Kimi session identity, `wire.jsonl` public transcript extraction, MCP dispatch, and atomic generation updates, while delegating core knowledge, remote execution, and diagnostics to shared components.
+Designed around the [MindIE Agent Engineering Design Principles](https://github.com/mindie-agent/mindie-agent/blob/main/docs/design-principles.en.md), this thin adapter handles Kimi session identity, `wire.jsonl` public transcript extraction, Windows-safe `uv` launching, MCP dispatch, and atomic generation updates, while delegating core knowledge, remote execution, and diagnostics to shared components.
 
-> **Ecosystem & Release Note**: Currently `v0.1.32` (paired with `mindie-agent 0.1.17`) supports Claude Code ([`mindie-agent-cc`](https://github.com/mindie-agent/mindie-agent-cc)), OpenAI Codex CLI ([`mindie-agent-codex`](https://github.com/mindie-agent/mindie-agent-codex)), Kimi Code (this repository), and DeepSeek Harness ([`mindie-agent-dsh`](https://github.com/mindie-agent/mindie-agent-dsh)) — all built on the same shared knowledge, remote-dev, and diagnostics components. See the [Documentation Index](#documentation-index) for per-host verification scope.
+> **Ecosystem & Release Note**: Release `v0.1.33` shares the same `mindie-harness` substrate and 9 runtime packages with Claude Code ([`mindie-agent-cc`](https://github.com/mindie-agent/mindie-agent-cc)), OpenAI Codex CLI ([`mindie-agent-codex`](https://github.com/mindie-agent/mindie-agent-codex)), Kimi Code (this repository), DeepSeek Harness ([`mindie-agent-dsh`](https://github.com/mindie-agent/mindie-agent-dsh)), Google Antigravity ([`mindie-agent-agy`](https://github.com/mindie-agent/mindie-agent-agy)), Tencent WorkBuddy ([`mindie-agent-wb`](https://github.com/mindie-agent/mindie-agent-wb)), and OpenCode ([`mindie-agent-oc`](https://github.com/mindie-agent/mindie-agent-oc)). See the [Documentation Index](#documentation-index) for per-host verification scope.
 
 ---
 
@@ -101,7 +101,7 @@ If you are an AI Agent asked by the user to install this plugin, execute the fol
    ```sh
    uv run https://github.com/mindie-agent/mindie-agent/releases/latest/download/install.py --host kimi
    ```
-   - The installer provisions the persistent runtime, writes `~/.config/mindie-agent/kimi.json` and `kimi.engine.json`, and registers the `knowledge`, `remote`, and `components` MCP servers plus the `PreToolUse` / `Stop` hooks through Kimi's native plugin API.
+   - The installer provisions the persistent runtime, writes `kimi.json` plus content-addressed 9-domain `engines/kimi/<20hex>/<domain>.engine.json` bindings (safely retiring any legacy `MindIEKimiUpdate` scheduled task), and registers the `uv`-backed `knowledge`, `remote`, and `components` MCP servers plus the `PreToolUse` / `Stop` hooks through Kimi's native plugin API.
 
 3. **`mindie_doctor` readiness check**:
    - Call the `mindie_doctor` MCP tool in the Kimi session (or simply say "run mindie_doctor to check the MindIE environment") and verify that `runtime`, `github_channel`, and `experience_and_privacy` match the installed state.
@@ -131,9 +131,9 @@ If you are an AI Agent asked by the user to install this plugin, execute the fol
 </details>
 
 #### Environment & Storage Notes
-- **Prerequisites**: `uv` and the Kimi Code CLI; `gh` is an **optional** enhancement (choose `local-only` when it is unavailable).
+- **Prerequisites**: `uv` and the Kimi Code CLI; `gh` is an **optional** enhancement (choose `local-only` when it is unavailable). `kimi.plugin.json` launches directly via `uv run --no-project --python 3.13 python -B -X utf8` and rejects Microsoft Store `WindowsApps` 0-byte stubs.
 - **SQLite Requirement**: The Python interpreter used for the knowledge engine must link **SQLite `>= 3.43.0`** with FTS5 and `contentless_delete` support.
-- **Persistent Paths**: Configuration lives in `~/.config/mindie-agent/kimi.json` and `~/.config/mindie-agent/kimi.engine.json`; the persistent runtime lives under `~/.local/share/mindie-agent/kimi`.
+- **Persistent Paths**: POSIX defaults to `~/.config/mindie-agent/kimi.json`, `engines/kimi/<20hex>/<domain>.engine.json`, and `~/.local/share/mindie-agent/runtimes/kimi` (Windows defaults to `%APPDATA%/mindie-agent` and `%LOCALAPPDATA%/mindie-agent`).
 
 ---
 
@@ -178,9 +178,9 @@ Each call automatically resolves session and working directory via Kimi's native
 
 ### Automatic Updates & Safe Uninstall
 
-- **Scheduled Model-Free Updates**: compatible formal-release checks, isolated environment preparation, idle switching, rollback records, and scheduled-task migration are all handled by `mindie_harness.runtime.wheelhouse.update_runtime`. Adding or changing MCP services re-registers the Kimi plugin; component-only updates do not require reinstalling it. See [Automatic Updates](docs/update.en.md) and the [`0.1.32` release notes](docs/releases/mindie-agent-kimi-0.1.32.md). Check or trigger an update at any time with:
+- **Scheduled Model-Free Updates**: compatible formal-release checks, isolated environment preparation, idle switching, rollback records, and scheduled-task migration are all handled by `mindie_harness.runtime.wheelhouse.update_runtime`; `mindie_launch.py` prefers a validated canonical `kimi.json` over stale `update/current.json` records, and `setup.py` safely retires legacy `MindIEKimiUpdate` tasks. See [Automatic Updates](docs/update.en.md) and the [`0.1.33` release notes](docs/releases/mindie-agent-kimi-0.1.33.en.md). Check or trigger an update at any time with:
   ```sh
-  python3 scripts/setup.py update
+  uv run --no-project python scripts/setup.py update
   ```
 - **Safe Uninstall**: Close active tasks using the plugin, remove the background schedule through the `mindie-harness` scheduler CLI, and then remove `mindie-agent` in Kimi's native Plugins UI.
 
@@ -188,14 +188,14 @@ Each call automatically resolves session and working directory via Kimi's native
 
 ## Architecture & Component Map
 
-`mindie-agent-kimi` is a **five-file thin native adapter**: `scripts/` keeps only `mindie_launch.py`, `entry.py`, `kimi_transcript.py`, `install_kimi_plugin.py`, and `setup.py` (≤ 1,000 lines total) for the Kimi plugin manifest, hook fast paths, `wire.jsonl` transcript extraction, and strict MCP surface separation. Cold start, MCP serving, sharing consent, diagnostics, updates, process supervision, and atomic writes all delegate to [`mindie-harness`](https://github.com/mindie-agent/harness) (`API_VERSION = 1`).
+`mindie-agent-kimi` is a **six-file thin native adapter**: `scripts/` keeps `mindie_launch.py`, `entry.py`, `kimi_transcript.py`, `transcript.py`, `install_kimi_plugin.py`, and `setup.py` (`1,194 <= 1,200` lines total) for the Kimi plugin manifest, hook fast paths, `wire.jsonl` transcript extraction, and strict MCP surface separation. Cold start, MCP serving, 9-domain knowledge binding, sharing consent, diagnostics, updates, process supervision, and atomic writes all delegate to [`mindie-harness`](https://github.com/mindie-agent/harness) (`>= 0.1.5`, `API_VERSION = 1`).
 
 ```mermaid
 flowchart LR
-  Kimi["Kimi Code Host<br/>(Plugin API / Hooks / MCP stdio)"] --> Launcher["mindie-agent-kimi<br/>(Five-file Thin Adapter)"]
+  Kimi["Kimi Code Host<br/>(Plugin API / Hooks / MCP stdio)"] --> Launcher["mindie-agent-kimi<br/>(Six-file Thin Adapter)"]
   Launcher --> Harness["mindie-agent/harness<br/>(API_VERSION = 1 Shared Substrate)"]
   Launcher --> Knowledge["mindie-agent/knowledge<br/>(SQLite FTS5 Search, Redaction & PR Loop)"]
-  Knowledge --> Feed["mindie-agent/knowledge-vllm-ascend<br/>(vLLM-Ascend Knowledge Feed)"]
+  Knowledge --> Feed["mindie-agent/knowledge-vllm-ascend<br/>(9 Public Ascend Knowledge Feeds)"]
   Launcher --> RemoteDev["mindie-agent/remote-dev<br/>(SSH Remote Ascend Exec, Sync & Poll)"]
   Launcher --> Diagnostics["mindie-agent/diagnostics<br/>(Bounded Local Diagnostics & Unified Consent Reporter)"]
 ```
@@ -203,10 +203,10 @@ flowchart LR
 | Repository / Component | Responsibility |
 |---|---|
 | [`mindie-agent/mindie-agent`](https://github.com/mindie-agent/mindie-agent) | Top-level architecture, MindIE Agent Engineering Design Principles, domain boundaries, and paired-release governance. |
-| `mindie-agent/mindie-agent-kimi` (this repo) | Kimi native plugin manifest (`kimi.plugin.json`, `skills/`), five-file thin adapter (`scripts/`), `wire.jsonl` public-record parser, and strict MCP surface separation; runtime code never duplicates `mindie_harness`. |
-| [`mindie-agent/harness`](https://github.com/mindie-agent/harness) | Shared substrate (`API_VERSION = 1`): cold-start seed, MCP gateway/router, sharing consent, diagnostics, updates, process supervision, and atomic writes. |
+| `mindie-agent/mindie-agent-kimi` (this repo) | Kimi native plugin manifest (`kimi.plugin.json`, `skills/`), canonical 9-package `pyproject.toml`/`product-contract.json`, six-file thin adapter (`scripts/`), `wire.jsonl` public-record parser, and strict MCP surface separation. |
+| [`mindie-agent/harness`](https://github.com/mindie-agent/harness) | Shared substrate (`>= 0.1.5`, `API_VERSION = 1`): cold-start seed, MCP gateway/router, 9-domain `ensure_knowledge_binding`, `run_stop_capture`, sharing consent, diagnostics, updates, process supervision, and atomic writes. |
 | [`mindie-agent/knowledge`](https://github.com/mindie-agent/knowledge) | Shared knowledge core: local SQLite FTS5 search, deterministic redaction, capture queue, and GitHub PR publication receipts. |
-| [`mindie-agent/knowledge-vllm-ascend`](https://github.com/mindie-agent/knowledge-vllm-ascend) | Curated `vllm-ascend` domain knowledge feed. |
+| [`mindie-agent/knowledge-vllm-ascend`](https://github.com/mindie-agent/knowledge-vllm-ascend) | Curated `vllm-ascend` and sibling Ascend domain knowledge feeds. |
 | [`mindie-agent/remote-dev`](https://github.com/mindie-agent/remote-dev) | Bounded remote command execution, file synchronization, and background job polling over SSH for Ascend servers. |
 | [`mindie-agent/diagnostics`](https://github.com/mindie-agent/diagnostics) | Bounded local diagnostic retention and sanitized GitHub Issue fault reporting governed by the unified `mindie-consent.json` switch. |
 
@@ -214,18 +214,18 @@ flowchart LR
 
 ## Developer Verification
 
-From the repository root with the pinned runtime dependencies installed, run the full contract, native launch, and release-metadata verification:
+From the repository root with the pinned runtime dependencies installed, run the full contract, native launch, and release-metadata verification (CI also runs `verify-host-plugin.yml` with `host: kimi`):
 
 ```sh
-python3 .github/scripts/check_lf_eol.py
-python3 -m pytest -q -o "pythonpath=tests scripts" tests
-python3 -m unittest discover -s tests/native -v
-python3 scripts/setup.py release-metadata --source . --tests tests --revision "$(git rev-parse HEAD)"
+uv run --no-project python .github/scripts/check_lf_eol.py
+uv run pytest -q -o "pythonpath=tests scripts" tests
+uv run --no-project python -m unittest discover -s tests/native -v
+uv run --no-project python scripts/setup.py release-metadata --source . --tests tests --revision "$(git rev-parse HEAD)"
 ```
 
 ### Release Benchmark
 
-[`benchmarks/release.json`](benchmarks/release.json) (driven by `benchmarks/release.py`) defines the reproducible `0.1.32` CPU microbenchmark (`public-transcript-parsing`, metric `public_transcript_parse` in `us/op`), measuring per-operation latency for extracting public user/assistant messages and filtering non-public reasoning fields from `wire.jsonl`. Every formal GitHub Release publishes `benchmark-results.json`, `benchmark-results.md`. These deterministic CPU microbenchmarks verify local parser latency only and are distinct from live Ascend A2/A3 NPU integration acceptance and end-to-end Agent productivity evaluation.
+[`benchmarks/release.json`](benchmarks/release.json) (driven by `benchmarks/release.py`) defines the reproducible `0.1.33` CPU microbenchmark (`public-transcript-parsing`, metric `public_transcript_parse` in `us/op`), measuring per-operation latency for extracting public user/assistant messages and filtering non-public reasoning fields from `wire.jsonl`. Every formal GitHub Release publishes `benchmark-results.json`, `benchmark-results.md`. These deterministic CPU microbenchmarks verify local parser latency only and are distinct from live Ascend A2/A3 NPU integration acceptance and end-to-end Agent productivity evaluation.
 
 ---
 

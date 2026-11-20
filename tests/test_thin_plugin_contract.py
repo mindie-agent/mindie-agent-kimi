@@ -1,8 +1,7 @@
-"""Thin-plugin contract: five scripts, one manifest version, one verified seed."""
+"""Thin-plugin contract: six scripts, one manifest version, Windows-safe `uv` launch, verified seed."""
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 import subprocess
 import sys
@@ -10,14 +9,14 @@ import sys
 import pytest
 
 KEEP = {"mindie_launch.py", "entry.py", "kimi_transcript.py", "transcript.py", "install_kimi_plugin.py", "setup.py"}
-TOTAL_LINE_CEILING = 1500
+TOTAL_LINE_CEILING = 1200
 
 
 def _scripts(repo: Path) -> list[Path]:
     return sorted(path for path in (repo / "scripts").glob("*.py"))
 
 
-def test_only_five_runtime_modules_exist(repo_root: Path) -> None:
+def test_only_six_runtime_modules_exist(repo_root: Path) -> None:
     assert {path.name for path in _scripts(repo_root)} == KEEP
 
 
@@ -28,13 +27,36 @@ def test_total_runtime_lines_within_ceiling(repo_root: Path) -> None:
 
 def test_manifest_version_and_remote_profile(repo_root: Path) -> None:
     manifest = json.loads((repo_root / "kimi.plugin.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.1.32"
+    assert manifest["version"] == "0.1.33"
     assert manifest["mcpServers"]["remote"]["env"]["REMOTE_DEV_HARNESS_PROFILE"] == "kimi"
     for surface in ("knowledge", "remote", "components"):
         server = manifest["mcpServers"][surface]
-        assert server["command"] == "python3"
-        assert server["args"] == ["./scripts/mindie_launch.py", "mcp", surface]
+        assert server["command"] == "uv"
+        assert server["args"] == [
+            "run", "--no-project", "--python", "3.13",
+            "python", "-B", "-X", "utf8", "./scripts/mindie_launch.py", "mcp", surface,
+        ]
         assert server["cwd"] == "./"
+    hooks = {item["event"]: item["command"] for item in manifest["hooks"]}
+    assert hooks == {
+        "PreToolUse": "uv run --no-project --python 3.13 python -B -X utf8 ./scripts/mindie_launch.py hook pretool",
+        "Stop": "uv run --no-project --python 3.13 python -B -X utf8 ./scripts/mindie_launch.py hook stop",
+    }
+
+
+def test_product_contract_and_pyproject_align(repo_root: Path) -> None:
+    import tomllib
+
+    pyproject = tomllib.loads((repo_root / "pyproject.toml").read_text(encoding="utf-8"))
+    contract = json.loads((repo_root / "product-contract.json").read_text(encoding="utf-8"))
+    assert pyproject["project"]["name"] == "mindie-agent-kimi"
+    assert pyproject["project"]["version"] == "0.1.33"
+    assert contract["schema"] == "mindie-product-contract/1"
+    assert contract["harness"] == "kimi"
+    assert contract["native_version"] == "0.1.33"
+    assert contract["components"]["mindie-harness"] == "0.1.8"
+    assert contract["components"]["npu-top"] == "0.3.5"
+    assert len(contract["components"]) == 9
 
 
 def test_bundled_seed_and_host_adapter(repo_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -59,7 +81,7 @@ def test_release_metadata_succeeds(repo_root: Path, plugin_env: dict[str, str]) 
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload["schema"] == "mindie-plugin-release/1"
-    assert payload["version"] == "0.1.32"
+    assert payload["version"] == "0.1.33"
     assert payload["source"] == {"repository": "mindie-agent/mindie-agent-kimi", "sha": "a" * 40}
 
 

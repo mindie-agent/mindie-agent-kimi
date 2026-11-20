@@ -39,7 +39,7 @@ jobs:
         run: |
           SMOKE_DIR="$(mktemp -d)"
           trap 'rm -rf "$SMOKE_DIR"' EXIT
-          cp -R assets scripts kimi.plugin.json harness-compatibility.json "$SMOKE_DIR/"
+          cp -R assets scripts kimi.plugin.json harness-compatibility.json product-contract.json "$SMOKE_DIR/"
           (cd "$SMOKE_DIR" && python -c "import sys; sys.path.insert(0, 'scripts'); import entry; entry.verify_bundled_seed()")
       - name: Release metadata contract
         run: python scripts/setup.py release-metadata --source . --tests tests --revision "${{ github.sha }}"
@@ -52,9 +52,14 @@ jobs:
       - name: Component tests
         run: python -m pytest -q -o "pythonpath=tests scripts" tests
 
+  host-acceptance:
+    uses: mindie-agent/mindie-bench/.github/workflows/verify-host-plugin.yml@main
+    with:
+      host: kimi
+
   release-ready:
     name: release-ready
-    needs: [component]
+    needs: [component, host-acceptance]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

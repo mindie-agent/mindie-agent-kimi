@@ -14,15 +14,17 @@ This repository owns the thin Kimi Code host plugin (`kimi.plugin.json`, native 
 
 Every Pull Request must complete the four `host-plugin` checklist IDs in [`.github/pull_request_template.md`](.github/pull_request_template.md):
 
-- **`HOST-NATIVE`**: Zero Windows console popups (`CREATE_NO_WINDOW`, no `CREATE_NEW_CONSOLE` / `DETACHED_PROCESS`, verified PE `Subsystem == 2` `pythonw.exe` for `MindIEKimiUpdate`).
-- **`HOST-WIRE`**: Single semantic `mindie-agent` skill, concurrent resident MCP dispatch, profile-shared `remote` job store across subagents, and Receipt Honesty (`receipt_warning` + `receipt_unconfirmed=True`).
-- **`HOST-ADMISSION`**: Zero required `request_nonce` across `remote`, `components`, and default-enabled `knowledge_*` tools; on-demand `not_before=0.0` default session leases and consent/scope check before SQLite in `Stop`.
-- **`HOST-UPGRADE`**: `0.1.26 -> 0.1.27` transition shims (`< 30` LOC), `update/current.json` compatibility, `assets/mindie-harness-seed.pyz` lock match, and Scheduled Task migration before GC.
+- **`HOST-NATIVE`**: Zero Windows console popups (`CREATE_NO_WINDOW`, no `CREATE_NEW_CONSOLE` / `DETACHED_PROCESS`), `uv`-backed `kimi.plugin.json` commands, and explicit `WindowsApps` 0-byte stub rejection.
+- **`HOST-WIRE`**: Single semantic `mindie-agent` skill, concurrent resident MCP dispatch (`serverInfo.version == "0.1.33"`), profile-shared `remote` job store across subagents, and Receipt Honesty (`receipt_warning` + `receipt_unconfirmed=True`).
+- **`HOST-ADMISSION`**: Zero required `request_nonce` across `remote`, `components`, and default-enabled `knowledge_*` tools; consent/scope check before SQLite in `Stop` followed by `run_stop_capture` (`turn` vs deterministic `notification`, preserving `inactive` revocation).
+- **`HOST-UPGRADE`**: Validated `kimi.json` precedence over stale `update/current.json`, `scripts/transcript.py` compatibility shim, 9-domain content-addressed knowledge bindings under `.kimi.json.update.lock`, `assets/mindie-harness-seed.pyz` lock verification, and safe `MindIEKimiUpdate` scheduled-task retirement.
 
 ## 3. Local Verification
 
 ```bash
-python3 .github/scripts/check_lf_eol.py
-python3 -m pytest -q -o "pythonpath=tests scripts" tests
-python3 .github/scripts/check_pr_checklist.py --profile host-plugin --body-file <pr_body.md>
+uv run --no-project python .github/scripts/check_lf_eol.py
+uv run pytest -q -o "pythonpath=tests scripts" tests
+uv run --no-project python -m unittest discover -s tests/native -v
+uv run --no-project python scripts/setup.py release-metadata --source . --tests tests --revision "$(git rev-parse HEAD)"
+uv run --no-project python .github/scripts/check_pr_checklist.py --profile host-plugin --body-file <pr_body.md>
 ```
