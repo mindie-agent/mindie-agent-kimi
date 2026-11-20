@@ -1,4 +1,4 @@
-"""Cold hooks, strict MCP surface separation, setup delegation, and installer helpers."""
+"""Cold hooks, strict MCP surface separation, 9-domain binding, migration, and installer helpers."""
 from __future__ import annotations
 
 import importlib.util
@@ -27,6 +27,10 @@ REMOTE = [
 ]
 COMPONENTS = ["mindie_status", "mindie_doctor", "profiler", "sim", "coordinator", "npu_top",
               "debugger", "rsi_loop", "experiment_ledger", "diagnostics_status", "diagnostics_bundle"]
+EXPECTED_DOMAINS = {
+    "vllm-ascend", "operators", "xllm", "mindie-sd", "infer-core",
+    "infer-distributed", "infer-observability", "infer-ops-compat", "agent-engineering",
+}
 
 
 def _run(argv: list[object], *, stdin: str | None = None, env: dict[str, str], timeout: float = 60.0) -> subprocess.CompletedProcess:
@@ -96,13 +100,15 @@ def test_stop_in_process_budget(isolated_home: Path, plugin_env: dict[str, str],
             _run([SETUP, "sharing", "--disable"], env=plugin_env)
     candidate = str(project if state == "disabled" else isolated_home / "work" / "app-other")
     launcher = _load("mindie_launch")
+    before = set(_sqlite_files(isolated_home))
     monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(buffer=io.BytesIO(json.dumps({"cwd": candidate}).encode())))
     started = time.perf_counter()
     assert launcher.main(["hook", "stop"]) == 0
     elapsed = time.perf_counter() - started
     assert elapsed < HOOK_BUDGET, f"{state} cold Stop fast path took {elapsed:.4f}s"
     assert capfd.readouterr().out == "{}\n"
-    assert _sqlite_files(isolated_home) == [], "fast Stop path opened SQLite"
+    assert set(_sqlite_files(isolated_home)) == before, "fast Stop path opened SQLite"
+    assert not [p for p in _sqlite_files(isolated_home) if "admission" in p.name]
 
 
 def test_pretool_never_reads_stdin(plugin_env: dict[str, str]) -> None:
@@ -161,7 +167,7 @@ def _serve(surface: str, tool: str) -> tuple[dict[int, dict], list[str]]:
     ]
     stream = io.BytesIO(b"".join(json.dumps(item).encode() + b"\n" for item in requests))
     out = io.BytesIO()
-    assert MCPStdioServer(router, server_name=f"mindie-{surface}", server_version="0.1.32").serve(stdin=stream, stdout=out) == 0
+    assert MCPStdioServer(router, server_name=f"mindie-{surface}", server_version=entry.VERSION).serve(stdin=stream, stdout=out) == 0
     replies = {payload["id"]: payload for payload in map(json.loads, out.getvalue().splitlines()) if payload}
     names = [item["name"] for item in replies[2]["result"]["tools"]]
     return replies, names
@@ -171,7 +177,7 @@ def test_knowledge_surface_is_exclusive() -> None:
     replies, names = _serve("knowledge", "mindie_status")
     assert names == KNOWLEDGE
     assert not [name for name in names if name.startswith("remote_") or name in COMPONENTS]
-    assert replies[1]["result"]["serverInfo"]["version"] == "0.1.32"
+    assert replies[1]["result"]["serverInfo"]["version"] == "0.1.33"
     excluded = replies[3]["result"]
     assert excluded["isError"] is True
     assert excluded["structuredContent"]["reason"] == "unknown_operation"
@@ -193,13 +199,34 @@ def test_components_surface_is_exclusive() -> None:
     assert replies[3]["result"]["structuredContent"]["reason"] == "unknown_operation"
 
 
-def test_setup_init_and_sharing_lifecycle(isolated_home: Path, plugin_env: dict[str, str]) -> None:
-    summary = _json_run([SETUP, "init"], env=plugin_env)
+def test_setup_init_provisions_all_nine_domains_and_root_override(
+    isolated_home: Path, plugin_env: dict[str, str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    custom_root = isolated_home / "custom-kb-root"
+    summary = _json_run([SETUP, "init", "--root", str(custom_root)], env=plugin_env)
     assert summary["status"] == "initialized"
-    engine = json.loads(Path(summary["engine_config"]).read_text(encoding="utf-8"))
+    engine_path = Path(summary["engine_config"])
+    engine = json.loads(engine_path.read_text(encoding="utf-8"))
     assert engine["domain"] == "vllm-ascend"
+    assert Path(engine["root"]).resolve() == custom_root.resolve()
     assert engine["transcript_adapter"].endswith("kimi_transcript.py")
+    assert engine["community_config"].endswith("mindie-community.json")
     assert Path(summary["native_package"]).resolve() == REPO.resolve()
+
+    cfg_path = Path(summary["config_path"])
+    cfg_doc = json.loads(cfg_path.read_text(encoding="utf-8"))
+    domain_configs = cfg_doc["domain_configs"]
+    assert set(domain_configs.keys()) == EXPECTED_DOMAINS
+    for dom, dom_cfg_raw in domain_configs.items():
+        dom_path = Path(dom_cfg_raw)
+        assert dom_path.is_file()
+        assert "engines" in dom_path.parts and "kimi" in dom_path.parts
+        dom_doc = json.loads(dom_path.read_text(encoding="utf-8"))
+        assert dom_doc["domain"] == dom
+        assert Path(dom_doc["root"]).resolve() == custom_root.resolve()
+        assert dom_doc["transcript_adapter"].endswith("kimi_transcript.py")
+        assert isinstance(dom_doc.get("community_config"), str) and dom_doc["community_config"]
+
     project = isolated_home / "work" / "project"
     project.mkdir(parents=True)
     configured = _json_run([SETUP, "sharing", "--local-only", "--project-root", str(project)], env=plugin_env)
@@ -211,12 +238,213 @@ def test_setup_init_and_sharing_lifecycle(isolated_home: Path, plugin_env: dict[
     assert _json_run([SETUP, "sharing", "--enable", "--project-root", str(project)], env=plugin_env)["tier"] == "contribute"
     assert _json_run([SETUP, "sharing", "--status"], env=plugin_env)["tier"] == "contribute"
     assert _run([SETUP, "sharing", "--enable", "--disable"], env=plugin_env).returncode != 0
-    cfg_path = Path(summary["config_path"])
     cfg_doc = json.loads(cfg_path.read_text(encoding="utf-8"))
     cfg_doc["component_commands"] = {"sim": ["/custom/python", "-m", "mindie_sim"]}
     cfg_path.write_text(json.dumps(cfg_doc), encoding="utf-8")
     _json_run([SETUP, "init"], env=plugin_env)
     assert json.loads(cfg_path.read_text(encoding="utf-8"))["component_commands"]["sim"][0] == "/custom/python"
+
+    # Non-configured return statuses ("skipped" / "deferred") must fail fast instead of printing initialized
+    setup_mod = _load("setup")
+    import mindie_harness.runtime.knowledge_binding as kb_mod
+    from mindie_harness.paths import ProfileRef
+
+    monkeypatch.setattr(kb_mod, "ensure_knowledge_binding", lambda *a, **kw: {"status": "skipped", "reason": "knowledge_not_installed"})
+    profile = ProfileRef.resolve("kimi", plugin_root=REPO, config_path=isolated_home / "fail-cfg" / "kimi.json")
+    with pytest.raises(SystemExit):
+        setup_mod._init(profile, [])
+    assert not profile.config_path.exists()
+
+
+def test_stop_preserves_native_turn_id_and_deterministic_fallback(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entry = _load("entry")
+    from mindie_harness.paths import ProfileRef
+
+    captured: list[dict] = []
+    monkeypatch.setattr(entry, "run_stop_capture", lambda _prof, payload, **_kw: captured.append(dict(payload)) or {"stage": "inert"})
+    profile = ProfileRef.resolve("kimi", plugin_root=REPO, config_path=isolated_home / "cfg" / "kimi.json")
+    cwd = isolated_home / "work" / "app"
+    cwd.mkdir(parents=True)
+
+    # 1. Native turn_id (even without explicit identity_kind) -> identity_kind="turn" + last_assistant_message preserved
+    turn_event = {"session_id": "ses_turn", "turn_id": "turn_42", "last_assistant_message": "final answer", "cwd": str(cwd)}
+    monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(buffer=io.BytesIO(json.dumps(turn_event).encode())))
+    entry._stop(profile)
+    assert captured[-1]["identity_kind"] == "turn"
+    assert captured[-1]["turn_id"] == "turn_42"
+    assert captured[-1]["last_assistant_message"] == "final answer"
+    assert "event_id" not in captured[-1]
+
+    # 2. Absent turn_id -> notification with deterministic (repeatable) event_id across retries
+    notif_event = {"session_id": "ses_notif", "cwd": str(cwd)}
+    for _ in range(2):
+        monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(buffer=io.BytesIO(json.dumps(notif_event).encode())))
+        entry._stop(profile)
+    assert captured[-1]["identity_kind"] == "notification"
+    assert captured[-2]["event_id"] == captured[-1]["event_id"]
+    assert len(str(captured[-1]["event_id"])) == 32
+
+
+def test_stop_honors_inactive_session_revocation_permanence(
+    isolated_home: Path, plugin_env: dict[str, str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mindie_harness.paths import ProfileRef
+    from mindie_knowledge.loop.activation import Admission
+
+    project = isolated_home / "work" / "app"
+    project.mkdir(parents=True)
+    summary = _json_run([SETUP, "init"], env=plugin_env)
+    _json_run([SETUP, "sharing", "--local-only", "--project-root", str(project)], env=plugin_env)
+    engine_doc = json.loads(Path(summary["engine_config"]).read_text(encoding="utf-8"))
+    admission = Admission(Path(engine_doc["admission_path"]))
+    admission.activate("ses_revoked", project_root=str(project.resolve()), not_before=0.0)
+    admission.deactivate("ses_revoked")
+    assert admission.inspect("ses_revoked")["status"] == "inactive"
+
+    entry = _load("entry")
+    profile = ProfileRef.resolve("kimi", plugin_root=REPO, config_path=Path(summary["config_path"]))
+    event_bytes = json.dumps({"hook_event_name": "Stop", "session_id": "ses_revoked", "cwd": str(project)}).encode()
+    monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(buffer=io.BytesIO(event_bytes)))
+    outcome = entry._stop(profile)
+    assert admission.inspect("ses_revoked")["status"] == "inactive"
+    if isinstance(outcome, dict):
+        assert outcome.get("stage") == "inert"
+
+
+def test_validated_kimi_json_precedence_and_seed_stdin_isolation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    launcher = _load("mindie_launch")
+    state = tmp_path / "state"
+    stale_gen = state / "update" / "generations" / ("c" * 40)
+    (stale_gen / "scripts").mkdir(parents=True)
+    (stale_gen / "scripts" / "entry.py").write_text("# stale\n", encoding="utf-8")
+    stale_py = tmp_path / "stale-venv" / ("python.exe" if os.name == "nt" else "python3")
+    stale_py.parent.mkdir(parents=True)
+    stale_py.write_bytes(b"MZstale")
+    if os.name != "nt":
+        stale_py.chmod(0o755)
+    stale_adapter = stale_gen / "kimi.adapter.json"
+    stale_adapter.write_text("{}", encoding="utf-8")
+    (state / "update").mkdir(parents=True, exist_ok=True)
+    (state / "update" / "current.json").write_text(json.dumps({
+        "generation": str(stale_gen), "python": str(stale_py), "adapter_config": str(stale_adapter),
+    }), encoding="utf-8")
+
+    new_gen = tmp_path / "generations" / "gen-new"
+    new_gen.mkdir(parents=True)
+    new_py = new_gen / ("python.exe" if os.name == "nt" else "python3")
+    new_py.write_bytes(b"MZnew")
+    if os.name != "nt":
+        new_py.chmod(0o755)
+    (new_gen / "runtime.json").write_text(json.dumps({
+        "schema": "mindie-candidate-check/1", "python": str(new_py), "validation": {"status": "validated"},
+    }), encoding="utf-8")
+    cfg_path = tmp_path / "cfg" / "kimi.json"
+    cfg_path.parent.mkdir(parents=True)
+
+    # 1. Validated component_release in kimi.json wins over stale current.json
+    cfg_path.write_text(json.dumps({"python": str(new_py), "component_release": str(new_gen), "state_dir": str(state)}), encoding="utf-8")
+    assert launcher._resolve_target(cfg_path) == (new_py, launcher.HERE, cfg_path)
+
+    # 2. Unusable component_release receipt still honors valid top-level kimi.json["python"] before stale current.json
+    cfg_path.write_text(json.dumps({"python": str(new_py), "component_release": str(tmp_path / "gone-gen"), "state_dir": str(state)}), encoding="utf-8")
+    assert launcher._resolve_target(cfg_path) == (new_py, launcher.HERE, cfg_path)
+
+    # 3. Missing python in kimi.json falls back to legacy current.json
+    cfg_path.write_text(json.dumps({"python": str(tmp_path / "missing-py"), "state_dir": str(state)}), encoding="utf-8")
+    assert launcher._active_python(cfg_path) == stale_py
+    assert launcher._effective_scripts(cfg_path) == stale_gen / "scripts"
+
+    # 4. Cold seed provisioning isolates stdin=subprocess.DEVNULL so MCP client stdin is untouched
+    seen_kwargs: dict[str, object] = {}
+
+    def _fake_seed_run(argv, **kwargs):
+        seen_kwargs.update(kwargs)
+        cfg_path.write_text(json.dumps({"python": str(new_py)}), encoding="utf-8")
+        return subprocess.CompletedProcess(argv, returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(launcher.subprocess, "run", _fake_seed_run)
+    assert launcher._provision(cfg_path)[0] == new_py
+    assert seen_kwargs.get("stdin") == subprocess.DEVNULL
+    assert seen_kwargs.get("capture_output") is True
+
+
+def test_windowsapps_stub_rejected_in_python_discovery(tmp_path: Path) -> None:
+    launcher = _load("mindie_launch")
+    installer = _load("install_kimi_plugin")
+
+    win_apps = tmp_path / "Microsoft" / "WindowsApps"
+    zero_dir = tmp_path / "zero-bin"
+    real_dir = tmp_path / "real-python"
+    for folder in (win_apps, zero_dir, real_dir):
+        folder.mkdir(parents=True)
+    (win_apps / "python.exe").write_bytes(b"MZreparse-stub")
+    (win_apps / "python3.exe").write_bytes(b"")
+    (zero_dir / "python.exe").write_bytes(b"")
+    real_py = real_dir / "python.exe"
+    real_py.write_bytes(b"MZreal-cpython-313")
+
+    fake_path = os.pathsep.join([str(win_apps), str(zero_dir), str(real_dir)])
+    assert launcher._valid_python(win_apps / "python.exe", os_name="nt") is None
+    assert launcher._valid_python(zero_dir / "python.exe", os_name="nt") is None
+    assert launcher._valid_python(real_py, os_name="nt") == real_py
+    assert launcher._discover_python(path_env=fake_path, os_name="nt", allow_uv=False) == real_py
+    assert installer._find_python(fake_path, os_name="nt", allow_uv=False) == str(real_py)
+
+
+def test_mindie_kimi_update_schedule_migration_cleanup(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    setup_mod = _load("setup")
+    from mindie_harness.paths import ProfileRef
+
+    monkeypatch.delenv("MINDIE_KIMI_SKIP_SCHTASKS", raising=False)
+    monkeypatch.setattr(setup_mod, "_NO_WIN", 0x08000000)
+    profile = ProfileRef.resolve("kimi", plugin_root=REPO, config_path=isolated_home / "cfg" / "kimi.json")
+    upd_dir = profile.state_dir / "update"
+    upd_dir.mkdir(parents=True)
+    wrapper = upd_dir / "MindIEKimiUpdate.pyw"
+    task_xml = upd_dir / "MindIEKimiUpdate.xml"
+    wrapper.write_text("# legacy\n", encoding="utf-8")
+    task_xml.write_text("<Task/>", encoding="utf-8")
+
+    # 1. Delete failure / Access Denied MUST preserve wrapper & XML files intact
+    monkeypatch.setattr(
+        setup_mod.subprocess, "run",
+        lambda argv, **_kw: subprocess.CompletedProcess(
+            argv, returncode=0 if "/Query" in argv else 1, stdout=b"", stderr=b"ERROR: Access is denied.",
+        ),
+    )
+    denied = setup_mod._retire_legacy_schedule(profile, os_name="nt", platform_name="win32")
+    assert denied["status"] == "failed"
+    assert wrapper.exists() and task_xml.exists()
+
+    # 2. Confirmed deletion unlinks wrapper & XML files with CREATE_NO_WINDOW
+    calls: list[tuple[list[str], int]] = []
+
+    def _fake_retire(argv, **kwargs):
+        calls.append((list(argv), int(kwargs.get("creationflags") or 0)))
+        return subprocess.CompletedProcess(argv, returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(setup_mod.subprocess, "run", _fake_retire)
+    retired = setup_mod._retire_legacy_schedule(profile, os_name="nt", platform_name="win32")
+    assert retired["status"] == "retired"
+    assert calls == [
+        (["schtasks", "/Query", "/TN", "MindIEKimiUpdate"], 0x08000000),
+        (["schtasks", "/Delete", "/TN", "MindIEKimiUpdate", "/F"], 0x08000000),
+    ]
+    assert not wrapper.exists() and not task_xml.exists()
+
+    # 3. subprocess.TimeoutExpired must propagate explicitly
+    def _raise_timeout(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, timeout=15.0)
+
+    monkeypatch.setattr(setup_mod.subprocess, "run", _raise_timeout)
+    with pytest.raises(subprocess.TimeoutExpired):
+        setup_mod._retire_legacy_schedule(profile, os_name="nt", platform_name="win32")
 
 
 def test_setup_doctor_reports_readiness(plugin_env: dict[str, str]) -> None:
@@ -231,7 +459,7 @@ def test_setup_doctor_reports_readiness(plugin_env: dict[str, str]) -> None:
     assert "runtime" in body and "packages" in body["runtime"]
 
 
-def _valid_report(version: str = "0.1.32") -> dict:
+def _valid_report(version: str = "0.1.33") -> dict:
     servers = [{"name": name, "enabled": True} for name in ("knowledge", "remote", "components")]
     record = {"mcpServerCount": 3, "enabledMcpServerCount": 3, "hookCount": 2}
     return {

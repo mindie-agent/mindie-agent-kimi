@@ -6,9 +6,10 @@
 
 ---
 
-## 1. 无 Shell 直接启动与参数传递
+## 1. 无 Shell `uv` 直接启动与 `WindowsApps` 空桩拒绝
 
-- **避免 `.cmd` 包装器 `EINVAL` 错误**：在 Windows 下，Node.js 的 `spawn(..., {shell: false})` 直接拉起 `.cmd` 批处理文件会触发 `EINVAL` 报错。因此，Windows 平台生成的插件包直接在 MCP 配置中声明 Python 可执行文件名（并将其所在目录置于该子进程 `PATH` 首位），将启动器脚本、配置文件与操作名作为独立参数数组传入，全程不经过 `cmd.exe` 或 PowerShell 字符串拼接，也不修改用户全局 `PATH`。
+- **规避 `.cmd` `EINVAL` 与裸 `python3` 应用商店空桩**：在 Windows 下，Node.js 的 `spawn(..., {shell: false})` 直接拉起 `.cmd` 批处理文件会触发 `EINVAL` 报错，而裸调 `python3` 可能命中 Microsoft Store 在 `%LOCALAPPDATA%\Microsoft\WindowsApps` 下注册的 0 字节重定向空桩。因此，`kimi.plugin.json` 在 `knowledge`、`remote`、`components` 三个 MCP 服务中统一声明 `"command": "uv"`，并通过独立参数数组传入 `["run", "--no-project", "--python", "3.13", "python", "-B", "-X", "utf8", "./scripts/mindie_launch.py", "mcp", "<surface>"]`（`PreToolUse` 与 `Stop` Hook 同样通过 `uv run --no-project --python 3.13 python -B -X utf8 ...` 拉起）。
+- **后备解释器探测拒绝 `WindowsApps` 桩与跨平台垫片**：`scripts/mindie_launch.py` 与 `scripts/install_kimi_plugin.py` 在扫描 `PATH` 或调用 `uv python find ">=3.11"` 解析后备 Python 时，在 Windows 上强制剔除包含 `\windowsapps\` 或 `st_size == 0` 的路径，在 WSL/POSIX 上剔除 `.exe`/`.cmd` 与 `MZ` 头二进制，全程不修改用户全局 `PATH`，所有后台子进程统一携带 `CREATE_NO_WINDOW`（`0x08000000`）。
 - **路径字符兼容**：支持包含中文/Unicode、空格及特殊字符的安装路径。
 
 ---
@@ -22,10 +23,10 @@
 
 ## 3. 运行原生边界验证
 
-安装 `runtime-requirements.txt` 并确保 `node` 在 `PATH` 中后，可执行以下命令验证原生启动与进程回收契约：
+安装锁定运行时依赖并确保 `node` 在 `PATH` 中后，可执行以下命令验证原生启动与进程回收契约：
 
 ```sh
-python3 -m unittest discover -s tests/native -v
+uv run --no-project python -m unittest discover -s tests/native -v
 ```
 
 - **宿主参考文档**：[Kimi Code 插件命令规范](https://moonshotai.github.io/kimi-code/en/customization/plugins.html) · [MCP 子进程环境说明](https://moonshotai.github.io/kimi-code/en/customization/mcp)

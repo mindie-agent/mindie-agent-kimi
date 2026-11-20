@@ -1,0 +1,9 @@
+# mindie-agent-kimi 0.1.33：Windows `uv` 无桩启动、九域知识绑定与权威 `kimi.json` 切流收敛
+
+[English](mindie-agent-kimi-0.1.33.en.md)
+
+- **标准 9 组件 `pyproject.toml` / `uv.lock` / `product-contract.json` 对齐（`1,194 <= 1,200` 行）**：根目录新增与全组织宿主插件一致的 `pyproject.toml`、`uv.lock` 与 `product-contract.json`（锁齐 `mindie-harness >= 0.1.5`、`npu-top 0.3.5` 等全部 9 个运行时组件，并与 `runtime-requirements.txt` / `runtime/active-overrides.txt` 保持一致），`scripts/*.py` 保持 6 个标准薄文件且 `MCPStdioServer` 初始化返回 `serverInfo.version == "0.1.33"`。
+- **消除裸 `python3` 的 Microsoft Store `WindowsApps` 空桩陷阱**：`kimi.plugin.json` 中 `knowledge`、`remote`、`components` 三个 MCP 服务与 `PreToolUse` / `Stop` Hook 全部从裸 `python3` 切换为 `uv run --no-project --python 3.13 python -B -X utf8 ./scripts/mindie_launch.py ...`；`mindie_launch.py` 与 `install_kimi_plugin.py` 在探测解释器时显式拒绝 `WindowsApps` 0 字节空桩（`\windowsapps\` 与 `st_size == 0`）。
+- **已验证 `kimi.json` 优先与旧版 `MindIEKimiUpdate` 计划任务安全退役**：`mindie_launch.py` 在解析运行时代际时优先采用已验证的权威 `kimi.json`（含 `component_release/runtime.json` 校验状态），防止陈旧的 `update/current.json` 覆盖新版 wheelhouse 升级，仅在 `kimi.json` 缺失或解释器不可用时回退读取 `update/current.json`；`setup.py init` 与 `setup.py update` 在清理历史 `.pyw`/`.xml` 包装脚本前，先无窗查询并安全删除遗留 `MindIEKimiUpdate` 计划任务（及 macOS `launchd` / Linux `systemd` 同类遗留项）。
+- **内容寻址 9 域知识绑定与诚实 `Stop` 采集交接**：删除 `setup.py` 与 `entry.py` 中的单域手工引擎配置拼装逻辑，统一在 `.kimi.json.update.lock` 下调用 `ensure_knowledge_binding(..., already_locked=True)` 生成全部 9 个公开昇腾知识域的 `engines/kimi/<20hex>/<domain>.engine.json` 与 `domain_configs`（保留 `setup.py init --root` 覆盖能力）；`entry.py:_stop` 委托 `run_stop_capture(..., timeout_sec=6.0)`，诚实区分原生 `turn`（保留 `turn_id` 与 `last_assistant_message`）与确定性文件长度检查点 `notification`（`event_id`），并永久尊重已撤销（`inactive`）会话状态。
+- **接入跨仓宿主验收门禁**：`.github/workflows/checks.yml` 新增 `host-acceptance` 作业（调用 `mindie-agent/mindie-bench/.github/workflows/verify-host-plugin.yml@main`，`host: kimi`）并纳入 `release-ready`。
