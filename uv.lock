@@ -16,7 +16,7 @@ overrides = [
     { name = "mindie-coordinator", git = "https://github.com/mindie-agent/coordinator?rev=79df7c373bf35fda2a94907d1f3beb51c6462357" },
     { name = "mindie-debugger", git = "https://github.com/mindie-agent/debugger?rev=e15c2ed38d8f928db67c5bb1a94269f62207227c" },
     { name = "mindie-diagnostics", git = "https://github.com/mindie-agent/diagnostics?rev=7464cbb4381e9dc996871d192eb3f05f61dfdb28" },
-    { name = "mindie-harness", git = "https://github.com/mindie-agent/harness?rev=4ff15e23075247e45d726c7e0006b465c3fa78ab" },
+    { name = "mindie-harness", git = "https://github.com/mindie-agent/harness?rev=99962f4138f1402024a6d7b4b2596baaa36a4b00" },
     { name = "mindie-knowledge", git = "https://github.com/mindie-agent/knowledge?rev=9befde292ea0e6c79e9e5f475c266cbcf845d59a" },
     { name = "mindie-profiler", git = "https://github.com/mindie-agent/profiler?rev=b702893129724b852c5abcb8971724b8b0a6e870" },
     { name = "mindie-sim", git = "https://github.com/mindie-agent/sim?rev=83fb8288aa998e0a6ad345ca7a16269f0181545b" },
@@ -1897,7 +1897,7 @@ requires-dist = [
     { name = "mindie-coordinator", git = "https://github.com/mindie-agent/coordinator?rev=79df7c373bf35fda2a94907d1f3beb51c6462357" },
     { name = "mindie-debugger", git = "https://github.com/mindie-agent/debugger?rev=e15c2ed38d8f928db67c5bb1a94269f62207227c" },
     { name = "mindie-diagnostics", git = "https://github.com/mindie-agent/diagnostics?rev=7464cbb4381e9dc996871d192eb3f05f61dfdb28" },
-    { name = "mindie-harness", git = "https://github.com/mindie-agent/harness?rev=4ff15e23075247e45d726c7e0006b465c3fa78ab" },
+    { name = "mindie-harness", git = "https://github.com/mindie-agent/harness?rev=99962f4138f1402024a6d7b4b2596baaa36a4b00" },
     { name = "mindie-knowledge", git = "https://github.com/mindie-agent/knowledge?rev=9befde292ea0e6c79e9e5f475c266cbcf845d59a" },
     { name = "mindie-profiler", git = "https://github.com/mindie-agent/profiler?rev=b702893129724b852c5abcb8971724b8b0a6e870" },
     { name = "mindie-sim", git = "https://github.com/mindie-agent/sim?rev=83fb8288aa998e0a6ad345ca7a16269f0181545b" },
@@ -1930,8 +1930,8 @@ source = { git = "https://github.com/mindie-agent/diagnostics?rev=7464cbb4381e9d
 
 [[package]]
 name = "mindie-harness"
-version = "0.1.7"
-source = { git = "https://github.com/mindie-agent/harness?rev=4ff15e23075247e45d726c7e0006b465c3fa78ab#4ff15e23075247e45d726c7e0006b465c3fa78ab" }
+version = "0.1.8"
+source = { git = "https://github.com/mindie-agent/harness?rev=99962f4138f1402024a6d7b4b2596baaa36a4b00#99962f4138f1402024a6d7b4b2596baaa36a4b00" }
 
 [[package]]
 name = "mindie-knowledge"
@@ -2759,7 +2759,6 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/fb/63/0ceb815a7762576027ce388544c573d440574f95afb1302a2496b96db548/pydantic_core-2.50.5.tar.gz", hash = "sha256:1e740886083ff95530d694e6a3f09ed914bcf92a496d16acd307c6c3484fc36d", size = 523285, upload-time = "2026-11-19T12:56:38.067Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/2e/13/38388fd381879499d83dec38826fdb9457ab67b77f6e32c2dddcfc604dae/pydantic_core-2.50.5-cp311-cp311-macosx_10_12_x86_64.whl", hash = "sha256:bcc830e4f48499fd30a870f07c30752273ae2ddccce34d65d51c9fc880c380ab", size = 2173303, upload-time = "2026-11-19T12:53:40.749Z" },
     { url = "https://files.pythonhosted.org/packages/e6/3b/8b75df5dbcd09d81e536edc17d1d77767a4044fa5b90cf875c4100bb7ce7/pydantic_core-2.50.5-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:40d5da89a632e6c6c938f93fdf54c534882d258a80f51ccfe1650cdedc12e82c", size = 2135436, upload-time = "2026-11-19T12:53:42.276Z" },

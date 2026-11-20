@@ -54,7 +54,7 @@ def test_product_contract_and_pyproject_align(repo_root: Path) -> None:
     assert contract["schema"] == "mindie-product-contract/1"
     assert contract["harness"] == "kimi"
     assert contract["native_version"] == "0.1.33"
-    assert contract["components"]["mindie-harness"] == "0.1.7"
+    assert contract["components"]["mindie-harness"] == "0.1.8"
     assert contract["components"]["npu-top"] == "0.3.5"
     assert len(contract["components"]) == 9
 
