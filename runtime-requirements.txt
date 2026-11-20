@@ -1,6 +1,6 @@
 # Active exact component selection; older transitive pins are overridden.
 # The component updater preserves newer installed formal releases.
-mindie-harness @ git+https://github.com/mindie-agent/harness@440b8bd3dfa47f3c2e2131259c391c8cee14f13d
+mindie-harness @ git+https://github.com/mindie-agent/harness@f403ea9166752383175af64644c3f5d401db85cf
 mindie-coordinator @ git+https://github.com/mindie-agent/coordinator@79df7c373bf35fda2a94907d1f3beb51c6462357
 mindie-debugger @ git+https://github.com/mindie-agent/debugger@e15c2ed38d8f928db67c5bb1a94269f62207227c
 mindie-diagnostics @ git+https://github.com/mindie-agent/diagnostics@7464cbb4381e9dc996871d192eb3f05f61dfdb28

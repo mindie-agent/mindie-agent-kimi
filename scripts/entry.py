@@ -137,7 +137,7 @@ def _stop(profile: ProfileRef) -> dict | None:
 
 def _serve(surface: str, profile: ProfileRef, version: str = VERSION) -> int:
     try:
-        ensure_knowledge_binding(profile, plugin_root=PLUGIN_ROOT, python_executable=sys.executable, include_default_feed=True)
+        ensure_knowledge_binding(profile, plugin_root=PLUGIN_ROOT, python_executable=sys.executable, include_default_feed=False)
     except TimeoutError:
         raise
     except Exception:

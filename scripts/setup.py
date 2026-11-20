@@ -103,7 +103,7 @@ def _bind_locked(profile: ProfileRef, *, python: str | None, root: Path | None =
     try:
         if root is not None:
             os.environ["MINDIE_KNOWLEDGE_ROOT"] = str(root.expanduser().resolve(strict=False))
-        bound = ensure_knowledge_binding(profile, plugin_root=PLUGIN_ROOT, python_executable=python, install_redactor=False, retire_previous=True, include_default_feed=True, already_locked=True)
+        bound = ensure_knowledge_binding(profile, plugin_root=PLUGIN_ROOT, python_executable=python, install_redactor=False, retire_previous=True, include_default_feed=False, already_locked=True)
         if bound.get("status") != "configured":
             raise SystemExit(f"knowledge binding {bound.get('status')}: {bound.get('reason') or 'failed'}")
         prev = read_json_safe(profile.config_path)
